@@ -44,7 +44,7 @@ type DaemonApp struct {
 // database pool, starts all services (DBus API, Secret Service, SSH agent,
 // FIDO2), registers signal handlers, notifies systemd readiness, and runs
 // the main event loop. It blocks until a shutdown signal is received.
-func Run(configPath string) error {
+func Run(configPath string, cliLevel slog.Level) error {
 	app := &DaemonApp{
 		done: make(chan struct{}),
 	}
@@ -59,10 +59,15 @@ func Run(configPath string) error {
 	}
 	app.cfg = cfg
 
-	// Set up logging based on config.
-	level, err := parseLogLevel(cfg.Daemon.LogLevel)
-	if err != nil {
-		return err
+	// Set up logging. CLI flags (-v, -q) override config file.
+	level := cliLevel
+	if level == slog.LevelInfo {
+		// CLI didn't specify, use config value.
+		var err error
+		level, err = parseLogLevel(cfg.Daemon.LogLevel)
+		if err != nil {
+			return err
+		}
 	}
 	if cfg.Daemon.LogToJournald {
 		slog.SetDefault(slog.New(newJournaldHandler(level)))

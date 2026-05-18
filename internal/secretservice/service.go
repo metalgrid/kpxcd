@@ -284,6 +284,7 @@ func (ss *SecretService) emitCollectionsChanged(created, deleted []dbus.ObjectPa
 // Supported algorithms: "plain" (no encryption) and
 // "dh-ietf1024-sha256-aes128-cbc" (Diffie-Hellman key exchange).
 func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus.Variant, dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("secretservice: OpenSession", "algorithm", algorithm)
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -388,6 +389,7 @@ func (ss *SecretService) CreateCollection(properties map[string]dbus.Variant, al
 
 // SearchItems searches for items across all collections matching the attributes.
 func (ss *SecretService) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("secretservice: SearchItems", "attributes", attributes)
 	var unlocked []dbus.ObjectPath
 	var locked []dbus.ObjectPath
 
@@ -421,6 +423,7 @@ func (ss *SecretService) SearchItems(attributes map[string]string) ([]dbus.Objec
 // Unlock unlocks the given objects. For kpxcd, collections are already
 // unlocked when the database is open, so this is a no-op.
 func (ss *SecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("secretservice: Unlock", "objects", objects)
 	var unlocked []dbus.ObjectPath
 
 	for _, path := range objects {
@@ -440,6 +443,7 @@ func (ss *SecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, d
 
 // Lock locks the given objects.
 func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("secretservice: Lock", "objects", objects)
 	var locked []dbus.ObjectPath
 
 	for _, path := range objects {
@@ -457,6 +461,7 @@ func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbu
 
 // GetSecrets retrieves secrets for the given items using the specified session.
 func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.ObjectPath) (map[dbus.ObjectPath]map[string]interface{}, *dbus.Error) {
+	slog.Debug("secretservice: GetSecrets", "items", items, "session", string(sessionPath))
 	secrets := make(map[dbus.ObjectPath]map[string]interface{})
 
 	ss.sessionsMu.RLock()
