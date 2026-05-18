@@ -357,7 +357,7 @@ func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus
 		sess := NewPlainSession(ss.conn, sessionPath)
 		ss.sessions[sessionPath] = sess
 
-	case "dh-ietf1024-sha256-aes128-cbc":
+	case "dh-ietf1024-sha256-aes128-cbc", "dh-ietf1024-sha256-aes128-cbc-pkcs7":
 		output = ss.handleDHKeyExchange(input, sessionPath)
 		if output == (dbus.Variant{}) {
 			return dbus.Variant{}, "/", dbus.NewError(ErrorPrefix+"InternalError",
