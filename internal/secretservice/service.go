@@ -387,15 +387,20 @@ func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus
 }
 
 // handleDHKeyExchange performs the DH key exchange for encrypted sessions.
+// Input: variant containing the client's public key as byte array (ay).
+// Output: variant containing the server's public key as byte array (ay).
 func (ss *SecretService) handleDHKeyExchange(input dbus.Variant, sessionPath dbus.ObjectPath) dbus.Variant {
-	structData, ok := input.Value().([]interface{})
-	if !ok || len(structData) < 3 {
-		return dbus.Variant{}
-	}
-
-	clientPubBytes, ok := structData[0].([]byte)
+	// The client sends its DH public key as a byte array inside the variant.
+	clientPubBytes, ok := input.Value().([]byte)
 	if !ok {
-		return dbus.Variant{}
+		// Some clients wrap it — try nested extraction.
+		if slice, ok := input.Value().([]interface{}); ok && len(slice) > 0 {
+			clientPubBytes, ok = slice[0].([]byte)
+		}
+		if !ok {
+			slog.Warn("secretservice: DH exchange: invalid client public key")
+			return dbus.Variant{}
+		}
 	}
 
 	privKey, pubKey := generateDHKeyPair()
@@ -408,10 +413,8 @@ func (ss *SecretService) handleDHKeyExchange(input dbus.Variant, sessionPath dbu
 	sess := NewEncryptedSession(ss.conn, sessionPath, key)
 	ss.sessions[sessionPath] = sess
 
-	output := dbus.MakeVariant([]interface{}{
-		pubKey.Bytes(),
-		prime.Bytes(),
-	})
+	// Return just the server's public key as a byte array variant.
+	output := dbus.MakeVariant(pubKey.Bytes())
 
 	return output
 }
