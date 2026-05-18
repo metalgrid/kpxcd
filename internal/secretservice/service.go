@@ -103,7 +103,7 @@ func (ss *SecretService) Export(conn *dbus.Conn) error {
 
 	// Claim the well-known name.
 	reply, err := conn.RequestName("org.freedesktop.secrets",
-		dbus.NameFlagDoNotQueue)
+		dbus.NameFlagReplaceExisting|dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return fmt.Errorf("secretservice: request name: %w", err)
 	}

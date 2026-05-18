@@ -3,6 +3,7 @@
 package secretservice
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -120,6 +121,18 @@ func (c *Collection) SearchItems(attributes map[string]string) ([]dbus.ObjectPat
 func (c *Collection) Delete() (dbus.ObjectPath, *dbus.Error) {
 	return "/", dbus.NewError(ErrIsLocked,
 		[]interface{}{"Collections cannot be deleted through the Secret Service API"})
+}
+
+// CreateItem creates a new item in this collection.
+// Since kpxcd is a read-only view of KeePass databases, this returns
+// an immediate prompt that completes with dismissal (not supported).
+func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusSecret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("secretservice: CreateItem", "collection", string(c.path), "replace", replace)
+
+	// Read-only: return a prompt path. When the client calls Prompt(),
+	// it auto-completes with dismissed=true (operation cancelled).
+	_, promptPath := c.svc.nextPrompt()
+	return "/", promptPath, nil
 }
 
 // CreatePrompt creates a prompt for the collection. Used internally.
