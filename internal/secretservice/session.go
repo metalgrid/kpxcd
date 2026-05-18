@@ -5,6 +5,7 @@ package secretservice
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
@@ -157,10 +158,29 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 	return data[:len(data)-padLen], nil
 }
 
-// DeriveSessionKey derives a shared AES key from a shared secret using SHA-256.
-// For the "dh-ietf1024-sha256-aes128-cbc" algorithm, the key is the first 16
-// bytes of SHA-256(shared secret).
+// DeriveSessionKey derives a shared AES key from a DH shared secret
+// using HKDF-SHA256 per RFC 5869, as required by the Secret Service spec
+// for the "dh-ietf1024-sha256-aes128-cbc-pkcs7" algorithm.
+//
+//   salt = empty (0x00 * HashLen)
+//   info = empty string
+//   hash = SHA-256
+//
+// PRK  = HMAC-SHA256(salt, sharedSecret)
+// OKM  = HMAC-SHA256(PRK, 0x01)
+// key  = OKM[:16]  (AES-128)
 func DeriveSessionKey(sharedSecret []byte) []byte {
-	h := sha256.Sum256(sharedSecret)
-	return h[:16] // AES-128
+	// HKDF-Extract: PRK = HMAC-SHA256(salt=zeros, IKM=sharedSecret)
+	salt := make([]byte, sha256.Size)
+	prk := hmac.New(sha256.New, salt)
+	prk.Write(sharedSecret)
+	prkBytes := prk.Sum(nil)
+
+	// HKDF-Expand: T1 = HMAC-SHA256(PRK, info || 0x01)
+	// info is empty, so just append counter byte 0x01.
+	expand := hmac.New(sha256.New, prkBytes)
+	expand.Write([]byte{0x01})
+	okm := expand.Sum(nil)
+
+	return okm[:16] // AES-128 key
 }
