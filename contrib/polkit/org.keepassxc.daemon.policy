@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>kpxcd</vendor>
+  <vendor_url>https://github.com/user/kpxcd</vendor_url>
+
+  <action id="org.keepassxc.daemon.unlock">
+    <description>Unlock a KeePassXC database</description>
+    <message>Authentication is required to unlock a KeePassXC database</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.lock">
+    <description>Lock a KeePassXC database</description>
+    <message>Authentication is required to lock a KeePassXC database</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.get-entry.secret">
+    <description>Retrieve a password from KeePassXC</description>
+    <message>Authentication is required to retrieve a password from KeePassXC</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.get-totp">
+    <description>Retrieve a TOTP code from KeePassXC</description>
+    <message>Authentication is required to retrieve a TOTP code from KeePassXC</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.ssh.add">
+    <description>Add an SSH key from KeePassXC</description>
+    <message>Authentication is required to add an SSH key from KeePassXC</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.ssh.remove">
+    <description>Remove an SSH key from KeePassXC</description>
+    <message>Authentication is required to remove an SSH key from KeePassXC</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.passkey.create">
+    <description>Create a passkey in KeePassXC</description>
+    <message>Authentication is required to create a passkey in KeePassXC</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.keepassxc.daemon.passkey.assert">
+    <description>Authenticate with a passkey from KeePassXC</description>
+    <message>Authentication is required to authenticate with a passkey from KeePassXC</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

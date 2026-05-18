@@ -1,0 +1,169 @@
+# kpxcd.toml — Example Configuration
+#
+# Copy this file to ~/.config/kpxcd/kpxcd.toml and edit to taste.
+# Run: kpxcd --config ~/.config/kpxcd/kpxcd.toml
+#
+# Path expansion:
+#   ~           expands to your home directory
+#   $HOME       expands to HOME environment variable
+#   $XDG_*      expands to any XDG environment variable
+#   relative/   resolves against $XDG_CONFIG_HOME/kpxcd/
+#   /absolute   used as-is
+#
+# See kpxcd.toml(5) for full documentation of every option.
+
+[daemon]
+# Lock databases after 15 minutes of inactivity.
+# Set to 0 to disable auto-lock on idle.
+idle_timeout = 900
+
+# Lock databases when the screen locks.
+lock_on_screenlock = true
+
+# Log level: "error", "warn", "info", "debug"
+log_level = "info"
+
+# Send logs to journald when running under systemd.
+log_to_journald = true
+
+# SSH agent socket path, relative to $XDG_RUNTIME_DIR.
+ssh_socket_path = "kpxcd/ssh.sock"
+
+# "agent" — kpxcd acts as the SSH agent itself.
+# "proxy" — kpxcd forwards to the existing SSH_AUTH_SOCK.
+ssh_mode = "agent"
+
+# ──────────────────────────────────────────────────────────────
+# Database: personal password vault
+# ──────────────────────────────────────────────────────────────
+
+[[database]]
+path = "~/Passwords.kdbx"
+name = "Personal"
+
+# Auto-unlock on session start.
+auto_unlock = true
+
+# How to get the password for auto-unlock.
+#   "systemd-credential" — read from $CREDENTIALS_DIRECTORY (most secure)
+#   "secret-service"     — look up in gnome-keyring / kwallet
+#   "keyfile"            — read a keyfile from disk
+#   "prompt"             — don't auto-unlock; wait for kpxcctl unlock
+#   "none"               — database has no password (dangerous)
+unlock_credential = "systemd-credential"
+
+# Name of the systemd credential (see kpxcd.service for how to set this up).
+systemd_credential_name = "kpxcd-personal"
+
+# Automatically add SSH keys that have KeeAgent settings.
+ssh_auto_add = true
+
+# ──────────────────────────────────────────────────────────────
+# Database: work vault (only unlocked manually)
+# ──────────────────────────────────────────────────────────────
+
+#[[database]]
+#path = "~/Work.kdbx"
+#name = "Work"
+#auto_unlock = false
+#unlock_credential = "prompt"
+#ssh_auto_add = true
+
+# ──────────────────────────────────────────────────────────────
+# Database: keyfile-only vault (no password)
+# ──────────────────────────────────────────────────────────────
+
+#[[database]]
+#path = "~/Keys.kdbx"
+#name = "Keys"
+#auto_unlock = true
+#unlock_credential = "keyfile"
+#keyfile = "/home/USER/.config/kpxcd/keys.kdbx.key"
+#ssh_auto_add = false
+
+# ──────────────────────────────────────────────────────────────
+# Secret Service (org.freedesktop.secrets)
+#
+# When enabled, any application that uses the Secret Service API
+# can retrieve passwords from your KeePass databases. This includes:
+#   - git-credential-libsecret
+#   - Python keyring
+#   - nm-applet (WiFi passwords)
+#   - seahorse (password manager GUI)
+# ──────────────────────────────────────────────────────────────
+
+[secret_service]
+enabled = true
+
+# Show a desktop notification each time a password is retrieved.
+# This provides visibility into which applications are accessing your vault.
+notify_on_access = true
+
+# Require Polkit confirmation before returning a password.
+# Setting this to true means every password retrieval requires
+# you to click "Authorize" in a dialog. This is more secure but
+# more annoying.  Most users prefer false and rely on the notification.
+require_confirmation = false
+
+# Seconds before the confirmation dialog auto-dismisses (0 = no timeout).
+confirmation_timeout = 30
+
+# ──────────────────────────────────────────────────────────────
+# SSH Agent
+#
+# When enabled, kpxcd listens on $XDG_RUNTIME_DIR/kpxcd/ssh.sock
+# and serves SSH keys from your KeePass entries that have KeeAgent
+# settings configured.  Set environment variable:
+#   export SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/kpxcd/ssh.sock
+# ──────────────────────────────────────────────────────────────
+
+[ssh_agent]
+enabled = true
+
+# Remove SSH keys from the agent when their database is locked.
+# This ensures keys don't linger after you lock the vault.
+remove_on_lock = true
+
+# Require confirmation dialog before each SSH authentication.
+# This is like `ssh-add -c` for every key.  Most users prefer
+# false for convenience, but true provides defense-in-depth.
+confirm_on_use = false
+
+# Maximum lifetime for keys added to the agent, in seconds.
+# 0 means keys persist until the database is locked or the daemon stops.
+# Set to 3600 (1 hour) or 28800 (8 hours) for time-limited access.
+lifetime = 0
+
+# Security key provider for sk-ssh-ed25519@openssh.com keys.
+# "internal" uses the built-in Go SSH implementation.
+security_key_provider = "internal"
+
+# ──────────────────────────────────────────────────────────────
+# FIDO2 / Passkeys
+#
+# When enabled, kpxcd can create and assert WebAuthn FIDO2
+# credentials (passkeys) stored in your KeePass entries.
+# Access via:
+#   kpxcctl passkey create <uuid> <rp-id> <username>
+#   kpxcctl passkey assert <rp-id> <credential-id>
+# ──────────────────────────────────────────────────────────────
+
+[fido2]
+enabled = true
+
+# AAGUID identifies this authenticator in attestation objects.
+# This is the same AAGUID KeePassXC uses for software passkeys.
+aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
+
+# Supported COSE algorithms:
+#   -7  = ES256  (ECDSA P-256 with SHA-256)  — universally supported
+#   -8  = EdDSA  (Ed25519)                   — fast, modern
+#   -25 = ES256K (secp256k1 + SHA-256)       — Bitcoin/Ethereum
+#   -37 = PS256  (RSA-PSS with SHA-256)       — legacy RSA
+algorithms = [-7, -8]
+
+# User verification requirement for passkey operations.
+#   "required"    — always require user verification (PIN, biometric)
+#   "preferred"   — request verification but allow without
+#   "discouraged"  — never request verification
+user_verification = "preferred"
