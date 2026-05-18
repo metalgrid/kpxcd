@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/term"
 )
 
 const (
@@ -96,10 +98,15 @@ func cmdUnlock(args []string) {
 	}
 	defer conn.Close()
 
-	// Read password from stdin if not provided.
-	var password string
+	// Read password from terminal without echoing.
 	fmt.Print("Database password: ")
-	fmt.Scanln(&password)
+	pwBytes, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Println() // newline after masked input
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to read password: %v\n", err)
+		os.Exit(1)
+	}
+	password := string(pwBytes)
 
 	variant := dbus.MakeVariant(password)
 	result := obj.Call(iface+".UnlockDatabase", 0, path, "password", variant)
