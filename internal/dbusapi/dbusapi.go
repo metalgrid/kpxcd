@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5/introspect"
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/user/kpxcd/internal/config"
 	"github.com/user/kpxcd/internal/dbpool"
@@ -67,11 +68,14 @@ func (d *DaemonDBus) Export() error {
 		return fmt.Errorf("dbusapi: bus name already taken")
 	}
 
-	// Export the object.
+	// Export both interfaces at the same path.
 	path := dbus.ObjectPath("/org/keepassxc/Daemon")
 	if err := d.conn.Export(d, path, "org.keepassxc.Daemon"); err != nil {
 		d.conn.Close()
 		return fmt.Errorf("dbusapi: failed to export object: %w", err)
+	}
+	if err := d.conn.Export(d, path, "org.freedesktop.DBus.Introspectable"); err != nil {
+		slog.Warn("dbusapi: failed to export introspection", "error", err)
 	}
 
 	slog.Info("DBus API exported", "name", "org.keepassxc.Daemon")
@@ -89,6 +93,18 @@ func (d *DaemonDBus) Close() {
 // Ping responds with "pong".
 func (d *DaemonDBus) Ping() (string, *dbus.Error) {
 	return "pong", nil
+}
+
+// Introspect returns the XML introspection data for the daemon object.
+func (d *DaemonDBus) Introspect() (string, *dbus.Error) {
+	node := &introspect.Node{
+		Name: "/org/keepassxc/Daemon",
+		Interfaces: []introspect.Interface{
+			introspect.IntrospectData,
+			{Name: "org.keepassxc.Daemon", Methods: introspect.Methods(d)},
+		},
+	}
+	return string(introspect.NewIntrospectable(node)), nil
 }
 
 // ListDatabases returns all known databases.
