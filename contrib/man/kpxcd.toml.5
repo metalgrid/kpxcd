@@ -1,0 +1,319 @@
+.\" kpxcd.toml.5 — Man page for the kpxcd configuration file
+.TH KPXCD.TOML 5 "2026-05-18" "kpxcd" "File Formats Manual"
+
+.SH NAME
+kpxcd.toml \- configuration file for the KeePassXC daemon
+
+.SH DESCRIPTION
+The \fBkpxcd.toml\fR file configures the \fBkpxcd\fR(8) daemon. It is written
+in TOML and is read once at daemon startup.
+
+The file defines which KeePass databases to manage, how they should be unlocked,
+and the behavior of the Secret Service, SSH agent, and FIDO2 interfaces.
+
+.SH FILE LOCATION
+The configuration file is searched in the following order:
+
+.RS
+.TP 1.
+Command-line: \fBkpxcd \-\-config \fIPATH\fR
+.TP 2.
+XDG: \fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR (if \fBXDG_CONFIG_HOME\fR is set)
+.TP 3.
+Default: \fI~/.config/kpxcd/kpxcd.toml\fR
+.RE
+
+.SH SECTIONS
+The configuration file supports the following top-level sections:
+
+.TP
+.B [daemon]
+Global daemon settings (exactly one).
+.TP
+.B [[database]]
+Database definitions (TOML array of tables; repeat for each database).
+.TP
+.B [secret_service]
+Secret Service D-Bus interface settings.
+.TP
+.B [ssh_agent]
+SSH agent interface settings.
+.TP
+.B [fido2]
+FIDO2 / passkey interface settings.
+
+.SH "[daemon]" SECTION
+Controls global daemon behavior.
+
+.TP
+.B idle_timeout
+Integer. Seconds of inactivity before locking all databases.
+.BR 0
+(disabled) is the default.
+.TP
+.B lock_on_screenlock
+Boolean. Lock databases when the screensaver activates.
+Default: \fBtrue\fR.
+.TP
+.B log_level
+String. Minimum log severity: \fB"error"\fR, \fB"warn"\fR, \fB"info"\fR,
+or \fB"debug"\fR. Default: \fB"info"\fR.
+.TP
+.B log_to_journald
+Boolean. Log to systemd journal instead of stderr. Useful when running as a
+systemd service. Default: \fBfalse\fR.
+.TP
+.B ssh_socket_path
+String. Path relative to \fB$XDG_RUNTIME_DIR\fR for the SSH agent socket.
+Default: \fB"kpxcd/ssh.sock"\fR.
+.TP
+.B ssh_mode
+String. How to handle SSH agent requests:
+.RS
+.TP
+.B "agent"
+Act as a full SSH agent (default). Serves keys from the database.
+.TP
+.B "proxy"
+Forward agent requests to the existing \fB$SSH_AUTH_SOCK\fR.
+.RE
+Default: \fB"agent"\fR.
+
+.SH "[[database]]" SECTION
+Defines a KeePass database to manage. Repeat this section for each database.
+
+.TP
+.B path
+String. \fIRequired.\fR Absolute path to the \fI.kdbx\fR file.
+.TP
+.B name
+String. Human-readable display name. Defaults to the filename without extension.
+.TP
+.B auto_unlock
+Boolean. Attempt to unlock this database when the daemon starts.
+Default: \fBfalse\fR.
+.TP
+.B unlock_credential
+String. How to obtain the password for auto-unlock. One of:
+.RS
+.TP
+.B "systemd-credential"
+Read from a systemd \fBLoadCredential=\fR file descriptor.
+.TP
+.B "secret-service"
+Look up in an existing Secret Service provider (e.g., gnome-keyring).
+.TP
+.B "keyfile"
+Read a keyfile from disk.
+.TP
+.B "prompt"
+Do not auto-unlock; wait for \fBkpxcctl unlock\fR.
+.TP
+.B "none"
+Database has no password. \fBWarning:\fR trivially openable.
+.RE
+Default: \fB"prompt"\fR.
+.TP
+.B systemd_credential_name
+String. Name of the systemd credential holding the password. Only used when
+\fBunlock_credential = "systemd-credential"\fR. The credential is read from
+\fI$CREDENTIALS_DIRECTORY/<name>\fR. Default: empty string.
+.TP
+.B secret_service_label
+String. Label to search for when using \fBunlock_credential =
+"secret-service"\fR. Lookup attributes are \fBapplication=kpxcd\fR and
+\fBdbname=<database name>\fR.
+.TP
+.B keyfile
+String. Path to a keyfile. Used when \fBunlock_credential = "keyfile"\fR or
+as a secondary factor alongside a password. Supports KeePass XML keyfiles
+(v1, v2) and raw binary files. Default: empty string.
+.TP
+.B yubikey_slot
+Integer. YubiKey challenge-response slot: \fB0\fR (disabled), \fB1\fR, or
+\fB2\fR. Default: \fB0\fR.
+.TP
+.B secret_service_expose_group
+String. UUID or name of a group to restrict Secret Service exposure to.
+Empty string exposes all groups. Default: empty string.
+.TP
+.B ssh_auto_add
+Boolean. Automatically add SSH keys from entries with KeeAgent settings when
+the database is unlocked. Default: \fBtrue\fR.
+
+.SH "[secret_service]" SECTION
+Controls the \fBorg.freedesktop.secrets\fR D-Bus interface.
+
+.TP
+.B enabled
+Boolean. Expose the Secret Service interface on the session bus.
+Default: \fBtrue\fR.
+.TP
+.B notify_on_access
+Boolean. Show a desktop notification when a secret is retrieved.
+Default: \fBtrue\fR.
+.TP
+.B require_confirmation
+Boolean. Require Polkit confirmation before returning any secret.
+Default: \fBfalse\fR.
+.TP
+.B confirmation_timeout
+Integer. Seconds before the Polkit confirmation dialog times out and is
+denied. \fB0\fR means no timeout (user must click). Default: \fB30\fR.
+
+.SH "[ssh_agent]" SECTION
+Controls the SSH agent interface.
+
+.TP
+.B enabled
+Boolean. Listen on the SSH agent socket.
+Default: \fBtrue\fR.
+.TP
+.B remove_on_lock
+Boolean. Remove identities from the agent when their database is locked.
+Default: \fBtrue\fR.
+.TP
+.B confirm_on_use
+Boolean. Require user confirmation before each SSH authentication
+(\fBssh-add -c\fR behavior). Default: \fBfalse\fR.
+.TP
+.B lifetime
+Integer. Maximum lifetime for added identities in seconds.
+\fB0\fR means unlimited (key persists until removed or database is locked).
+Default: \fB0\fR.
+.TP
+.B security_key_provider
+String. Security key provider for \fBsk-ssh-*\fR key types.
+\fB"internal"\fR uses the built-in Go SSH implementation.
+Default: \fB"internal"\fR.
+
+.SH "[fido2]" SECTION
+Controls the FIDO2 / passkey D-Bus interface.
+
+.TP
+.B enabled
+Boolean. Enable FIDO2 credential creation and assertion methods.
+Default: \fBtrue\fR.
+.TP
+.B aaguid
+String. AAGUID (Authenticator Attestation GUID) reported in attestation
+objects. Default: \fB"f8a011f3-8c0a-4d15-8006-17111f9edc7d"\fR
+(the KeePassXC software authenticator AAGUID).
+.TP
+.B algorithms
+Array of integers. COSE algorithm IDs supported by the software authenticator:
+.RS
+.TP
+.B \-7
+ES256 (ECDSA P-256 with SHA-256)
+.TP
+.B \-25
+ES256K (ECDSA secp256k1 with SHA-256)
+.TP
+.B \-37
+PS256 (RSASSA-PSS with SHA-256)
+.TP
+.B \-8
+EdDSA (Ed25519)
+.RE
+Default: \fB[\-7, \-8]\fR.
+.TP
+.B user_verification
+String. User verification requirement for passkey operations. One of:
+.RS
+.TP
+.B "required"
+Always require user verification.
+.TP
+.B "preferred"
+Request user verification if available.
+.TP
+.B "discouraged"
+Do not request user verification.
+.RE
+Default: \fB"preferred"\fR.
+
+.SH EXAMPLES
+.TP
+.B Minimal configuration — a single database, no auto-unlock:
+.nf
+[[database]]
+path = "/home/user/Passwords.kdbx"
+.fi
+
+.TP
+.B Auto-unlock via systemd credential with SSH keys:
+.nf
+[daemon]
+idle_timeout = 900
+lock_on_screenlock = true
+
+[[database]]
+path = "/home/user/Passwords.kdbx"
+name = "Personal"
+auto_unlock = true
+unlock_credential = "systemd-credential"
+systemd_credential_name = "kpxcd-personal"
+ssh_auto_add = true
+
+[secret_service]
+enabled = true
+notify_on_access = true
+.fi
+
+.TP
+.B Full configuration with multiple databases and Polkit confirmation:
+.nf
+[daemon]
+idle_timeout = 900
+lock_on_screenlock = true
+log_level = "info"
+log_to_journald = true
+ssh_socket_path = "kpxcd/ssh.sock"
+ssh_mode = "agent"
+
+[[database]]
+path = "/home/user/Passwords.kdbx"
+name = "Personal"
+auto_unlock = true
+unlock_credential = "systemd-credential"
+systemd_credential_name = "kpxcd-personal"
+ssh_auto_add = true
+
+[[database]]
+path = "/home/user/Work.kdbx"
+name = "Work"
+auto_unlock = true
+unlock_credential = "secret-service"
+secret_service_label = "kpxcd-work-db-password"
+ssh_auto_add = false
+
+[secret_service]
+enabled = true
+notify_on_access = true
+require_confirmation = true
+confirmation_timeout = 30
+
+[ssh_agent]
+enabled = true
+remove_on_lock = true
+confirm_on_use = false
+lifetime = 0
+security_key_provider = "internal"
+
+[fido2]
+enabled = true
+aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
+algorithms = [-7, -8]
+user_verification = "preferred"
+.fi
+
+.SH FILES
+.TP
+.I ~/.config/kpxcd/kpxcd.toml
+Default configuration file location.
+
+.SH SEE ALSO
+.BR kpxcd (8),
+.BR kpxcctl (1),
+.BR systemd.exec (5)

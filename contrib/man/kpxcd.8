@@ -1,0 +1,175 @@
+.\" kpxcd.8 — Man page for the KeePassXC Daemon
+.TH KPXCD 8 "2026-05-18" "kpxcd" "System Manager's Manual"
+
+.SH NAME
+kpxcd \- KeePassXC headless daemon for Linux
+
+.SH SYNOPSIS
+.B kpxcd
+[\fIOPTIONS\fR]
+
+.SH DESCRIPTION
+.B kpxcd
+is a headless user-session daemon that keeps one or more KeePass databases unlocked
+and available through standard Linux interprocess interfaces. It is designed for
+unattended or programmatic access to passwords, SSH keys, and passkeys throughout
+a login session, without requiring the KeePassXC GUI to be running.
+
+Upon startup, \fBkpxcd\fR reads its configuration from
+\fI~/.config/kpxcd/kpxcd.toml\fR (or the path specified with
+\fB\-\-config\fR), loads any databases marked for auto-unlock, and begins
+listening on the following interfaces:
+
+.TP
+.B D-Bus session bus
+Exposes \fBorg.keepassxc.Daemon\fR for management operations and
+\fBorg.freedesktop.secrets\fR for Secret Service compatibility.
+.TP
+.B Unix domain socket (SSH agent)
+Listens on \fB$XDG_RUNTIME_DIR/kpxcd/ssh.sock\fR and speaks the OpenSSH
+agent protocol, allowing \fBssh\fR to use keys stored in the unlocked
+databases.
+.TP
+.B Unix domain socket (control)
+Listens on \fB$XDG_RUNTIME_DIR/kpxcd/control.sock\fR for local CLI
+communication via \fBkpxcctl\fR(1).
+
+All sensitive data (master passwords, derived keys, decrypted entries) is held
+in \fBmlock\fR(2)-ed pages and processed within secure memory scopes that zero
+registers and stack on return.
+
+.SH OPTIONS
+.TP
+.BR \-\-config " \fIPATH\fR"
+Path to the configuration file. Defaults to
+\fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR, falling back to
+\fI~/.config/kpxcd/kpxcd.toml\fR.
+
+.TP
+.BR \-h ", " \-\-help
+Print a short help message and exit.
+
+.SH CONFIGURATION
+\fBkpxcd\fR is configured via a TOML file. The full reference is in
+\fBkpxcd.toml\fR(5). The configuration defines:
+
+.RS
+.TP
+.B [daemon]
+Global settings: idle timeout, screen-lock behavior, log level, SSH mode.
+.TP
+.B [[database]]
+One or more database entries: path, auto-unlock behavior, credential source,
+SSH key exposure.
+.TP
+.B [secret_service]
+Secret Service D-Bus settings: enable/disable, notifications, Polkit
+confirmation.
+.TP
+.B [ssh_agent]
+SSH agent settings: enable/disable, key lifetime, confirm-on-use.
+.TP
+.B [fido2]
+FIDO2 / passkey settings: AAGUID, supported algorithms, user verification.
+.RE
+
+.SH FILES
+.TP
+.I ~/.config/kpxcd/kpxcd.toml
+Default configuration file. See \fBkpxcd.toml\fR(5).
+
+.TP
+.I $XDG_RUNTIME_DIR/kpxcd/ssh.sock
+Unix domain socket for the SSH agent protocol. Permissions: 0600.
+
+.TP
+.I $XDG_RUNTIME_DIR/kpxcd/control.sock
+Unix domain socket for the control (JSON-RPC) protocol. Permissions: 0600.
+
+.TP
+.I /usr/share/polkit-1/actions/org.keepassxc.daemon.policy
+Polkit policy file defining authorization requirements for sensitive operations.
+
+.SH ENVIRONMENT
+.TP
+.B XDG_CONFIG_HOME
+Overrides the default configuration directory. If set, the config file is
+sought at \fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR.
+
+.TP
+.B XDG_RUNTIME_DIR
+Directory for runtime files (sockets). Must be set and must be a per-user,
+per-session directory. Defaults to \fI/run/user/$UID\fR.
+
+.TP
+.B CREDENTIALS_DIRECTORY
+If set (by systemd \fBLoadCredential=\fR), \fBkpxcd\fR reads auto-unlock
+passwords from \fI$CREDENTIALS_DIRECTORY/<credential-name>\fR.
+
+.TP
+.B SSH_AUTH_SOCK
+Used when \fBssh_mode = "proxy"\fR. \fBkpxcd\fR forwards agent requests to
+the socket specified here.
+
+.SH EXAMPLES
+.TP
+.B Start the daemon with the default config:
+.nf
+    kpxcd
+.fi
+
+.TP
+.B Start with a custom config file:
+.nf
+    kpxcd --config /etc/kpxcd/my-config.toml
+.fi
+
+.TP
+.B Run as a systemd user service:
+.nf
+    systemctl --user enable --now kpxcd.service
+.fi
+
+.TP
+.B Check if the daemon is running:
+.nf
+    kpxcctl ping
+.fi
+
+.SH BUGS
+Report bugs at the project repository.
+
+Known limitations:
+.RS
+.TP
+.B No database write support
+\fBkpxcd\fR reads databases but never modifies them. Concurrent writes by
+KeePassXC are detected via file watchers, which cause a database re-read.
+
+.TP
+.B Cold boot attacks
+\fBmlock\fR prevents swap-out but does not prevent DRAM retention attacks.
+Use encrypted swap and LUKS for full disk encryption.
+
+.TP
+.B Root compromise
+\fBkpxcd\fR does not defend against a compromised root account. This is
+consistent with the Linux security model.
+.RE
+
+.SH AUTHOR
+kpxcd was written as a standalone project. It shares no code with KeePassXC.
+
+.SH SEE ALSO
+.BR kpxcctl (1),
+.BR kpxcd.toml (5),
+.BR ssh-agent (1),
+.BR systemd (1),
+.BR polkit (8),
+.BR mlock (2)
+
+The following documentation files in the kpxcd source tree:
+.IR doc/config.md ,
+.IR doc/threat-model.md ,
+.IR doc/dbus-api.md ,
+.IR doc/architecture.md .

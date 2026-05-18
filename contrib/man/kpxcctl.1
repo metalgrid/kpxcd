@@ -1,0 +1,157 @@
+.\" kpxcctl.1 — Man page for the KeePassXC Daemon CLI client
+.TH KPXCTL 1 "2026-05-18" "kpxcd" "User Commands"
+
+.SH NAME
+kpxcctl \- command-line client for the KeePassXC daemon
+
+.SH SYNOPSIS
+.B kpxcctl
+\fICOMMAND\fR [\fIARGUMENTS\fR]
+
+.SH DESCRIPTION
+.B kpxcctl
+is the command-line interface to \fBkpxcd\fR(8), the KeePassXC headless daemon.
+It communicates with the daemon over the D-Bus session bus to manage databases,
+retrieve entries, and perform SSH and passkey operations.
+
+All operations require that \fBkpxcd\fR is running and reachable on the D-Bus
+session bus.
+
+.SH COMMANDS
+.SS unlock
+Unlock a KeePass database.
+
+.nf
+.B kpxcctl unlock <path>
+.fi
+
+Prompts for the database password on stdin. The database is then held in
+memory by the daemon until explicitly locked or until the idle timeout expires.
+
+.SS lock
+Lock a database or all databases.
+
+.nf
+.B kpxcctl lock [uuid|all]
+.fi
+
+If no argument or \fBall\fR is given, all unlocked databases are locked.
+If a UUID is given, only that database is locked. Decrypted data is wiped
+from memory using secure zeroing.
+
+.SS list
+List all known databases and their lock status.
+
+.nf
+.B kpxcctl list [--json]
+.fi
+
+Displays a table of UUID, name, lock status, and path. Use \fB\-\-json\fR
+for machine-readable output.
+
+.SS get
+Retrieve fields for a specific entry.
+
+.nf
+.B kpxcctl get <uuid> <entry-path>
+.fi
+
+The entry path is a slash-separated path from the root group, e.g.,
+\fI/General/example.com\fR. Displays title, username, password, URL, and
+current TOTP code (if configured). Password retrieval may require Polkit
+authorization.
+
+.SS ssh
+Manage SSH keys stored in the database.
+
+.TP
+.B kpxcctl ssh list [uuid]
+List SSH keys. Optionally filter by database UUID.
+
+.TP
+.B kpxcctl ssh add <uuid> <entry-path>
+Add an SSH key from the specified entry to the agent.
+
+.TP
+.B kpxcctl ssh remove <fingerprint>
+Remove an SSH key from the agent by its SHA256 fingerprint.
+
+.SS passkey
+Manage FIDO2 / WebAuthn passkeys.
+
+.TP
+.B kpxcctl passkey create <uuid> <rpID> <username>
+Create a new passkey credential in the specified database. The relying
+party ID (e.g., \fIgithub.com\fR) and username are required.
+
+.TP
+.B kpxcctl passkey assert <rpID> <credentialID>
+Authenticate with an existing passkey. The relying party ID and the
+base64url-encoded credential ID are required.
+
+.SS ping
+Check whether the daemon is running and responsive.
+
+.nf
+.B kpxcctl ping
+.fi
+
+Prints \fIpong\fR if the daemon is alive. Exits with an error otherwise.
+
+.SS help
+Print usage information.
+
+.SH OPTIONS
+.B kpxcctl
+does not accept global options. Each command may have its own flags (e.g.,
+\fB\-\-json\fR for \fBlist\fR). Use \fBkpxcctl help\fR for command-specific
+help.
+
+.SH ENVIRONMENT
+.TP
+.B DBUS_SESSION_BUS_ADDRESS
+D-Bus session bus address. If not set, the default session bus is used.
+\fBkpxcctl\fR must be able to reach the same session bus as \fBkpxcd\fR.
+
+.SH EXAMPLES
+.TP
+.B Unlock a database:
+.nf
+    kpxcctl unlock ~/Passwords.kdbx
+.fi
+
+.TP
+.B Lock all databases:
+.nf
+    kpxcctl lock all
+.fi
+
+.TP
+.B List databases in JSON format:
+.nf
+    kpxcctl list --json
+.fi
+
+.TP
+.B Retrieve an entry:
+.nf
+    kpxcctl get abc123 /General/github.com
+.fi
+
+.TP
+.B List SSH keys:
+.nf
+    kpxcctl ssh list
+.fi
+
+.TP
+.B Check daemon status:
+.nf
+    kpxcctl ping
+.fi
+
+.SH SEE ALSO
+.BR kpxcd (8),
+.BR kpxcd.toml (5),
+.BR ssh-agent (1),
+.BR dbus-daemon (1)
