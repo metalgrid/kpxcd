@@ -3,6 +3,7 @@
 package secretservice
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
-	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/user/kpxcd/internal/dbpool"
 )
@@ -245,8 +245,8 @@ func (ss *SecretService) createCollection(odb *dbpool.OpenDatabase) {
 	ss.conn.Export(introspect.NewIntrospectable(collNode), path,
 		"org.freedesktop.DBus.Introspectable")
 
-	// Export properties for the collection.
-	ss.conn.Export(NewProperties(ss), path,
+	// Export properties for the collection (per-object handler).
+	ss.conn.Export(newCollectionProperties(coll), path,
 		"org.freedesktop.DBus.Properties")
 
 	// Export items within this collection.
@@ -278,19 +278,12 @@ func (ss *SecretService) exportItemsForCollection(coll *Collection) {
 			continue
 		}
 
-		// Export introspection (auto-derived from Item methods).
-		itemNode := &introspect.Node{
-			Name: string(path),
-			Interfaces: []introspect.Interface{
-				introspect.IntrospectData,
-			},
-		}
-		itemNode.Interfaces = append(itemNode.Interfaces, introspect.Interface{Name: InterfaceItem, Methods: introspect.Methods(item)})
-		ss.conn.Export(introspect.NewIntrospectable(itemNode), path,
+		// Export introspection with correct GetSecret signature.
+		ss.conn.Export(introspect.NewIntrospectable(itemIntrospectNode(item)), path,
 			"org.freedesktop.DBus.Introspectable")
 
-		// Export properties.
-		ss.conn.Export(NewProperties(ss), path,
+		// Export per-item properties.
+		ss.conn.Export(newItemProperties(item), path,
 			"org.freedesktop.DBus.Properties")
 	}
 }
@@ -317,14 +310,6 @@ func (ss *SecretService) itemsForCollection(collPath dbus.ObjectPath) []*Item {
 		items = append(items, item)
 	}
 	return items
-}
-
-// collectEntriesSafe safely collects entries from a database.
-func collectEntriesSafe(db *dbpool.OpenDatabase) []gokeepasslib.Entry {
-	if db.Db == nil || db.Db.Content == nil || db.Db.Content.Root == nil {
-		return nil
-	}
-	return collectEntries(db.Db.Content.Root.Groups)
 }
 
 // emitCollectionsChanged emits the CollectionsChanged signal.
@@ -360,14 +345,14 @@ func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus
 	case "dh-ietf1024-sha256-aes128-cbc", "dh-ietf1024-sha256-aes128-cbc-pkcs7":
 		output = ss.handleDHKeyExchange(input, sessionPath)
 		if output == (dbus.Variant{}) {
-			return dbus.Variant{}, "/", dbus.NewError(ErrorPrefix+"InternalError",
+			return dbus.Variant{}, "/", dbus.NewError(ErrIsLocked,
 				[]interface{}{"Failed to negotiate session"})
 		}
 
 	default:
-		output = dbus.MakeVariant("")
-		sess := NewPlainSession(ss.conn, sessionPath)
-		ss.sessions[sessionPath] = sess
+		// Spec requires NotSupported for unknown algorithms.
+		return dbus.Variant{}, "/", dbus.NewError("org.freedesktop.DBus.Error.NotSupported",
+			[]interface{}{"Unsupported algorithm: " + algorithm})
 	}
 
 	// Export the session object with introspection.
@@ -430,7 +415,7 @@ func (ss *SecretService) generateID() string {
 // with respect to the database, this returns a not-supported error.
 func (ss *SecretService) CreateCollection(properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	slog.Debug("secretservice: CreateCollection", "alias", alias)
-	promptPath := ss.nextPromptPath()
+	_, promptPath := ss.nextPrompt()
 	return "/", promptPath, nil
 }
 
@@ -484,7 +469,7 @@ func (ss *SecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, d
 		}
 	}
 
-	promptPath := ss.nextPromptPath()
+	_, promptPath := ss.nextPrompt()
 	return unlocked, promptPath, nil
 }
 
@@ -501,24 +486,24 @@ func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbu
 		}
 	}
 
-	promptPath := ss.nextPromptPath()
+	_, promptPath := ss.nextPrompt()
 	return locked, promptPath, nil
 }
 
 // GetSecrets retrieves secrets for the given items using the specified session.
-func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.ObjectPath) (map[dbus.ObjectPath]map[string]interface{}, *dbus.Error) {
+func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.ObjectPath) (map[dbus.ObjectPath]DBusSecret, *dbus.Error) {
 	slog.Debug("secretservice: GetSecrets", "items", items, "session", string(sessionPath))
-	secrets := make(map[dbus.ObjectPath]map[string]interface{})
+	secrets := make(map[dbus.ObjectPath]DBusSecret)
 
 	ss.sessionsMu.RLock()
 	sess, ok := ss.sessions[sessionPath]
 	ss.sessionsMu.RUnlock()
 	if !ok {
-		return secrets, dbus.NewError(ErrorPrefix+"NoSuchSession",
+		return secrets, dbus.NewError(ErrNoSession,
 			[]interface{}{"No such session"})
 	}
 	if sess.closed {
-		return secrets, dbus.NewError(ErrorPrefix+"NoSuchSession",
+		return secrets, dbus.NewError(ErrNoSession,
 			[]interface{}{"Session is closed"})
 	}
 
@@ -539,13 +524,12 @@ func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.Ob
 			continue
 		}
 
-		secret := map[string]interface{}{
-			"session":      sessionPath,
-			"parameters":   iv,
-			"value":        ciphertext,
-			"content_type": "text/plain",
+		secrets[itemPath] = DBusSecret{
+			Session:     sessionPath,
+			Parameters:  iv,
+			Value:       ciphertext,
+			ContentType: "text/plain; charset=utf8",
 		}
-		secrets[itemPath] = secret
 	}
 
 	slog.Debug("secretservice: GetSecrets result", "count", len(secrets))
@@ -560,8 +544,7 @@ func (ss *SecretService) ReadAlias(alias string) (dbus.ObjectPath, *dbus.Error) 
 
 	path, ok := ss.aliases[alias]
 	if !ok {
-		return "/", dbus.NewError(ErrorPrefix+"NoSuchAlias",
-			[]interface{}{"No collection with alias: " + alias})
+		return "/", nil
 	}
 	return path, nil
 }
@@ -572,7 +555,7 @@ func (ss *SecretService) SetAlias(alias string, collectionPath dbus.ObjectPath) 
 	defer ss.mu.Unlock()
 
 	if _, ok := ss.collections[collectionPath]; !ok {
-		return dbus.NewError(ErrorPrefix+"NoSuchCollection",
+		return dbus.NewError(ErrNoSuchObject,
 			[]interface{}{"No such collection"})
 	}
 
@@ -614,12 +597,24 @@ func (ss *SecretService) getItemByPath(path dbus.ObjectPath) (*Item, bool) {
 }
 
 // nextPromptPath generates a new prompt object path.
-func (ss *SecretService) nextPromptPath() dbus.ObjectPath {
+// nextPrompt creates a new prompt, exports it on the bus, and returns its path.
+func (ss *SecretService) nextPrompt() (*Prompt, dbus.ObjectPath) {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
 	id := ss.nextID
 	ss.nextID++
-	return dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
+	ss.mu.Unlock()
+
+	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
+	prompt := NewPrompt(ss.conn, path)
+
+	// Export the prompt interface.
+	if ss.conn != nil {
+		if err := ss.conn.Export(prompt, path, InterfacePrompt); err != nil {
+			slog.Warn("secretservice: failed to export prompt", "path", path, "error", err)
+		}
+	}
+
+	return prompt, path
 }
 
 // ---- DH parameter generation ----
@@ -639,15 +634,16 @@ func generateDHKeyPair() (priv *big.Int, pub *big.Int) {
 	prime := dhPrime()
 	generator := big.NewInt(2)
 
-	privBytes := make([]byte, 128)
-	for i := range privBytes {
-		privBytes[i] = byte(i) ^ byte(len(privBytes))
+	// Generate a random private key using crypto/rand.
+	// Must be in range [2, prime-2] for security.
+	privBytes := make([]byte, 128) // 1024 bits
+	if _, err := rand.Read(privBytes); err != nil {
+		// Fallback should never happen on Linux.
+		panic("secretservice: crypto/rand failed: " + err.Error())
 	}
 	priv = new(big.Int).SetBytes(privBytes)
-	priv.Mod(priv, prime)
-	if priv.Cmp(big.NewInt(1)) <= 0 {
-		priv.SetInt64(2)
-	}
+	priv.Mod(priv, new(big.Int).Sub(prime, big.NewInt(2)))
+	priv.Add(priv, big.NewInt(2))
 
 	pub = new(big.Int).Exp(generator, priv, prime)
 	return priv, pub

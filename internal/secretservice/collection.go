@@ -94,16 +94,8 @@ func (c *Collection) Items() ([]dbus.ObjectPath, *dbus.Error) {
 }
 
 // SearchItems searches for items in this collection matching the given attributes.
-func (c *Collection) SearchItems(attributes map[string]dbus.Variant) ([]dbus.ObjectPath, *dbus.Error) {
-	// Convert dbus.Variant map to string map.
-	strAttrs := make(map[string]string, len(attributes))
-	for k, v := range attributes {
-		s, ok := v.Value().(string)
-		if !ok {
-			continue
-		}
-		strAttrs[k] = s
-	}
+func (c *Collection) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
+	strAttrs := attributes
 
 	c.db.RLock()
 	defer c.db.RUnlock()
@@ -126,7 +118,7 @@ func (c *Collection) SearchItems(attributes map[string]dbus.Variant) ([]dbus.Obj
 // Delete removes this collection. Since this is a read-only view of the
 // database, deletion is not supported.
 func (c *Collection) Delete() (dbus.ObjectPath, *dbus.Error) {
-	return "/", dbus.NewError(ErrorPrefix+"NotSupported",
+	return "/", dbus.NewError(ErrIsLocked,
 		[]interface{}{"Collections cannot be deleted through the Secret Service API"})
 }
 
