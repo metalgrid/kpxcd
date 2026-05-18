@@ -3,6 +3,8 @@
 package secretservice
 
 import (
+	"fmt"
+
 	"github.com/godbus/dbus/v5"
 	"github.com/tobischo/gokeepasslib/v3"
 
@@ -149,24 +151,33 @@ func (i *Item) Secret(sessionPath dbus.ObjectPath) (map[string]interface{}, *dbu
 	return secret, nil
 }
 
-// entryUUIDString returns a safe string representation of an entry's UUID.
+// entryUUIDString returns a safe string representation of an entry's UUID
+// for use in DBus object paths. Uses hex encoding (only [0-9a-f]) which
+// is always valid in DBus paths. Base64 from MarshalText() contains '='
+// and '+' which are invalid.
 func entryUUIDString(entry gokeepasslib.Entry) string {
-	uuid := entry.UUID
-	text, _ := uuid.MarshalText()
-	return string(text)
+	return fmt.Sprintf("%x", entry.UUID[:])
 }
 
-// sanitizeCollectionName makes a database name safe for use in DBus paths.
+// sanitizeCollectionName makes a database name safe for use in DBus object paths.
+// DBus paths only allow [A-Za-z0-9_] as element characters.
 func sanitizeCollectionName(name string) string {
 	result := make([]byte, 0, len(name))
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
+			(c >= '0' && c <= '9') || c == '_' {
 			result = append(result, c)
 		} else {
 			result = append(result, '_')
 		}
+	}
+	// Ensure it doesn't start with a digit (not valid as first char).
+	if len(result) > 0 && result[0] >= '0' && result[0] <= '9' {
+		result = append([]byte{'_'}, result...)
+	}
+	if len(result) == 0 {
+		return "_"
 	}
 	return string(result)
 }

@@ -300,11 +300,12 @@ func TestSanitizeCollectionName(t *testing.T) {
 		expect string
 	}{
 		{"Personal", "Personal"},
-		{"Work.kdbx", "Work.kdbx"},
+		{"Work.kdbx", "Work_kdbx"},
 		{"my database", "my_database"},
 		{"special!@#$%", "special_____"},
 		{"path/to/file", "path_to_file"},
-		{"", ""},
+		{"", "_"},
+		{"123start", "_123start"},
 	}
 
 	for _, tc := range tests {
