@@ -252,6 +252,15 @@ func (ss *SecretService) createCollection(odb *dbpool.OpenDatabase) {
 	// Export items within this collection.
 	ss.exportItemsForCollection(coll)
 
+	// Auto-assign "default" alias to the first collection (matches KeePassXC behavior).
+	// VSCode/libsecret rely on ReadAlias("default") returning a valid collection.
+	ss.mu.Lock()
+	if _, exists := ss.aliases["default"]; !exists {
+		ss.aliases["default"] = path
+		slog.Debug("secretservice: assigned default alias", "collection", string(path))
+	}
+	ss.mu.Unlock()
+
 	// Signal CollectionsChanged.
 	ss.emitCollectionsChanged(nil, []dbus.ObjectPath{path})
 }
@@ -469,6 +478,20 @@ func (ss *SecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, d
 		}
 	}
 
+	// Only return a prompt if there are objects that actually need unlocking.
+	// KeePassXC returns prompt=nullptr ("/") when everything is already unlocked
+	// or the list is empty.
+	var needsUnlock bool
+	for _, path := range objects {
+		if coll, ok := ss.getCollectionByPath(path); ok && coll.Locked() {
+			needsUnlock = true
+			break
+		}
+	}
+	if !needsUnlock {
+		return unlocked, "/", nil
+	}
+
 	_, promptPath := ss.nextPrompt()
 	return unlocked, promptPath, nil
 }
@@ -484,6 +507,11 @@ func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbu
 				locked = append(locked, path)
 			}
 		}
+	}
+
+	// Only return a prompt if there are objects that actually need locking.
+	if len(locked) == 0 {
+		return locked, "/", nil
 	}
 
 	_, promptPath := ss.nextPrompt()
@@ -528,7 +556,7 @@ func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.Ob
 			Session:     sessionPath,
 			Parameters:  iv,
 			Value:       ciphertext,
-			ContentType: "text/plain; charset=utf8",
+			ContentType: "text/plain",
 		}
 	}
 

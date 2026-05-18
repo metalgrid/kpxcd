@@ -202,8 +202,8 @@ func TestEntryAttributes(t *testing.T) {
 	if attrs[AttrDBUUIDPrefix] != "test-db-uuid-1234" {
 		t.Errorf("dbuuid = %q, want %q", attrs[AttrDBUUIDPrefix], "test-db-uuid-1234")
 	}
-	if attrs["custom:CustomField"] != "custom_value" {
-		t.Errorf("custom field = %q, want %q", attrs["custom:CustomField"], "custom_value")
+	if attrs["CustomField"] != "custom_value" {
+		t.Errorf("custom field = %q, want %q", attrs["CustomField"], "custom_value")
 	}
 }
 
@@ -253,7 +253,7 @@ func TestMatchAttributes(t *testing.T) {
 		},
 		{
 			name:      "match by custom attribute",
-			attributes: map[string]string{"custom:CustomAttr": "custom_val"},
+			attributes: map[string]string{"CustomAttr": "custom_val"},
 			wantMatch: true,
 		},
 		{

@@ -45,7 +45,9 @@ func EntryAttributes(odb *dbpool.OpenDatabase, entry gokeepasslib.Entry) map[str
 		attrs[AttrNotes] = notes
 	}
 
-	// Custom attributes (fields not in the standard set).
+	// Custom attributes — returned with raw key names (no prefix), matching KeePassXC.
+	// This is critical: libsecret/VSCode searches for attributes like "application"
+	// directly, not "custom:application".
 	standardKeys := map[string]bool{
 		"Title":    true,
 		"UserName": true,
@@ -57,11 +59,10 @@ func EntryAttributes(odb *dbpool.OpenDatabase, entry gokeepasslib.Entry) map[str
 		if standardKeys[v.Key] {
 			continue
 		}
-		// Skip the internal "KPH: ..." fields if present.
 		if strings.HasPrefix(v.Key, "KPH:") {
 			continue
 		}
-		attrs[AttrCustomPrefix+v.Key] = v.Value.Content
+		attrs[v.Key] = v.Value.Content
 	}
 
 	return attrs

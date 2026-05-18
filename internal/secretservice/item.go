@@ -134,7 +134,7 @@ func (i *Item) GetSecret(sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) 
 		Session:     sessionPath,
 		Parameters:  iv,
 		Value:       ciphertext,
-		ContentType: "text/plain; charset=utf8",
+		ContentType: "text/plain",
 	}, nil
 }
 
