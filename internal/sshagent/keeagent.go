@@ -36,13 +36,17 @@ func ParseKeeAgentSettings(entry *gokeepasslib.Entry) (*KeeAgentSettings, error)
 			// We need the actual binary content from the database metadata.
 			// This will be resolved by ExtractKeyFromEntry using the database.
 			// For now, return a placeholder that indicates attachment-based key.
+			// We found a KeeAgent.settings attachment reference but can't
+			// resolve its content here (we need the database). Signal that
+			// this entry uses attachment-based keys but leave the attachment
+			// name empty so the caller falls through to common name search.
 			return &KeeAgentSettings{
 				AllowUseOfSshKey:      true,
 				AddAtDatabaseOpen:     true,
 				RemoveAtDatabaseClose: true,
 				Location: Location{
 					SelectedType: "attachment",
-					Attachment:   ref.Name,
+					Attachment:   "",
 				},
 			}, nil
 		}
@@ -182,25 +186,25 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 	// Find the attachment data.
 	var keyData []byte
 	attachmentName := settings.Location.Attachment
-	if attachmentName == "" {
-		attachmentName = "KeeAgent.settings" // fallback
+
+	// If the attachment name is empty or points to the settings file itself,
+	// we don't know the real key attachment — fall through to common names.
+	if attachmentName != "" && attachmentName != "KeeAgent.settings" {
+		// Resolve the specific attachment named in KeeAgent settings.
+		for _, ref := range entry.Binaries {
+			if ref.Name == attachmentName {
+				binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
+				if binary != nil && binary.Content != nil {
+					keyData = binary.Content
+					break
+				}
+			}
+		}
 	}
 
-	// Resolve binary references using database metadata.
-	for _, ref := range entry.Binaries {
-		if ref.Name != attachmentName && !isPrivateKeyFilename(ref.Name) {
-			continue
-		}
-		// Find the binary content by ID.
-		binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
-		if binary != nil && binary.Content != nil {
-			keyData = binary.Content
-			break
-		}
-	}
-
+	// If we didn't find the named attachment (or didn't know the name),
+	// search for any binary that looks like a private key.
 	if keyData == nil {
-		// Try common names.
 		return extractKeyFromCommonNamesWithDB(entry, db)
 	}
 
