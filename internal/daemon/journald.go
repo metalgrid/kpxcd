@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/coreos/go-systemd/v22/journal"
 )
@@ -43,7 +44,7 @@ func (h *journaldHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	r.Attrs(func(a slog.Attr) bool {
-		vars[a.Key] = a.Value.String()
+		vars[strings.ToUpper(a.Key)] = a.Value.String()
 		return true
 	})
 
