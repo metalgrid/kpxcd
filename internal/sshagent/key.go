@@ -24,6 +24,7 @@ type Key struct {
 	Blob          []byte
 	Comment       string
 	Signer        ssh.Signer
+	PrivateKey    crypto.PrivateKey // raw private key for agent client mode
 	IsSecurityKey bool
 	SKApplication string
 	SKFlags       byte
@@ -42,10 +43,11 @@ func NewKey(signer crypto.Signer, comment string) (*Key, error) {
 
 	pub := sshSigner.PublicKey()
 	return &Key{
-		Format:  pub.Type(),
-		Blob:    pub.Marshal(),
-		Comment: comment,
-		Signer:  sshSigner,
+		Format:     pub.Type(),
+		Blob:       pub.Marshal(),
+		Comment:    comment,
+		Signer:     sshSigner,
+		PrivateKey: signer,
 	}, nil
 }
 
@@ -102,13 +104,13 @@ func (k *Key) Sign(data []byte) (*ssh.Signature, error) {
 // ParsePrivateKey parses an OpenSSH or PEM private key from data.
 // Uses golang.org/x/crypto/ssh which handles all formats including bcrypt-pbkdf.
 func ParsePrivateKey(data []byte, passphrase string) (*Key, error) {
-	var signer ssh.Signer
+	var raw interface{}
 	var err error
 
 	if passphrase != "" {
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(passphrase))
+		raw, err = ssh.ParseRawPrivateKeyWithPassphrase(data, []byte(passphrase))
 	} else {
-		signer, err = ssh.ParsePrivateKey(data)
+		raw, err = ssh.ParseRawPrivateKey(data)
 	}
 
 	if err != nil {
@@ -118,11 +120,22 @@ func ParsePrivateKey(data []byte, passphrase string) (*Key, error) {
 		return nil, fmt.Errorf("sshagent: failed to parse key: %w", err)
 	}
 
-	pub := signer.PublicKey()
+	signer, ok := raw.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("sshagent: private key type %T does not implement crypto.Signer", raw)
+	}
+
+	sshSigner, err := ssh.NewSignerFromSigner(signer)
+	if err != nil {
+		return nil, fmt.Errorf("sshagent: failed to create ssh signer: %w", err)
+	}
+
+	pub := sshSigner.PublicKey()
 	return &Key{
-		Format:  pub.Type(),
-		Blob:    pub.Marshal(),
-		Signer:  signer,
+		Format:     pub.Type(),
+		Blob:       pub.Marshal(),
+		Signer:     sshSigner,
+		PrivateKey: raw,
 	}, nil
 }
 
