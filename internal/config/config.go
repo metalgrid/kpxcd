@@ -231,12 +231,12 @@ func (c *Config) Validate() error {
 
 	// Validate ssh_mode.
 	switch c.Daemon.SSHMode {
-	case "", "agent", "proxy":
+	case "", "agent", "proxy", "client":
 		if c.Daemon.SSHMode == "" {
 			c.Daemon.SSHMode = "agent"
 		}
 	default:
-		return fmt.Errorf("config: invalid ssh_mode %q, must be \"agent\" or \"proxy\"", c.Daemon.SSHMode)
+		return fmt.Errorf("config: invalid ssh_mode %q, must be \"agent\", \"proxy\", or \"client\"", c.Daemon.SSHMode)
 	}
 
 	// Validate databases.

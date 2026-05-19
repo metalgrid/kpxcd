@@ -35,6 +35,7 @@ type DaemonApp struct {
 	dbusAPI *dbusapi.DaemonDBus
 	secSvc  *secretservice.SecretService
 	sshAgent *sshagent.AgentServer
+	sshClient *sshagent.AgentClient
 	fido2Svc *fido2.Fido2Service
 	dbusConn *dbus.Conn
 	done    chan struct{}
@@ -132,7 +133,8 @@ func Run(configPath string, cliLevel slog.Level) error {
 
 	slog.Info("daemon ready",
 		"dbus", app.dbusConn != nil,
-		"ssh", app.sshAgent != nil,
+		"ssh_agent", app.sshAgent != nil,
+		"ssh_client", app.sshClient != nil,
 		"fido2", app.fido2Svc != nil)
 
 	// Main event loop.
@@ -176,12 +178,26 @@ func (app *DaemonApp) startDBus() error {
 	return nil
 }
 
-// startSSHAgent creates and starts the SSH agent listener.
+// startSSHAgent creates and starts the SSH agent listener or client,
+// depending on the configured ssh_mode.
 func (app *DaemonApp) startSSHAgent() error {
 	if !app.cfg.SSHAgent.Enabled {
 		return nil
 	}
 
+	switch app.cfg.Daemon.SSHMode {
+	case "client":
+		return app.startSSHAgentClient()
+	case "proxy":
+		// Not yet implemented; fall through to agent mode.
+		fallthrough
+	default:
+		return app.startSSHAgentServer()
+	}
+}
+
+// startSSHAgentServer starts kpxcd's own SSH agent server (agent mode).
+func (app *DaemonApp) startSSHAgentServer() error {
 	// Resolve socket path: expand $XDG_RUNTIME_DIR.
 	socketPath := os.ExpandEnv(app.cfg.Daemon.SSHSocketPath)
 	if !filepath.IsAbs(socketPath) {
@@ -207,7 +223,18 @@ func (app *DaemonApp) startSSHAgent() error {
 		}
 	}()
 
-	slog.Info("SSH agent started", "socket", socketPath)
+	slog.Info("SSH agent server started", "socket", socketPath)
+	return nil
+}
+
+// startSSHAgentClient connects to the existing ssh-agent (client mode).
+func (app *DaemonApp) startSSHAgentClient() error {
+	client, err := sshagent.NewAgentClient(&app.cfg.SSHAgent)
+	if err != nil {
+		return fmt.Errorf("SSH agent client: %w", err)
+	}
+	app.sshClient = client
+	slog.Info("SSH agent client connected", "socket", os.Getenv("SSH_AUTH_SOCK"))
 	return nil
 }
 
@@ -220,6 +247,9 @@ func (app *DaemonApp) shutdown() {
 		if err := app.sshAgent.Close(); err != nil {
 			slog.Error("SSH agent close error", "error", err)
 		}
+	}
+	if app.sshClient != nil {
+		app.sshClient.Close()
 	}
 
 	// Release DBus names and close connection.
@@ -298,6 +328,12 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 				app.sshAgent.OnDatabaseUnlocked(odb)
 			}
 		}
+		if app.sshClient != nil {
+			odb, err := app.pool.Get(evt.UUID)
+			if err == nil {
+				app.sshClient.OnDatabaseUnlocked(odb)
+			}
+		}
 
 	case dbpool.EventDatabaseLocked:
 		slog.Info("database locked", "name", evt.Name, "uuid", evt.UUID)
@@ -310,6 +346,12 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 			odb, err := app.pool.Get(evt.UUID)
 			if err == nil {
 				app.sshAgent.OnDatabaseLocked(odb)
+			}
+		}
+		if app.sshClient != nil {
+			odb, err := app.pool.Get(evt.UUID)
+			if err == nil {
+				app.sshClient.OnDatabaseLocked(odb)
 			}
 		}
 
