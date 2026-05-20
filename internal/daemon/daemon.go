@@ -186,11 +186,11 @@ func (app *DaemonApp) startSSHAgent() error {
 	}
 
 	switch app.cfg.Daemon.SSHMode {
-	case "client":
+	case "client", "proxy":
+		// In both documented "proxy" mode and legacy "client" mode, kpxcd
+		// pushes KeePass keys into the already-registered SSH_AUTH_SOCK agent
+		// instead of exposing its own socket.
 		return app.startSSHAgentClient()
-	case "proxy":
-		// Not yet implemented; fall through to agent mode.
-		fallthrough
 	default:
 		return app.startSSHAgentServer()
 	}
