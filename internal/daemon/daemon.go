@@ -284,6 +284,13 @@ func (app *DaemonApp) eventLoop(sigCh <-chan os.Signal, eventCh <-chan dbpool.Ev
 		idleCh = idleTimer.C
 	}
 
+	var pamCh <-chan time.Time
+	if app.hasPAMDatabase() {
+		pamTicker := time.NewTicker(2 * time.Second)
+		defer pamTicker.Stop()
+		pamCh = pamTicker.C
+	}
+
 	for {
 		select {
 		case sig := <-sigCh:
@@ -306,6 +313,9 @@ func (app *DaemonApp) eventLoop(sigCh <-chan os.Signal, eventCh <-chan dbpool.Ev
 			if err := app.pool.LockAll(); err != nil {
 				slog.Error("idle lock failed", "error", err)
 			}
+
+		case <-pamCh:
+			app.tryPAMAutoUnlock()
 		}
 	}
 }
@@ -369,9 +379,17 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 
 // autoUnlock attempts to unlock all databases that have auto_unlock=true.
 func (app *DaemonApp) autoUnlock() {
+	// PAM auto-unlock consumes a one-shot login token and is only supported for
+	// the default database. Try it first so the fresh default DB is available to
+	// Secret Service clients as soon as possible.
+	app.tryPAMAutoUnlock()
+
 	for _, db := range app.cfg.Databases {
 		if !db.AutoUnlock {
 			slog.Debug("skipping locked database", "name", db.Name, "path", db.Path)
+			continue
+		}
+		if db.UnlockCredential == "pam" {
 			continue
 		}
 
@@ -471,6 +489,9 @@ func resolveCredential(db config.DatabaseConfig) (dbpool.Credential, error) {
 	case "secret-service":
 		// TODO: query existing Secret Service for the password.
 		return dbpool.Credential{}, fmt.Errorf("secret-service credential source not yet implemented")
+
+	case "pam":
+		return dbpool.Credential{}, fmt.Errorf("pam credential source is handled by daemon auto-unlock")
 
 	case "prompt", "":
 		return dbpool.Credential{}, fmt.Errorf("requires manual unlock via kpxcctl")
