@@ -32,7 +32,7 @@
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>
-      <allow_active>auth_self</allow_active>
+      <allow_active>auth_self_keep</allow_active>
     </defaults>
   </action>
 
