@@ -61,13 +61,14 @@ func YubiKeyCredential(slot int) Credential {
 
 // OpenDatabase wraps a gokeepasslib.Database with metadata and lifecycle state.
 type OpenDatabase struct {
-	mu      sync.RWMutex
-	UUID    string
-	Name    string
-	Path    string
-	Locked  bool
-	Db      *gokeepasslib.Database
-	Watcher *fileWatcher
+	mu          sync.RWMutex
+	UUID        string
+	Name        string
+	Path        string
+	Locked      bool
+	Db          *gokeepasslib.Database
+	Fingerprint FileFingerprint
+	Watcher     *fileWatcher
 }
 
 // Lock acquires a write lock on the database for modifications.
@@ -208,12 +209,18 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 		return "", openErr
 	}
 
+	fingerprint, err := FingerprintFile(path)
+	if err != nil {
+		return "", fmt.Errorf("dbpool: fingerprint %s: %w", path, err)
+	}
+
 	odb := &OpenDatabase{
-		UUID:   uuid,
-		Name:   filepath.Base(path),
-		Path:   path,
-		Locked: false,
-		Db:     db,
+		UUID:        uuid,
+		Name:        filepath.Base(path),
+		Path:        path,
+		Locked:      false,
+		Db:          db,
+		Fingerprint: fingerprint,
 	}
 
 	// Set up file watcher for external changes.
