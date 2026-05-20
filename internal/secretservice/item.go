@@ -25,9 +25,10 @@ const (
 	InterfacePrompt     = "org.freedesktop.Secret.Prompt"
 
 	// Error names per spec §15.
-	ErrIsLocked    = "org.freedesktop.Secret.Error.IsLocked"
-	ErrNoSession   = "org.freedesktop.Secret.Error.NoSession"
+	ErrIsLocked     = "org.freedesktop.Secret.Error.IsLocked"
+	ErrNoSession    = "org.freedesktop.Secret.Error.NoSession"
 	ErrNoSuchObject = "org.freedesktop.Secret.Error.NoSuchObject"
+	ErrAccessDenied = "org.freedesktop.DBus.Error.AccessDenied"
 )
 
 // DBusSecret is the Secret struct per the spec: (oayays).
@@ -100,8 +101,21 @@ func (i *Item) Delete() (dbus.ObjectPath, *dbus.Error) {
 // GetSecret returns the encrypted secret for this entry via the given session.
 // Method name matches spec: org.freedesktop.Secret.Item.GetSecret.
 // Returns a Secret struct (oayays).
-func (i *Item) GetSecret(sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) {
+func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) {
 	svc := i.coll.svc
+	caller := svc.callerInfo(sender)
+	if err := svc.authorizeSecretAccess(caller, i); err != nil {
+		slog.Warn("secretservice: item secret access denied",
+			"sender", caller.Sender,
+			"pid", caller.PID,
+			"app", caller.AppName(),
+			"collection", i.coll.db.Name,
+			"item", i.Label(),
+			"error", err)
+		return DBusSecret{}, dbus.NewError(ErrAccessDenied,
+			[]interface{}{err.Error()})
+	}
+
 	svc.sessionsMu.RLock()
 	sess, ok := svc.sessions[sessionPath]
 	svc.sessionsMu.RUnlock()
@@ -129,7 +143,9 @@ func (i *Item) GetSecret(sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) 
 			[]interface{}{secretErr.Error()})
 	}
 
-	slog.Debug("secretservice: GetSecret", "item", string(i.path), "session", string(sessionPath))
+	slog.Debug("secretservice: GetSecret", "item", string(i.path), "session", string(sessionPath), "sender", string(sender))
+	svc.logSecretAccess(caller, i, "Item.GetSecret")
+	svc.notifySecretAccess(caller, i)
 	return DBusSecret{
 		Session:     sessionPath,
 		Parameters:  iv,

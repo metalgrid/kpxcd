@@ -30,15 +30,15 @@ import (
 
 // DaemonApp represents the running daemon.
 type DaemonApp struct {
-	cfg     *config.Config
-	pool    *dbpool.DatabasePool
-	dbusAPI *dbusapi.DaemonDBus
-	secSvc  *secretservice.SecretService
-	sshAgent *sshagent.AgentServer
+	cfg       *config.Config
+	pool      *dbpool.DatabasePool
+	dbusAPI   *dbusapi.DaemonDBus
+	secSvc    *secretservice.SecretService
+	sshAgent  *sshagent.AgentServer
 	sshClient *sshagent.AgentClient
-	fido2Svc *fido2.Fido2Service
-	dbusConn *dbus.Conn
-	done    chan struct{}
+	fido2Svc  *fido2.Fido2Service
+	dbusConn  *dbus.Conn
+	done      chan struct{}
 }
 
 // Run starts the kpxcd daemon. It loads configuration, initializes the
@@ -166,7 +166,7 @@ func (app *DaemonApp) startDBus() error {
 
 	// Export org.freedesktop.secrets if enabled.
 	if app.cfg.SecretService.Enabled {
-		app.secSvc = secretservice.NewSecretService(app.pool)
+		app.secSvc = secretservice.NewSecretService(app.pool, &app.cfg.SecretService)
 		if err := app.secSvc.Export(conn); err != nil {
 			slog.Warn("Secret Service not exported (another provider may be running)", "error", err)
 			app.secSvc = nil
@@ -415,6 +415,9 @@ func (app *DaemonApp) reloadConfig() error {
 		"databases", len(cfg.Databases),
 	)
 	app.cfg = cfg
+	if app.secSvc != nil {
+		app.secSvc.UpdateConfig(cfg.SecretService)
+	}
 
 	// Re-apply log level.
 	level, _ := parseLogLevel(cfg.Daemon.LogLevel)

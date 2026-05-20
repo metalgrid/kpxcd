@@ -12,14 +12,17 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 
+	"github.com/user/kpxcd/internal/config"
 	"github.com/user/kpxcd/internal/dbpool"
+	"github.com/user/kpxcd/internal/security"
 )
 
 // SecretService implements the org.freedesktop.Secret.Service D-Bus API.
 // It exposes unlocked KeePass databases as collections and their entries as items.
 type SecretService struct {
-	conn *dbus.Conn
-	pool *dbpool.DatabasePool
+	conn   *dbus.Conn
+	pool   *dbpool.DatabasePool
+	config config.SecretServiceConfig
 
 	// mu protects collections, items, sessions, and aliases.
 	mu sync.RWMutex
@@ -39,13 +42,32 @@ type SecretService struct {
 }
 
 // NewSecretService creates a new SecretService backed by the given DatabasePool.
-func NewSecretService(pool *dbpool.DatabasePool) *SecretService {
+func NewSecretService(pool *dbpool.DatabasePool, cfgs ...*config.SecretServiceConfig) *SecretService {
+	cfg := config.DefaultConfig().SecretService
+	if len(cfgs) > 0 && cfgs[0] != nil {
+		cfg = *cfgs[0]
+	}
 	return &SecretService{
 		pool:        pool,
+		config:      cfg,
 		collections: make(map[dbus.ObjectPath]*Collection),
 		sessions:    make(map[dbus.ObjectPath]*Session),
 		aliases:     make(map[string]dbus.ObjectPath),
 	}
+}
+
+// UpdateConfig applies runtime-configurable Secret Service options after a
+// daemon SIGHUP reload.
+func (ss *SecretService) UpdateConfig(cfg config.SecretServiceConfig) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.config = cfg
+}
+
+func (ss *SecretService) configSnapshot() config.SecretServiceConfig {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	return ss.config
 }
 
 // Export registers the Secret Service on the session bus.
@@ -519,9 +541,10 @@ func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbu
 }
 
 // GetSecrets retrieves secrets for the given items using the specified session.
-func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.ObjectPath) (map[dbus.ObjectPath]DBusSecret, *dbus.Error) {
-	slog.Debug("secretservice: GetSecrets", "items", items, "session", string(sessionPath))
+func (ss *SecretService) GetSecrets(sender dbus.Sender, items []dbus.ObjectPath, sessionPath dbus.ObjectPath) (map[dbus.ObjectPath]DBusSecret, *dbus.Error) {
+	slog.Debug("secretservice: GetSecrets", "items", items, "session", string(sessionPath), "sender", string(sender))
 	secrets := make(map[dbus.ObjectPath]DBusSecret)
+	caller := ss.callerInfo(sender)
 
 	ss.sessionsMu.RLock()
 	sess, ok := ss.sessions[sessionPath]
@@ -542,13 +565,29 @@ func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.Ob
 			continue
 		}
 
-		item.db.RLock()
-		password := item.entry.GetPassword()
-		item.db.RUnlock()
+		if err := ss.authorizeSecretAccess(caller, item); err != nil {
+			slog.Warn("secretservice: secret access denied",
+				"sender", caller.Sender,
+				"pid", caller.PID,
+				"app", caller.AppName(),
+				"collection", item.coll.db.Name,
+				"item", item.Label(),
+				"error", err)
+			return secrets, dbus.NewError(ErrAccessDenied,
+				[]interface{}{err.Error()})
+		}
 
-		iv, ciphertext, err := sess.Encrypt([]byte(password))
-		if err != nil {
-			slog.Warn("secretservice: encrypt failed", "error", err)
+		var iv []byte
+		var ciphertext []byte
+		var secretErr error
+		security.Do(func() {
+			item.db.RLock()
+			password := item.entry.GetPassword()
+			item.db.RUnlock()
+			iv, ciphertext, secretErr = sess.Encrypt([]byte(password))
+		})
+		if secretErr != nil {
+			slog.Warn("secretservice: encrypt failed", "error", secretErr)
 			continue
 		}
 
@@ -558,6 +597,8 @@ func (ss *SecretService) GetSecrets(items []dbus.ObjectPath, sessionPath dbus.Ob
 			Value:       ciphertext,
 			ContentType: "text/plain",
 		}
+		ss.logSecretAccess(caller, item, "Service.GetSecrets")
+		ss.notifySecretAccess(caller, item)
 	}
 
 	slog.Debug("secretservice: GetSecrets result", "count", len(secrets))
