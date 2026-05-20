@@ -9,4 +9,5 @@ name = "pam_kpxcd"
 crate-type = ["cdylib"]
 
 [dependencies]
+pamsm = { version = "0.5", features = ["libpam"] }
 libc = "0.2"

@@ -4,71 +4,20 @@
 //! token during authentication, then writes it during open_session after
 //! pam_systemd has created XDG_RUNTIME_DIR.
 
-use libc::{c_char, c_int, c_void, gid_t, mode_t, uid_t};
-use std::ffi::{CStr, CString};
+use pamsm::{Pam, PamData, PamError, PamFlags, PamLibExt, PamServiceModule};
+use std::ffi::CString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::prelude::AsRawFd;
-use std::path::PathBuf;
-use std::ptr;
+use std::path::{Path, PathBuf};
 
-const PAM_SUCCESS: c_int = 0;
-const PAM_AUTH_ERR: c_int = 7;
-const PAM_SESSION_ERR: c_int = 14;
-const PAM_BUF_ERR: c_int = 5;
-const PAM_AUTHTOK: c_int = 6;
-const DATA_NAME: &[u8] = b"kpxcd.authtok\0";
+const DATA_NAME: &str = "kpxcd.authtok";
 const DEFAULT_TOKEN_NAME: &str = "pam-token";
 
-#[repr(C)]
-pub struct PamHandle(c_void);
-
-type CleanupFn = unsafe extern "C" fn(*mut PamHandle, *mut c_void, c_int);
-
-extern "C" {
-    fn pam_get_authtok(
-        pamh: *mut PamHandle,
-        item: c_int,
-        authtok: *mut *const c_char,
-        prompt: *const c_char,
-    ) -> c_int;
-    fn pam_set_data(
-        pamh: *mut PamHandle,
-        module_data_name: *const c_char,
-        data: *mut c_void,
-        cleanup: Option<CleanupFn>,
-    ) -> c_int;
-    fn pam_get_data(
-        pamh: *const PamHandle,
-        module_data_name: *const c_char,
-        data: *mut *const c_void,
-    ) -> c_int;
-    fn pam_get_user(
-        pamh: *mut PamHandle,
-        user: *mut *const c_char,
-        prompt: *const c_char,
-    ) -> c_int;
-    fn pam_getenv(pamh: *mut PamHandle, name: *const c_char) -> *const c_char;
-
-    fn getpwnam(name: *const c_char) -> *mut Passwd;
-    fn fchown(fd: c_int, owner: uid_t, group: gid_t) -> c_int;
-    fn chmod(path: *const c_char, mode: mode_t) -> c_int;
-    fn chown(path: *const c_char, owner: uid_t, group: gid_t) -> c_int;
-}
-
-#[repr(C)]
-struct Passwd {
-    pw_name: *mut c_char,
-    pw_passwd: *mut c_char,
-    pw_uid: uid_t,
-    pw_gid: gid_t,
-    pw_gecos: *mut c_char,
-    pw_dir: *mut c_char,
-    pw_shell: *mut c_char,
-}
-
+/// A token whose bytes are zeroed on drop.
+#[derive(Clone)]
 struct Token {
     bytes: Vec<u8>,
 }
@@ -81,86 +30,49 @@ impl Drop for Token {
     }
 }
 
-unsafe extern "C" fn cleanup_token(_pamh: *mut PamHandle, data: *mut c_void, _error_status: c_int) {
-    if !data.is_null() {
-        drop(Box::from_raw(data as *mut Token));
+impl PamData for Token {}
+
+struct PamKpxcd;
+
+impl PamServiceModule for PamKpxcd {
+    fn authenticate(pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        let bytes = match pamh.get_authtok(None) {
+            Ok(Some(tok)) => tok.to_bytes().to_vec(),
+            Ok(None) => return PamError::AUTH_ERR,
+            Err(e) => return e,
+        };
+
+        let token = Token { bytes };
+        match unsafe { pamh.send_data(DATA_NAME, token) } {
+            Ok(()) => PamError::SUCCESS,
+            Err(e) => e,
+        }
+    }
+
+    fn setcred(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        PamError::SUCCESS
+    }
+
+    fn open_session(pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        let token: Token = match unsafe { pamh.retrieve_data(DATA_NAME) } {
+            Ok(t) => t,
+            // Do not fail login if no token is available. kpxcd will simply
+            // skip PAM auto-unlock for this session.
+            Err(_) => return PamError::SUCCESS,
+        };
+
+        match write_token(&pamh, &token.bytes) {
+            Ok(()) => PamError::SUCCESS,
+            Err(_) => PamError::SESSION_ERR,
+        }
+    }
+
+    fn close_session(_pamh: Pam, _flags: PamFlags, _args: Vec<String>) -> PamError {
+        PamError::SUCCESS
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn pam_sm_authenticate(
-    pamh: *mut PamHandle,
-    _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
-) -> c_int {
-    let mut authtok: *const c_char = ptr::null();
-    let rc = pam_get_authtok(pamh, PAM_AUTHTOK, &mut authtok, ptr::null());
-    if rc != PAM_SUCCESS {
-        return rc;
-    }
-    if authtok.is_null() {
-        return PAM_AUTH_ERR;
-    }
-
-    let bytes = CStr::from_ptr(authtok).to_bytes().to_vec();
-    let token = Box::new(Token { bytes });
-    let rc = pam_set_data(
-        pamh,
-        DATA_NAME.as_ptr() as *const c_char,
-        Box::into_raw(token) as *mut c_void,
-        Some(cleanup_token),
-    );
-    if rc == PAM_SUCCESS {
-        PAM_SUCCESS
-    } else {
-        PAM_BUF_ERR
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pam_sm_setcred(
-    _pamh: *mut PamHandle,
-    _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
-) -> c_int {
-    PAM_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pam_sm_open_session(
-    pamh: *mut PamHandle,
-    _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
-) -> c_int {
-    let mut data: *const c_void = ptr::null();
-    let rc = pam_get_data(pamh, DATA_NAME.as_ptr() as *const c_char, &mut data);
-    if rc != PAM_SUCCESS || data.is_null() {
-        // Do not fail login if no token is available. kpxcd will simply skip
-        // PAM auto-unlock for this session.
-        return PAM_SUCCESS;
-    }
-    let token = &*(data as *const Token);
-
-    match write_token(pamh, &token.bytes) {
-        Ok(()) => PAM_SUCCESS,
-        Err(_) => PAM_SESSION_ERR,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pam_sm_close_session(
-    _pamh: *mut PamHandle,
-    _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
-) -> c_int {
-    PAM_SUCCESS
-}
-
-unsafe fn write_token(pamh: *mut PamHandle, token: &[u8]) -> Result<(), ()> {
+fn write_token(pamh: &Pam, token: &[u8]) -> Result<(), ()> {
     let (uid, gid) = user_ids(pamh)?;
     let runtime = runtime_dir(pamh, uid)?;
     let dir = runtime.join("kpxcd");
@@ -182,7 +94,7 @@ unsafe fn write_token(pamh: *mut PamHandle, token: &[u8]) -> Result<(), ()> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)
         .map_err(|_| ())?;
-    if fchown(file.as_raw_fd(), uid, gid) != 0 {
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
         return Err(());
     }
     file.write_all(token).map_err(|_| ())?;
@@ -192,23 +104,18 @@ unsafe fn write_token(pamh: *mut PamHandle, token: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
-unsafe fn user_ids(pamh: *mut PamHandle) -> Result<(uid_t, gid_t), ()> {
-    let mut user: *const c_char = ptr::null();
-    if pam_get_user(pamh, &mut user, ptr::null()) != PAM_SUCCESS || user.is_null() {
-        return Err(());
-    }
-    let pw = getpwnam(user);
+fn user_ids(pamh: &Pam) -> Result<(libc::uid_t, libc::gid_t), ()> {
+    let user = pamh.get_user(None).map_err(|_| ())?.ok_or(())?;
+    let pw = unsafe { libc::getpwnam(user.as_ptr()) };
     if pw.is_null() {
         return Err(());
     }
-    Ok(((*pw).pw_uid, (*pw).pw_gid))
+    unsafe { Ok(((*pw).pw_uid, (*pw).pw_gid)) }
 }
 
-unsafe fn runtime_dir(pamh: *mut PamHandle, uid: uid_t) -> Result<PathBuf, ()> {
-    let name = CString::new("XDG_RUNTIME_DIR").map_err(|_| ())?;
-    let value = pam_getenv(pamh, name.as_ptr());
-    if !value.is_null() {
-        let s = CStr::from_ptr(value).to_string_lossy().into_owned();
+fn runtime_dir(pamh: &Pam, uid: libc::uid_t) -> Result<PathBuf, ()> {
+    if let Ok(Some(value)) = pamh.getenv("XDG_RUNTIME_DIR") {
+        let s = value.to_string_lossy().into_owned();
         if !s.is_empty() {
             return Ok(PathBuf::from(s));
         }
@@ -216,20 +123,22 @@ unsafe fn runtime_dir(pamh: *mut PamHandle, uid: uid_t) -> Result<PathBuf, ()> {
     Ok(PathBuf::from(format!("/run/user/{uid}")))
 }
 
-unsafe fn chown_path(path: &PathBuf, uid: uid_t, gid: gid_t) -> Result<(), ()> {
+fn chown_path(path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> Result<(), ()> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| ())?;
-    if chown(c.as_ptr(), uid, gid) == 0 {
+    if unsafe { libc::chown(c.as_ptr(), uid, gid) } == 0 {
         Ok(())
     } else {
         Err(())
     }
 }
 
-unsafe fn chmod_path(path: &PathBuf, mode: mode_t) -> Result<(), ()> {
+fn chmod_path(path: &Path, mode: libc::mode_t) -> Result<(), ()> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| ())?;
-    if chmod(c.as_ptr(), mode) == 0 {
+    if unsafe { libc::chmod(c.as_ptr(), mode) } == 0 {
         Ok(())
     } else {
         Err(())
     }
 }
+
+pamsm::pam_module!(PamKpxcd);
