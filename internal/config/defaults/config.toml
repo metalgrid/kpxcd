@@ -1,0 +1,40 @@
+# kpxcd default configuration
+#
+# This file is created automatically on first start. It provisions a local
+# default database that can be unlocked from a PAM login token once the PAM
+# module is installed and configured.
+
+[daemon]
+idle_timeout = 0
+lock_on_screenlock = true
+log_level = "info"
+log_to_journald = true
+ssh_socket_path = "kpxcd/ssh.sock"
+ssh_mode = "agent"
+
+[[database]]
+name = "Default"
+default = true
+path = "$XDG_DATA_HOME/kpxcd/default.kdbx"
+auto_unlock = true
+unlock_credential = "pam"
+ssh_auto_add = false
+
+[secret_service]
+enabled = true
+notify_on_access = true
+require_confirmation = false
+confirmation_timeout = 30
+
+[ssh_agent]
+enabled = true
+remove_on_lock = true
+confirm_on_use = false
+lifetime = 0
+security_key_provider = "internal"
+
+[fido2]
+enabled = true
+aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
+algorithms = [-7, -8]
+user_verification = "preferred"

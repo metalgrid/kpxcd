@@ -6,28 +6,34 @@
 package config
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/user/kpxcd/internal/xdg"
 )
+
+//go:embed defaults/config.toml
+var defaultConfigFS embed.FS
 
 // DaemonConfig holds the top-level daemon settings.
 type DaemonConfig struct {
-	IdleTimeout       int    `toml:"idle_timeout"`
-	LockOnScreenlock  bool   `toml:"lock_on_screenlock"`
-	LogLevel          string `toml:"log_level"`
-	LogToJournald     bool   `toml:"log_to_journald"`
-	SSHSocketPath     string `toml:"ssh_socket_path"`
-	SSHMode           string `toml:"ssh_mode"`
+	IdleTimeout      int    `toml:"idle_timeout"`
+	LockOnScreenlock bool   `toml:"lock_on_screenlock"`
+	LogLevel         string `toml:"log_level"`
+	LogToJournald    bool   `toml:"log_to_journald"`
+	SSHSocketPath    string `toml:"ssh_socket_path"`
+	SSHMode          string `toml:"ssh_mode"`
 }
 
 // DatabaseConfig describes a single KeePass database.
 type DatabaseConfig struct {
 	Path                     string `toml:"path"`
 	Name                     string `toml:"name"`
+	Default                  bool   `toml:"default"`
 	AutoUnlock               bool   `toml:"auto_unlock"`
 	UnlockCredential         string `toml:"unlock_credential"`
 	SystemdCredentialName    string `toml:"systemd_credential_name"`
@@ -51,15 +57,15 @@ type SSHAgentConfig struct {
 	Enabled             bool   `toml:"enabled"`
 	RemoveOnLock        bool   `toml:"remove_on_lock"`
 	ConfirmOnUse        bool   `toml:"confirm_on_use"`
-	Lifetime             int    `toml:"lifetime"`
-	SecurityKeyProvider  string `toml:"security_key_provider"`
+	Lifetime            int    `toml:"lifetime"`
+	SecurityKeyProvider string `toml:"security_key_provider"`
 }
 
 // Fido2Config holds settings for the FIDO2 / passkey interface.
 type Fido2Config struct {
-	Enabled         bool   `toml:"enabled"`
-	AAGUID          string `toml:"aaguid"`
-	Algorithms      []int  `toml:"algorithms"`
+	Enabled          bool   `toml:"enabled"`
+	AAGUID           string `toml:"aaguid"`
+	Algorithms       []int  `toml:"algorithms"`
 	UserVerification string `toml:"user_verification"`
 }
 
@@ -81,6 +87,7 @@ type Config struct {
 //   - Relative paths are resolved against $XDG_CONFIG_HOME/kpxcd/
 //   - Absolute paths are used as-is
 func Load(path string) (*Config, error) {
+	explicitPath := path != ""
 	if path == "" {
 		var err error
 		path, err = defaultConfigPath()
@@ -91,14 +98,18 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("config: file not found: %s\n\n"+
-				"Create it with:\n"+
-				"  mkdir -p ~/.config/kpxcd\n"+
-				"  cp /etc/kpxcd/kpxcd.toml.example ~/.config/kpxcd/kpxcd.toml\n"+
-				"  $EDITOR ~/.config/kpxcd/kpxcd.toml", path)
+		if os.IsNotExist(err) && !explicitPath {
+			if err := createDefaultConfig(path); err != nil {
+				return nil, fmt.Errorf("config: create default config: %w", err)
+			}
+			data, err = os.ReadFile(path)
 		}
-		return nil, fmt.Errorf("config: cannot read %s: %w", path, err)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("config: file not found: %s", path)
+			}
+			return nil, fmt.Errorf("config: cannot read %s: %w", path, err)
+		}
 	}
 
 	cfg := DefaultConfig()
@@ -157,9 +168,9 @@ func DefaultConfig() *Config {
 			SecurityKeyProvider: "internal",
 		},
 		Fido2: Fido2Config{
-			Enabled:         true,
-			AAGUID:          "f8a011f3-8c0a-4d15-8006-17111f9edc7d",
-			Algorithms:      []int{-7, -8},
+			Enabled:          true,
+			AAGUID:           "f8a011f3-8c0a-4d15-8006-17111f9edc7d",
+			Algorithms:       []int{-7, -8},
 			UserVerification: "preferred",
 		},
 	}
@@ -172,54 +183,27 @@ func DefaultConfig() *Config {
 //   - Absolute paths are returned unchanged
 //   - Empty strings are returned unchanged
 func expandPath(path string) string {
-	if path == "" {
-		return path
-	}
-
-	// Step 1: Expand environment variables ($HOME, $XDG_*, etc.)
-	expanded := os.ExpandEnv(path)
-
-	// Step 2: Expand leading ~ to the user's home directory.
-	// os.ExpandEnv does NOT handle ~, so we do it manually.
-	if strings.HasPrefix(expanded, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			expanded = filepath.Join(home, expanded[2:])
-		}
-	} else if expanded == "~" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			expanded = home
-		}
-	}
-
-	// Step 3: If the path is still relative, resolve it against
-	// the XDG config directory ($XDG_CONFIG_HOME/kpxcd/).
-	if !filepath.IsAbs(expanded) {
-		expanded = filepath.Join(xdgConfigHome(), "kpxcd", expanded)
-	}
-
-	return filepath.Clean(expanded)
+	return xdg.ExpandPath(path)
 }
 
 // xdgConfigHome returns the XDG configuration directory, falling back to
 // ~/.config if XDG_CONFIG_HOME is not set.
 func xdgConfigHome() string {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg != "" {
-		return xdg
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".config" // fallback
-	}
-	return filepath.Join(home, ".config")
+	return xdg.ConfigHome()
 }
 
 // defaultConfigPath resolves the default configuration file location.
 // It checks XDG_CONFIG_HOME first, then falls back to ~/.config.
 func defaultConfigPath() (string, error) {
-	return filepath.Join(xdgConfigHome(), "kpxcd", "kpxcd.toml"), nil
+	return xdg.ConfigPath(), nil
+}
+
+func createDefaultConfig(path string) error {
+	data, err := defaultConfigFS.ReadFile("defaults/config.toml")
+	if err != nil {
+		return err
+	}
+	return xdg.WritePrivateFile(path, data)
 }
 
 // Validate checks that the configuration is internally consistent
@@ -240,19 +224,23 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate databases.
+	defaultCount := 0
 	for i, db := range c.Databases {
+		if db.Default {
+			defaultCount++
+		}
 		if db.Path == "" {
 			return fmt.Errorf("config: database[%d]: path is required", i)
 		}
 
 		switch db.UnlockCredential {
-		case "", "prompt", "systemd-credential", "secret-service", "keyfile", "none":
+		case "", "prompt", "systemd-credential", "secret-service", "keyfile", "pam", "none":
 			if db.UnlockCredential == "" {
 				c.Databases[i].UnlockCredential = "prompt"
 			}
 		default:
 			return fmt.Errorf("config: database[%d] (%s): invalid unlock_credential %q, "+
-				"must be one of: systemd-credential, secret-service, keyfile, prompt, none",
+				"must be one of: systemd-credential, secret-service, keyfile, pam, prompt, none",
 				i, db.Name, db.UnlockCredential)
 		}
 
@@ -273,6 +261,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: database[%d] (%s): keyfile is required "+
 				"when unlock_credential = \"keyfile\"", i, db.Name)
 		}
+	}
+
+	if defaultCount > 1 {
+		return fmt.Errorf("config: at most one database may be marked default")
 	}
 
 	return nil

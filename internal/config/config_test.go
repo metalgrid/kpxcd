@@ -232,3 +232,39 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+func TestLoadDefaultCreatesEmbeddedConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load default failed: %v", err)
+	}
+	path := filepath.Join(dir, "config", "kpxcd", "config.toml")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("default config was not created: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config mode = %o, want 0600", got)
+	}
+	if len(cfg.Databases) != 1 || !cfg.Databases[0].Default || cfg.Databases[0].UnlockCredential != "pam" {
+		t.Fatalf("unexpected default database config: %#v", cfg.Databases)
+	}
+	expectedDB := filepath.Join(dir, "data", "kpxcd", "default.kdbx")
+	if cfg.Databases[0].Path != expectedDB {
+		t.Fatalf("default db path = %q, want %q", cfg.Databases[0].Path, expectedDB)
+	}
+}
+
+func TestValidateRejectsMultipleDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Databases = []DatabaseConfig{
+		{Path: "/tmp/a.kdbx", Name: "A", Default: true, UnlockCredential: "prompt"},
+		{Path: "/tmp/b.kdbx", Name: "B", Default: true, UnlockCredential: "prompt"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected multiple default validation error")
+	}
+}

@@ -1,5 +1,7 @@
 # Build output
 /build/
+/target/
+**/target/
 *.o
 *.a
 
