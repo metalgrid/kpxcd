@@ -18,7 +18,7 @@ It exists because the KeePassXC GUI is the wrong tool for unattended or programm
 |-------------|-----------|-----------|
 | Unlock and hold databases in memory | DBus, CLI | `org.keepassxc.Daemon.UnlockDatabase` / `kpxcctl unlock` |
 | Lock databases on demand or timeout | DBus, CLI | `org.keepassxc.Daemon.LockDatabase` / `kpxcctl lock` |
-| Expose passwords as freedesktop Secret Service | DBus | `org.freedesktop.secrets` — any Secret Service client can retrieve passwords |
+| Expose and persist passwords as freedesktop Secret Service | DBus | `org.freedesktop.secrets` — Secret Service clients can retrieve, create, and update items |
 | Provide SSH keys to `ssh-agent` | Unix socket | SSH agent protocol server on `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
 | Create and assert FIDO2 / WebAuthn passkeys | DBus, CLI | `org.keepassxc.Daemon.CreatePasskey` / `AssertPasskey` |
 | Generate TOTP codes | DBus, CLI | `org.keepassxc.Daemon.GetTotp` / `kpxcctl totp <entry>` |
@@ -32,13 +32,13 @@ These are explicit non-goals. They belong to other tools.
 
 | Non-goal | Reason | Alternative |
 |----------|--------|-------------|
-| **Edit or create databases** | `kpxcd` is a consumer, not a manager. Use `keepassxc-cli` or the KeePassXC GUI. | `keepassxc-cli` |
+| **General-purpose database editing** | `kpxcd` supports narrow Secret Service item create/update operations for application compatibility, but it is not a full KeePass database manager. | `keepassxc-cli` |
 | **Provide a GUI** | The purpose is headless operation. | KeePassXC |
 | **Browser extension integration** | Browser integration requires a different IPC model and native messaging host. | KeePassXC browser proxy |
 | **Auto-type** | Requires X11/Wayland window management. | KeePassXC |
 | **KeeShare / database synchronization** | Synchronization is a write operation. `kpxcd` does not modify databases. | KeePassXC |
 | **Windows or macOS support** | Operating system interfaces are fundamentally different. OS-specific secret managers already exist on those platforms. | Windows Credential Manager, macOS Keychain |
-| **Encrypt or create new entries** | `kpxcd` reads. It does not write to the database. | `keepassxc-cli add` |
+| **Full KeePass entry authoring** | `kpxcd` only writes entries created/updated through Secret Service compatibility paths. Advanced fields, attachments, history editing, and database management remain out of scope. | `keepassxc-cli add` |
 | **Hardware FIDO2 token management** | `kpxcd` stores and uses software passkeys from the database. It does not provision or manage physical security keys. | `fido2-token`, `ykman` |
 | **Network access** | `kpxcd` does not phone home, download icons, or check for updates. It opens local files and listens on local sockets only. | — |
 
@@ -60,7 +60,7 @@ These are explicit non-goals. They belong to other tools.
 
 ### Out of Scope
 
-- KDBX write operations (creating, editing, or saving databases)
+- General-purpose KDBX editing beyond Secret Service item create/update operations
 - Auto-type simulation
 - Browser native messaging host
 - Database merging or synchronization
@@ -103,7 +103,7 @@ These are explicit non-goals. They belong to other tools.
 
 1. **Reading the same `.kdbx` files** — both tools can open the same databases.
 2. **Understanding KeePassXC entry metadata** — KeeAgent settings, browser integration attributes, passkey custom data.
-3. **Running alongside KeePassXC** — both can have the same database open simultaneously (read-only from `kpxcd`).
+3. **Running alongside KeePassXC** — both can have the same database open; `kpxcd` detects on-disk changes and refuses writes if the file changed since unlock or last save.
 4. **Sharing the same config source** — `kpxcd` reads `~/.config/keepassxc/` for database MRU, last-used keyfiles, and display names.
 
 `kpxcd` does **not**:

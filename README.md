@@ -7,7 +7,7 @@ Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional Yu
 ## What It Does
 
 - **Unlocks databases at session start** and holds them in memory
-- **Secret Service** — exposes passwords to any `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`)
+- **Secret Service** — exposes and persists secrets for any `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`)
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
 - **FIDO2 passkeys** — creates and asserts WebAuthn credentials stored in the database
 - **TOTP** — generates time-based one-time passwords
@@ -15,7 +15,7 @@ Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional Yu
 
 ## What It Doesn't Do
 
-- Edit or create databases (use `keepassxc-cli` or the GUI)
+- Act as a full database editor (Secret Service item writes are supported; general KeePass management still belongs in `keepassxc-cli` or a GUI)
 - Provide a GUI
 - Integrate with browsers (use the KeePassXC browser proxy)
 - Auto-type
