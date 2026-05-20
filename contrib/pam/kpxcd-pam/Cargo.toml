@@ -1,0 +1,12 @@
+[package]
+name = "pam_kpxcd"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "pam_kpxcd"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
