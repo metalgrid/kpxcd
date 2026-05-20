@@ -210,12 +210,15 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 		// Resolve the specific attachment named in KeeAgent settings.
 		for _, ref := range entry.Binaries {
 			if ref.Name == attachmentName {
-				binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
-				if binary != nil && binary.Content != nil {
-					keyData = binary.Content
-					slog.Debug("sshagent: resolved named KeeAgent attachment",
-						"entry", entry.GetTitle(), "attachment", attachmentName)
-					break
+				binary := db.FindBinary(ref.Value.ID)
+				if binary != nil {
+					content, err := binary.GetContentBytes()
+					if err == nil && len(content) > 0 {
+						keyData = content
+						slog.Debug("sshagent: resolved named KeeAgent attachment",
+							"entry", entry.GetTitle(), "attachment", attachmentName)
+						break
+					}
 				}
 			}
 		}
@@ -241,36 +244,42 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 
 // extractKeyFromCommonNamesWithDB resolves binary attachments using the database.
 func extractKeyFromCommonNamesWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
-	if db == nil || db.Content == nil || db.Content.Meta == nil {
+	if db == nil || db.Content == nil {
 		return nil, nil
 	}
 
 	binaries := entry.Binaries
-	slog.Debug("sshagent: scanning binaries for key-like names",
+	slog.Info("sshagent: scanning binaries for key-like names",
 		"entry", entry.GetTitle(), "binary_count", len(binaries))
 
 	for _, ref := range binaries {
 		match := isPrivateKeyFilename(ref.Name)
-		slog.Debug("sshagent: checking binary",
+		slog.Info("sshagent: checking binary",
 			"entry", entry.GetTitle(),
 			"name", ref.Name,
 			"matches_key_pattern", match)
 		if !match {
 			continue
 		}
-		binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
-		if binary == nil || binary.Content == nil {
-			slog.Debug("sshagent: binary content not found in metadata",
-				"entry", entry.GetTitle(), "name", ref.Name)
+		binary := db.FindBinary(ref.Value.ID)
+		if binary == nil {
+			slog.Warn("sshagent: binary not found in database",
+				"entry", entry.GetTitle(), "name", ref.Name, "id", ref.Value.ID)
+			continue
+		}
+		content, err := binary.GetContentBytes()
+		if err != nil || len(content) == 0 {
+			slog.Warn("sshagent: failed to decode binary content",
+				"entry", entry.GetTitle(), "name", ref.Name, "error", err)
 			continue
 		}
 		passphrase := entry.GetPassword()
-		key, err := ParsePrivateKey(binary.Content, passphrase)
+		key, err := ParsePrivateKey(content, passphrase)
 		if err != nil {
 			slog.Warn("sshagent: binary looks like a key but failed to parse",
 				"entry", entry.GetTitle(),
 				"name", ref.Name,
-				"size", len(binary.Content),
+				"size", len(content),
 				"error", err)
 			continue
 		}
@@ -287,7 +296,7 @@ func extractKeyFromCommonNamesWithDB(entry *gokeepasslib.Entry, db *gokeepasslib
 		}
 	}
 
-	slog.Debug("sshagent: no SSH key found in entry binaries",
+	slog.Info("sshagent: no SSH key found in entry binaries",
 		"entry", entry.GetTitle(),
 		"binary_count", len(binaries))
 	return nil, nil
