@@ -98,14 +98,15 @@ func (ss *SecretService) authorizeSecretAccess(caller CallerInfo, item *Item) er
 		return nil
 	}
 
-	details := map[string]string{
-		"sender":     caller.Sender,
-		"process":    caller.AppName(),
-		"executable": caller.Exe,
-		"collection": item.coll.db.Name,
-		"item":       item.Label(),
-	}
-	if err := checkPolkitAuthorization(caller, actionGetEntrySecret, details); err != nil {
+	slog.Debug("secretservice: requesting polkit confirmation",
+		"sender", caller.Sender,
+		"pid", caller.PID,
+		"app", caller.AppName(),
+		"exe", caller.Exe,
+		"collection", item.coll.db.Name,
+		"item", item.Label())
+
+	if err := checkPolkitAuthorization(caller, actionGetEntrySecret); err != nil {
 		if errors.Is(err, errPolkitUnavailable) {
 			// Development/builddir runs often don't install the .policy file or run
 			// under systemd. In that case, keep Secret Service clients functional and
@@ -137,7 +138,7 @@ type polkitResult struct {
 
 // checkPolkitAuthorization asks polkit whether caller may perform actionID.
 // It allows user interaction so a desktop polkit agent can show the prompt.
-func checkPolkitAuthorization(caller CallerInfo, actionID string, details map[string]string) error {
+func checkPolkitAuthorization(caller CallerInfo, actionID string) error {
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return fmt.Errorf("%w: connect to system bus for polkit: %v", errPolkitUnavailable, err)
@@ -164,10 +165,14 @@ func checkPolkitAuthorization(caller CallerInfo, actionID string, details map[st
 	obj := conn.Object("org.freedesktop.PolicyKit1", dbus.ObjectPath("/org/freedesktop/PolicyKit1/Authority"))
 
 	var result polkitResult
+	// The CheckAuthorization details argument is intentionally empty. Polkit
+	// rejects non-root/non-action-owner callers that pass arbitrary details with:
+	// "Only trusted callers ... can use CheckAuthorization() and pass details".
+	// We keep request context in kpxcd logs/notifications instead.
 	call := obj.Call("org.freedesktop.PolicyKit1.Authority.CheckAuthorization", 0,
 		subject,
 		actionID,
-		details,
+		map[string]string{},
 		allowUserInteraction,
 		"",
 	)
