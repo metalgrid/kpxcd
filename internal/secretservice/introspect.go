@@ -3,7 +3,10 @@
 package secretservice
 
 import (
+	"fmt"
+
 	"github.com/godbus/dbus/v5"
+	"github.com/tobischo/gokeepasslib/v3"
 )
 
 // Properties implements org.freedesktop.DBus.Properties for Secret Service objects.
@@ -75,11 +78,11 @@ func collectionProps(coll *Collection) map[string]dbus.Variant {
 	}
 
 	return map[string]dbus.Variant{
-		"Items":     dbus.MakeVariant(itemPaths),
-		"Label":     dbus.MakeVariant(coll.Label()),
-		"Locked":    dbus.MakeVariant(coll.Locked()),
-		"Created":   dbus.MakeVariant(uint64(coll.Created())),
-		"Modified":  dbus.MakeVariant(uint64(coll.Modified())),
+		"Items":    dbus.MakeVariant(itemPaths),
+		"Label":    dbus.MakeVariant(coll.Label()),
+		"Locked":   dbus.MakeVariant(coll.Locked()),
+		"Created":  dbus.MakeVariant(uint64(coll.Created())),
+		"Modified": dbus.MakeVariant(uint64(coll.Modified())),
 	}
 }
 
@@ -153,5 +156,41 @@ func (ip *itemProperties) GetAll(iface string) (map[string]dbus.Variant, *dbus.E
 }
 
 func (ip *itemProperties) Set(iface, property string, value dbus.Variant) *dbus.Error {
-	return nil // read-only
+	if iface != InterfaceItem {
+		return nil
+	}
+	uuid := entryUUIDString(ip.item.entry)
+	switch property {
+	case "Label":
+		label, ok := value.Value().(string)
+		if !ok {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []interface{}{"Label must be a string"})
+		}
+		if err := ip.item.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+			entry := findEntryPtrByUUID(db.Content.Root.Groups, uuid)
+			if entry == nil {
+				return fmt.Errorf("secretservice: item not found: %s", uuid)
+			}
+			setEntryValue(entry, "Title", label, false)
+			return nil
+		}); err != nil {
+			return dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
+		}
+	case "Attributes":
+		attrs, ok := value.Value().(map[string]string)
+		if !ok {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []interface{}{"Attributes must be a{ss}"})
+		}
+		if err := ip.item.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+			entry := findEntryPtrByUUID(db.Content.Root.Groups, uuid)
+			if entry == nil {
+				return fmt.Errorf("secretservice: item not found: %s", uuid)
+			}
+			applyEntryAttributes(entry, attrs)
+			return nil
+		}); err != nil {
+			return dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
+		}
+	}
+	return nil
 }

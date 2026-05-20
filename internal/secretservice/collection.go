@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/user/kpxcd/internal/dbpool"
 )
@@ -123,16 +124,48 @@ func (c *Collection) Delete() (dbus.ObjectPath, *dbus.Error) {
 		[]interface{}{"Collections cannot be deleted through the Secret Service API"})
 }
 
-// CreateItem creates a new item in this collection.
-// Since kpxcd is a read-only view of KeePass databases, this returns
-// an immediate prompt that completes with dismissal (not supported).
+// CreateItem creates or updates an item in this collection and persists it to
+// the backing KDBX file. If replace is true, the first item whose attributes
+// match the requested attributes is updated in place.
 func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusSecret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	slog.Debug("secretservice: CreateItem", "collection", string(c.path), "replace", replace)
 
-	// Read-only: return a prompt path. When the client calls Prompt(),
-	// it auto-completes with dismissed=true (operation cancelled).
-	_, promptPath := c.svc.nextPrompt()
-	return "/", promptPath, nil
+	plaintext, err := c.svc.decryptSecret(secret)
+	if err != nil {
+		return "/", "/", dbus.NewError(ErrNoSession, []interface{}{err.Error()})
+	}
+
+	label := propertyString(properties, "Label")
+	attrs := propertyAttributes(properties)
+	var itemPath dbus.ObjectPath
+	var created gokeepasslib.Entry
+
+	if err := c.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		if replace && len(attrs) > 0 {
+			if entry := findMatchingEntryPtr(db.Content.Root.Groups, c.db.Name, c.db.UUID, attrs); entry != nil {
+				applyEntryFields(entry, label, attrs, string(plaintext))
+				itemPath = itemPathForEntry(c.db.Name, *entry)
+				created = *entry
+				return nil
+			}
+		}
+
+		entry := newSecretServiceEntry(label, attrs, plaintext)
+		group := findOrCreateSecretServiceGroup(db)
+		group.Entries = append(group.Entries, entry)
+		created = entry
+		itemPath = itemPathForEntry(c.db.Name, entry)
+		return nil
+	}); err != nil {
+		return "/", "/", dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
+	}
+
+	item := newItem(c.conn, c, created)
+	exportItemIfPossible(c, item)
+	if c.conn != nil {
+		_ = c.conn.Emit(c.path, InterfaceCollection+".ItemCreated", itemPath)
+	}
+	return itemPath, "/", nil
 }
 
 // CreatePrompt creates a prompt for the collection. Used internally.

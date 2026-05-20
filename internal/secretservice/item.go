@@ -92,10 +92,31 @@ func (i *Item) Modified() int64 {
 	return 0
 }
 
-// Delete removes this item. Read-only: not supported.
+// Delete removes this item. Deletion support is intentionally deferred until
+// save/restore UX is more mature.
 func (i *Item) Delete() (dbus.ObjectPath, *dbus.Error) {
 	return "/", dbus.NewError(ErrIsLocked,
 		[]interface{}{"Items cannot be deleted through the Secret Service API"})
+}
+
+// SetSecret updates this item's secret and persists the database.
+func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
+	plaintext, err := i.coll.svc.decryptSecret(secret)
+	if err != nil {
+		return dbus.NewError(ErrNoSession, []interface{}{err.Error()})
+	}
+	uuid := entryUUIDString(i.entry)
+	if err := i.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		entry := findEntryPtrByUUID(db.Content.Root.Groups, uuid)
+		if entry == nil {
+			return fmt.Errorf("secretservice: item not found: %s", uuid)
+		}
+		setEntryValue(entry, "Password", string(plaintext), true)
+		return nil
+	}); err != nil {
+		return dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
+	}
+	return nil
 }
 
 // GetSecret returns the encrypted secret for this entry via the given session.
@@ -196,6 +217,9 @@ func itemIntrospectNode(item *Item) *introspect.Node {
 					{Name: "GetSecret", Args: []introspect.Arg{
 						{Name: "session", Type: "o", Direction: "in"},
 						{Name: "secret", Type: "(oayays)", Direction: "out"},
+					}},
+					{Name: "SetSecret", Args: []introspect.Arg{
+						{Name: "secret", Type: "(oayays)", Direction: "in"},
 					}},
 				},
 				Properties: []introspect.Property{
