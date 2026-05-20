@@ -178,24 +178,66 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 	}
 }
 
+// resolveKeeAgentSettingsFromDB looks up the KeeAgent.settings binary
+// attachment in the database, decodes it, and parses the XML to get the
+// real attachment name and settings.
+func resolveKeeAgentSettingsFromDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*KeeAgentSettings, error) {
+	for _, ref := range entry.Binaries {
+		if ref.Name != "KeeAgent.settings" {
+			continue
+		}
+		binary := db.FindBinary(ref.Value.ID)
+		if binary == nil {
+			return nil, fmt.Errorf("KeeAgent.settings binary not found in database")
+		}
+		content, err := binary.GetContentBytes()
+		if err != nil {
+			return nil, fmt.Errorf("decode KeeAgent.settings: %w", err)
+		}
+		var settings KeeAgentSettings
+		if err := xml.Unmarshal(content, &settings); err != nil {
+			return nil, fmt.Errorf("parse KeeAgent.settings XML: %w", err)
+		}
+		slog.Debug("sshagent: resolved KeeAgent.settings from database",
+			"entry", entry.GetTitle(),
+			"allow", settings.AllowUseOfSshKey,
+			"location_type", settings.Location.SelectedType,
+			"attachment", settings.Location.Attachment)
+		return &settings, nil
+	}
+	return nil, nil
+}
+
 // extractKeyFromEntryWithDB resolves binary references using the database metadata.
 func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
-	settings, err := ParseKeeAgentSettings(entry)
+	// Try the full-resolution path first: parse the real KeeAgent.settings
+	// XML from the database. This gives us the actual attachment name.
+	settings, err := resolveKeeAgentSettingsFromDB(entry, db)
 	if err != nil {
-		slog.Debug("sshagent: KeeAgent parse error, trying fallback",
+		slog.Debug("sshagent: KeeAgent DB resolution failed, trying fallback",
 			"entry", entry.GetTitle(), "error", err)
-		return extractKeyFromCommonNamesWithDB(entry, db)
 	}
 	if settings == nil {
-		slog.Debug("sshagent: no KeeAgent settings, trying fallback", "entry", entry.GetTitle())
-		return extractKeyFromCommonNamesWithDB(entry, db)
+		// No KeeAgent.settings binary attachment. Try custom data or
+		// fall back to common name scanning.
+		settings, err = ParseKeeAgentSettings(entry)
+		if err != nil {
+			slog.Debug("sshagent: KeeAgent parse error, trying fallback",
+				"entry", entry.GetTitle(), "error", err)
+			return extractKeyFromCommonNamesWithDB(entry, db)
+		}
+		if settings == nil {
+			slog.Debug("sshagent: no KeeAgent settings, trying fallback", "entry", entry.GetTitle())
+			return extractKeyFromCommonNamesWithDB(entry, db)
+		}
 	}
+
 	if !settings.AllowUseOfSshKey {
 		slog.Debug("sshagent: KeeAgent explicitly disabled for this entry", "entry", entry.GetTitle())
 		return nil, nil
 	}
 
-	slog.Debug("sshagent: KeeAgent enabled for entry",
+	slog.Info("sshagent: KeeAgent enabled for entry",
 		"entry", entry.GetTitle(),
 		"location_type", settings.Location.SelectedType,
 		"attachment", settings.Location.Attachment)
@@ -305,8 +347,11 @@ func extractKeyFromCommonNamesWithDB(entry *gokeepasslib.Entry, db *gokeepasslib
 // isPrivateKeyFilename returns true if the name looks like an SSH private key file.
 func isPrivateKeyFilename(name string) bool {
 	lower := strings.ToLower(name)
+
+	// Known SSH private key filenames.
 	privateKeyNames := []string{
 		"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+		"id_rsa_old", // legacy KeeAgent naming
 		"private.key", "ssh.key",
 	}
 	for _, pattern := range privateKeyNames {
@@ -314,5 +359,21 @@ func isPrivateKeyFilename(name string) bool {
 			return true
 		}
 	}
-	return strings.HasSuffix(lower, ".pem") || strings.HasSuffix(lower, ".key")
+
+	// Generic extensions.
+	if strings.HasSuffix(lower, ".pem") || strings.HasSuffix(lower, ".key") {
+		return true
+	}
+
+	// OpenSSH new-format private key (often used by KeeAgent when the
+	// attachment name is derived from the key comment or a custom name).
+	// These are base names that commonly hold key material.
+	sshKeyPrefixes := []string{"id_", "ssh_", "key", "private"}
+	for _, prefix := range sshKeyPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
