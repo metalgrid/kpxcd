@@ -31,24 +31,21 @@ GOEXPERIMENT=runtimesecret make
 # Install
 make install
 
-# Configure
-mkdir -p ~/.config/kpxcd
-cp doc/kpxcd.toml.example ~/.config/kpxcd/kpxcd.toml
-# Edit the config to point to your database
-
-# Store your password as a systemd credential
-echo -n 'your-password' > ~/.local/share/kpxcd/personal.pass
-chmod 600 ~/.local/share/kpxcd/personal.pass
-
-# Start
+# Start. On first run, kpxcd creates ~/.config/kpxcd/config.toml
+# from its embedded defaults. The default config points to a local
+# ~/.local/share/kpxcd/default.kdbx database and uses PAM auto-unlock
+# when the optional PAM module is installed.
 systemctl --user enable --now kpxcd
+
+# Optional: edit the generated config to add existing databases.
+$EDITOR ~/.config/kpxcd/config.toml
 
 # Use
 kpxcctl unlock /path/to/database.kdbx
 kpxcctl list
 kpxcctl get "example.com"
 ssh-add -l  # should show keys from your database
-secret-tool lookup kpxcd:dbname Personal  # retrieve a password
+secret-tool lookup kpxcd:dbname Default  # retrieve a password
 ```
 
 ## Documentation

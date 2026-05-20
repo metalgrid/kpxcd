@@ -16,7 +16,7 @@ unattended or programmatic access to passwords, SSH keys, and passkeys throughou
 a login session, without requiring the KeePassXC GUI to be running.
 
 Upon startup, \fBkpxcd\fR reads its configuration from
-\fI~/.config/kpxcd/kpxcd.toml\fR (or the path specified with
+\fI~/.config/kpxcd/config.toml\fR (or the path specified with
 \fB\-\-config\fR), loads any databases marked for auto-unlock, and begins
 listening on the following interfaces:
 
@@ -42,8 +42,8 @@ registers and stack on return.
 .TP
 .BR \-\-config " \fIPATH\fR"
 Path to the configuration file. Defaults to
-\fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR, falling back to
-\fI~/.config/kpxcd/kpxcd.toml\fR.
+\fI$XDG_CONFIG_HOME/kpxcd/config.toml\fR, falling back to
+\fI~/.config/kpxcd/config.toml\fR.
 
 .TP
 .BR \-h ", " \-\-help
@@ -75,7 +75,7 @@ FIDO2 / passkey settings: AAGUID, supported algorithms, user verification.
 
 .SH FILES
 .TP
-.I ~/.config/kpxcd/kpxcd.toml
+.I ~/.config/kpxcd/config.toml
 Default configuration file. See \fBkpxcd.toml\fR(5).
 
 .TP
@@ -94,7 +94,7 @@ Polkit policy file defining authorization requirements for sensitive operations.
 .TP
 .B XDG_CONFIG_HOME
 Overrides the default configuration directory. If set, the config file is
-sought at \fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR.
+sought at \fI$XDG_CONFIG_HOME/kpxcd/config.toml\fR.
 
 .TP
 .B XDG_RUNTIME_DIR

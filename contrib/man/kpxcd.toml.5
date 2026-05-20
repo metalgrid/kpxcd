@@ -18,9 +18,9 @@ The configuration file is searched in the following order:
 .TP 1.
 Command-line: \fBkpxcd \-\-config \fIPATH\fR
 .TP 2.
-XDG: \fI$XDG_CONFIG_HOME/kpxcd/kpxcd.toml\fR (if \fBXDG_CONFIG_HOME\fR is set)
+XDG: \fI$XDG_CONFIG_HOME/kpxcd/config.toml\fR (if \fBXDG_CONFIG_HOME\fR is set)
 .TP 3.
-Default: \fI~/.config/kpxcd/kpxcd.toml\fR
+Default: \fI~/.config/kpxcd/config.toml\fR
 .RE
 
 .SH SECTIONS
@@ -89,6 +89,10 @@ String. \fIRequired.\fR Absolute path to the \fI.kdbx\fR file.
 .B name
 String. Human-readable display name. Defaults to the filename without extension.
 .TP
+.B default
+Boolean. Mark this as the default database. At most one database may be default.
+Default: \fBfalse\fR.
+.TP
 .B auto_unlock
 Boolean. Attempt to unlock this database when the daemon starts.
 Default: \fBfalse\fR.
@@ -96,6 +100,10 @@ Default: \fBfalse\fR.
 .B unlock_credential
 String. How to obtain the password for auto-unlock. One of:
 .RS
+.TP
+.B "pam"
+Unwrap kpxcd's age-sealed credential using a PAM login token from
+\fI$XDG_RUNTIME_DIR/kpxcd/pam-token\fR.
 .TP
 .B "systemd-credential"
 Read from a systemd \fBLoadCredential=\fR file descriptor.
@@ -310,7 +318,7 @@ user_verification = "preferred"
 
 .SH FILES
 .TP
-.I ~/.config/kpxcd/kpxcd.toml
+.I ~/.config/kpxcd/config.toml
 Default configuration file location.
 
 .SH SEE ALSO

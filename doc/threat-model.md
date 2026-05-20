@@ -22,7 +22,7 @@ The threat model assumes:
 | SSH private keys | Process memory, `runtime/secret` scope | **High** — can authenticate as the user |
 | Passkey private keys | Process memory, `runtime/secret` scope | **High** — can authenticate to web services |
 | TOTP seeds | Process memory, `mlock`'d | **Medium** — time-limited but reusable |
-| Configuration file | `~/.config/kpxcd/kpxcd.toml` | **Low** — paths and settings, no secrets |
+| Configuration file | `~/.config/kpxcd/config.toml` | **Low** — paths and settings, no secrets |
 | Database files on disk | `~/Passwords.kdbx` etc. | **Low** — encrypted at rest |
 | Keyfile on disk | Configured path | **Medium** — component of the composite key |
 
@@ -112,7 +112,7 @@ The threat model assumes:
 | `kpxcd/ssh.sock` | SSH agent protocol | Binary protocol parsing |
 | `kpxcd/control.sock` | JSON-RPC | JSON parsing, command dispatch |
 | `$PATH/*.kdbx` | KDBX binary format | File parsing, crypto |
-| `kpxcd.toml` | TOML | Config parsing |
+| `config.toml` | TOML | Config parsing |
 | `org.freedesktop.PolicyKit1` | D-Bus | Polkit result spoofing (requires separate vuln) |
 
 ## Mitigations by Layer

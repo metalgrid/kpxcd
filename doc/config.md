@@ -6,14 +6,16 @@
 
 | Precedence | Path |
 |------------|------|
-| Default | `~/.config/kpxcd/kpxcd.toml` |
+| Default | `~/.config/kpxcd/config.toml` |
 | Override | `kpxcd --config <path>` |
-| XDG | `$XDG_CONFIG_HOME/kpxcd/kpxcd.toml` (if `XDG_CONFIG_HOME` is set) |
+| XDG | `$XDG_CONFIG_HOME/kpxcd/config.toml` (if `XDG_CONFIG_HOME` is set) |
+
+If the default config file does not exist, `kpxcd` creates it from its embedded defaults with parent directory mode `0700` and file mode `0600`.
 
 ## Full Example
 
 ```toml
-# kpxcd.toml — KeePassXC Daemon Configuration
+# config.toml — kpxcd configuration
 
 [daemon]
 # Lock all databases after this many seconds of inactivity (0 = disabled)
@@ -36,24 +38,25 @@ ssh_mode = "agent"  # "agent" | "proxy"
 
 [[database]]
 # Path to the .kdbx file (required)
-path = "/home/user/Passwords.kdbx"
+path = "$XDG_DATA_HOME/kpxcd/default.kdbx"
 
 # Display name (optional, defaults to filename)
-name = "Personal"
+name = "Default"
 
-# Auto-unlock this database when the daemon starts
+# Mark this database as the default Secret Service database.
+default = true
+
+# Auto-unlock this database when the daemon starts or when a PAM token appears.
 auto_unlock = true
 
 # Credential source for auto-unlock
+# "pam"                — unwrap age-sealed credential using PAM login token
 # "systemd-credential" — read from systemd LoadCredential
 # "secret-service"     — look up in org.freedesktop.secrets
 # "keyfile"            — read a keyfile from disk
 # "prompt"             — do not auto-unlock; wait for kpxcctl unlock
 # "none"               — database has no password (dangerous)
-unlock_credential = "systemd-credential"
-
-# systemd credential name (only used if unlock_credential = "systemd-credential")
-systemd_credential_name = "kpxcd-personal"
+unlock_credential = "pam"
 
 # Keyfile path (only used if unlock_credential = "keyfile")
 keyfile = ""
@@ -144,8 +147,9 @@ This is a TOML array of tables — repeat the `[[database]]` header for each dat
 |-----|------|---------|-------------|
 | `path` | string | *required* | Absolute path to the `.kdbx` file. |
 | `name` | string | filename | Human-readable name for the database. |
+| `default` | bool | `false` | Mark this as the default database. At most one database may be default. |
 | `auto_unlock` | bool | `false` | Attempt to unlock this database when the daemon starts. |
-| `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `systemd-credential`, `secret-service`, `keyfile`, `prompt`, `none`. |
+| `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `pam`, `systemd-credential`, `secret-service`, `keyfile`, `prompt`, `none`. |
 | `systemd_credential_name` | string | `""` | Name of the systemd credential holding the password. Only used when `unlock_credential = "systemd-credential"`. |
 | `keyfile` | string | `""` | Path to a keyfile. Used when `unlock_credential = "keyfile"` or as a secondary factor. |
 | `yubikey_slot` | int | `0` | YubiKey challenge-response slot. `0` = disabled, `1` or `2` = slot number. |
@@ -189,6 +193,7 @@ All path fields in the config support shell-like variable expansion:
 | `~` | User's home directory | `~/Passwords.kdbx` → `/home/alice/Passwords.kdbx` |
 | `$HOME` | HOME environment variable | `$HOME/Passwords.kdbx` → `/home/alice/Passwords.kdbx` |
 | `${HOME}` | Same as above (brace syntax) | `${HOME}/Passwords.kdbx` |
+| `$XDG_DATA_HOME` | XDG data directory, fallback `~/.local/share` | `$XDG_DATA_HOME/kpxcd/default.kdbx` |
 | `$XDG_RUNTIME_DIR` | XDG runtime directory | `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
 | `relative/path` | Resolved against `$XDG_CONFIG_HOME/kpxcd/` | `ssh.sock` → `/home/alice/.config/kpxcd/ssh.sock` |
 | `/absolute/path` | Used as-is | `/home/alice/Passwords.kdbx` |
@@ -202,6 +207,40 @@ path = "$HOME/Passwords.kdbx"
 # or
 keyfile = "~/.config/kpxcd/keyfile.key"
 ```
+
+### `pam`
+
+`pam` is the default zero-dependency bootstrap mode. A small PAM module captures the login token during authentication and writes it during session setup to:
+
+```text
+$XDG_RUNTIME_DIR/kpxcd/pam-token
+```
+
+The PAM session hook must run **after `pam_systemd.so`**, because `pam_systemd` creates `$XDG_RUNTIME_DIR`.
+
+`kpxcd` consumes and deletes this runtime token. The token unwraps:
+
+```text
+$XDG_DATA_HOME/kpxcd/default.identity.age
+```
+
+which is an age X25519 identity encrypted with age passphrase mode. That identity decrypts:
+
+```text
+$XDG_DATA_HOME/kpxcd/default.cred.age
+```
+
+which contains the random password for the default KDBX database. The default database is:
+
+```text
+$XDG_DATA_HOME/kpxcd/default.kdbx
+```
+
+On first login, if the PAM token exists and neither the default DB nor sealed credential exist, `kpxcd` creates all of them with private permissions. If the DB already exists but the sealed credential is missing, `kpxcd` refuses to modify it.
+
+Changing the Linux login password will require rewrapping the age identity; automatic password-change rewrap is future work.
+
+### `systemd-credential`
 
 systemd ≥ 250 supports `LoadCredential=` and `SetCredential=` in service units. The password is passed to `kpxcd` via a file descriptor:
 

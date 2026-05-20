@@ -1,7 +1,8 @@
-# kpxcd.toml — Example Configuration
+# config.toml — Example Configuration
 #
-# Copy this file to ~/.config/kpxcd/kpxcd.toml and edit to taste.
-# Run: kpxcd --config ~/.config/kpxcd/kpxcd.toml
+# kpxcd creates ~/.config/kpxcd/config.toml from embedded defaults on first run.
+# Copy this file there if you want a fuller annotated example.
+# Run: kpxcd --config ~/.config/kpxcd/config.toml
 #
 # Path expansion:
 #   ~           expands to your home directory
@@ -34,29 +35,28 @@ ssh_socket_path = "kpxcd/ssh.sock"
 ssh_mode = "agent"
 
 # ──────────────────────────────────────────────────────────────
-# Database: personal password vault
+# Database: default local password vault
 # ──────────────────────────────────────────────────────────────
 
 [[database]]
-path = "~/Passwords.kdbx"
-name = "Personal"
+path = "$XDG_DATA_HOME/kpxcd/default.kdbx"
+name = "Default"
+default = true
 
-# Auto-unlock on session start.
+# Auto-unlock on session start using a PAM login token.
 auto_unlock = true
 
 # How to get the password for auto-unlock.
-#   "systemd-credential" — read from $CREDENTIALS_DIRECTORY (most secure)
+#   "pam"                — unwrap age-sealed credential with PAM login token
+#   "systemd-credential" — read from $CREDENTIALS_DIRECTORY
 #   "secret-service"     — look up in gnome-keyring / kwallet
 #   "keyfile"            — read a keyfile from disk
 #   "prompt"             — don't auto-unlock; wait for kpxcctl unlock
 #   "none"               — database has no password (dangerous)
-unlock_credential = "systemd-credential"
-
-# Name of the systemd credential (see kpxcd.service for how to set this up).
-systemd_credential_name = "kpxcd-personal"
+unlock_credential = "pam"
 
 # Automatically add SSH keys that have KeeAgent settings.
-ssh_auto_add = true
+ssh_auto_add = false
 
 # ──────────────────────────────────────────────────────────────
 # Database: work vault (only unlocked manually)

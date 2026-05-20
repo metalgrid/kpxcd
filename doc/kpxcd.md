@@ -23,7 +23,7 @@ It exists because the KeePassXC GUI is the wrong tool for unattended or programm
 | Create and assert FIDO2 / WebAuthn passkeys | DBus, CLI | `org.keepassxc.Daemon.CreatePasskey` / `AssertPasskey` |
 | Generate TOTP codes | DBus, CLI | `org.keepassxc.Daemon.GetTotp` / `kpxcctl totp <entry>` |
 | Search entries by URL, title, username | DBus, Secret Service | Attribute-based search |
-| Auto-unlock databases at session start | systemd | Configured via `kpxcd.toml` |
+| Auto-unlock databases at session start | systemd/PAM | Configured via `config.toml`; default DB can unlock from PAM login token |
 | Re-lock on screen lock or inactivity | DBus, systemd | Listen to `org.freedesktop.ScreenSaver` and idle timers |
 
 ## What It Does Not Do
@@ -142,7 +142,7 @@ These are explicit non-goals. They belong to other tools.
 
 ## Configuration
 
-`kpxcd` reads `~/.config/kpxcd/kpxcd.toml`. See [`doc/config.md`](config.md) for the full specification.
+`kpxcd` reads `~/.config/kpxcd/config.toml`, creating it from embedded defaults on first run. See [`doc/config.md`](config.md) for the full specification.
 
 ## See Also
 

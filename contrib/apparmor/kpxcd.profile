@@ -77,9 +77,10 @@ profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
   # Configuration files
   # ===========================================================================
 
-  # Read configuration from ~/.config/kpxcd/kpxcd.toml.
-  owner @{HOME}/.config/kpxcd/          r,
-  owner @{HOME}/.config/kpxcd/**        r,
+  # Read/write configuration from ~/.config/kpxcd/config.toml.
+  # kpxcd creates the embedded default config on first run.
+  owner @{HOME}/.config/kpxcd/          rw,
+  owner @{HOME}/.config/kpxcd/**        rw,
 
   # Read KeePassXC config for database MRU and display names.
   owner @{HOME}/.config/keepassxc/      r,
@@ -91,9 +92,9 @@ profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
 
   # Read .kdbx database files from the user's home directory and common
   # locations. These are encrypted at rest; kpxcd decrypts them in memory.
-  owner @{HOME}/**.kdbx                r,
-  owner @{HOME}/Documents/**.kdbx      r,
-  owner @{HOME}/.local/share/**.kdbx   r,
+  owner @{HOME}/**.kdbx                rw,
+  owner @{HOME}/Documents/**.kdbx      rw,
+  owner @{HOME}/.local/share/**.kdbx   rw,
 
   # Read keyfiles (any file referenced in config).
   owner @{HOME}/**                     r,
@@ -126,9 +127,10 @@ profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
   # Credential directory (systemd LoadCredential)
   # ===========================================================================
 
-  # Read systemd credentials for auto-unlock passwords.
+  # Read systemd credentials and read/write kpxcd's age-sealed PAM credentials.
   owner /run/host/**                   r,
-  owner @{HOME}/.local/share/kpxcd/**  r,
+  owner @{HOME}/.local/share/kpxcd/    rw,
+  owner @{HOME}/.local/share/kpxcd/**  rw,
 
   # ===========================================================================
   # D-Bus
