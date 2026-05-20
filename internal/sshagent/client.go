@@ -46,22 +46,34 @@ func (c *AgentClient) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 
 	keys, err := ExtractKeysFromDatabase(db.Db)
 	if err != nil {
-		slog.Warn("SSH agent client: failed to extract keys from database", "error", err)
+		slog.Warn("SSH agent client: failed to extract keys from database",
+			"db", db.Name, "error", err)
 		return
 	}
 
+	slog.Info("SSH agent client: extracted keys from database",
+		"db", db.Name, "count", len(keys))
+
+	var added, failed int
 	for _, key := range keys {
 		key.SetDBUUID(db.UUID)
 
 		if err := c.AddKey(key); err != nil {
 			slog.Warn("SSH agent client: failed to add key",
 				"fingerprint", key.Fingerprint(), "error", err)
+			failed++
 		} else {
 			slog.Info("SSH agent client: added key",
 				"fingerprint", key.Fingerprint(),
 				"type", key.Format,
 				"comment", key.Comment)
+			added++
 		}
+	}
+
+	if added == 0 && len(keys) > 0 {
+		slog.Warn("SSH agent client: no keys were added to agent",
+			"db", db.Name, "extracted", len(keys), "failed", failed)
 	}
 }
 

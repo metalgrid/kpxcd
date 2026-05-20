@@ -5,6 +5,7 @@ package sshagent
 import (
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/tobischo/gokeepasslib/v3"
@@ -33,13 +34,8 @@ func ParseKeeAgentSettings(entry *gokeepasslib.Entry) (*KeeAgentSettings, error)
 	// Look for KeeAgent.settings attachment reference.
 	for _, ref := range entry.Binaries {
 		if ref.Name == "KeeAgent.settings" {
-			// We need the actual binary content from the database metadata.
-			// This will be resolved by ExtractKeyFromEntry using the database.
-			// For now, return a placeholder that indicates attachment-based key.
-			// We found a KeeAgent.settings attachment reference but can't
-			// resolve its content here (we need the database). Signal that
-			// this entry uses attachment-based keys but leave the attachment
-			// name empty so the caller falls through to common name search.
+			slog.Debug("sshagent: found KeeAgent.settings attachment reference",
+				"entry", entry.GetTitle())
 			return &KeeAgentSettings{
 				AllowUseOfSshKey:      true,
 				AddAtDatabaseOpen:     true,
@@ -55,6 +51,7 @@ func ParseKeeAgentSettings(entry *gokeepasslib.Entry) (*KeeAgentSettings, error)
 	// Also check entry custom data for KeeAgent settings (some formats store it there).
 	for _, cd := range entry.CustomData {
 		if cd.Key == "KeeAgent.settings" {
+			slog.Debug("sshagent: found KeeAgent.settings in custom data", "entry", entry.GetTitle())
 			var settings KeeAgentSettings
 			if err := xml.Unmarshal([]byte(cd.Value), &settings); err != nil {
 				return nil, fmt.Errorf("sshagent: failed to parse KeeAgent custom data: %w", err)
@@ -149,13 +146,18 @@ func ExtractKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
 	var keys []*Key
 
 	if db == nil || db.Content == nil || db.Content.Root == nil {
+		slog.Debug("sshagent: database has no content to extract keys from")
 		return nil, nil
 	}
+
+	groupCount := len(db.Content.Root.Groups)
+	slog.Debug("sshagent: scanning database for SSH keys", "groups", groupCount)
 
 	for i := range db.Content.Root.Groups {
 		extractKeysFromGroup(&db.Content.Root.Groups[i], db, &keys)
 	}
 
+	slog.Info("sshagent: SSH key extraction complete", "found", len(keys))
 	return keys, nil
 }
 
@@ -164,6 +166,7 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 	for i := range group.Entries {
 		key, err := extractKeyFromEntryWithDB(&group.Entries[i], db)
 		if err != nil {
+			// Errors are already logged by the extraction functions.
 			continue
 		}
 		if key != nil {
@@ -178,10 +181,24 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 // extractKeyFromEntryWithDB resolves binary references using the database metadata.
 func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
 	settings, err := ParseKeeAgentSettings(entry)
-	if err != nil || settings == nil || !settings.AllowUseOfSshKey {
-		// Even without KeeAgent settings, try common key patterns.
+	if err != nil {
+		slog.Debug("sshagent: KeeAgent parse error, trying fallback",
+			"entry", entry.GetTitle(), "error", err)
 		return extractKeyFromCommonNamesWithDB(entry, db)
 	}
+	if settings == nil {
+		slog.Debug("sshagent: no KeeAgent settings, trying fallback", "entry", entry.GetTitle())
+		return extractKeyFromCommonNamesWithDB(entry, db)
+	}
+	if !settings.AllowUseOfSshKey {
+		slog.Debug("sshagent: KeeAgent explicitly disabled for this entry", "entry", entry.GetTitle())
+		return nil, nil
+	}
+
+	slog.Debug("sshagent: KeeAgent enabled for entry",
+		"entry", entry.GetTitle(),
+		"location_type", settings.Location.SelectedType,
+		"attachment", settings.Location.Attachment)
 
 	// Find the attachment data.
 	var keyData []byte
@@ -196,6 +213,8 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 				binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
 				if binary != nil && binary.Content != nil {
 					keyData = binary.Content
+					slog.Debug("sshagent: resolved named KeeAgent attachment",
+						"entry", entry.GetTitle(), "attachment", attachmentName)
 					break
 				}
 			}
@@ -205,11 +224,19 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 	// If we didn't find the named attachment (or didn't know the name),
 	// search for any binary that looks like a private key.
 	if keyData == nil {
+		slog.Debug("sshagent: named attachment not resolved, scanning common names",
+			"entry", entry.GetTitle())
 		return extractKeyFromCommonNamesWithDB(entry, db)
 	}
 
 	passphrase := entry.GetPassword()
-	return ParsePrivateKey(keyData, passphrase)
+	key, err := ParsePrivateKey(keyData, passphrase)
+	if err != nil {
+		slog.Warn("sshagent: failed to parse KeeAgent named attachment",
+			"entry", entry.GetTitle(), "attachment", attachmentName, "error", err)
+		return nil, err
+	}
+	return key, nil
 }
 
 // extractKeyFromCommonNamesWithDB resolves binary attachments using the database.
@@ -218,23 +245,51 @@ func extractKeyFromCommonNamesWithDB(entry *gokeepasslib.Entry, db *gokeepasslib
 		return nil, nil
 	}
 
-	for _, ref := range entry.Binaries {
-		if !isPrivateKeyFilename(ref.Name) {
+	binaries := entry.Binaries
+	slog.Debug("sshagent: scanning binaries for key-like names",
+		"entry", entry.GetTitle(), "binary_count", len(binaries))
+
+	for _, ref := range binaries {
+		match := isPrivateKeyFilename(ref.Name)
+		slog.Debug("sshagent: checking binary",
+			"entry", entry.GetTitle(),
+			"name", ref.Name,
+			"matches_key_pattern", match)
+		if !match {
 			continue
 		}
 		binary := db.Content.Meta.Binaries.Find(ref.Value.ID)
-		if binary != nil && binary.Content != nil {
-			passphrase := entry.GetPassword()
-			key, err := ParsePrivateKey(binary.Content, passphrase)
-			if err == nil && key != nil {
-				uuid, _ := entry.UUID.MarshalText()
-				key.SetComment(entry.GetTitle())
-				key.SetEntryUUID(string(uuid))
-				return key, nil
-			}
+		if binary == nil || binary.Content == nil {
+			slog.Debug("sshagent: binary content not found in metadata",
+				"entry", entry.GetTitle(), "name", ref.Name)
+			continue
+		}
+		passphrase := entry.GetPassword()
+		key, err := ParsePrivateKey(binary.Content, passphrase)
+		if err != nil {
+			slog.Warn("sshagent: binary looks like a key but failed to parse",
+				"entry", entry.GetTitle(),
+				"name", ref.Name,
+				"size", len(binary.Content),
+				"error", err)
+			continue
+		}
+		if key != nil {
+			uuid, _ := entry.UUID.MarshalText()
+			key.SetComment(entry.GetTitle())
+			key.SetEntryUUID(string(uuid))
+			slog.Info("sshagent: extracted SSH key from entry",
+				"entry", entry.GetTitle(),
+				"binary", ref.Name,
+				"type", key.Format,
+				"fingerprint", key.Fingerprint())
+			return key, nil
 		}
 	}
 
+	slog.Debug("sshagent: no SSH key found in entry binaries",
+		"entry", entry.GetTitle(),
+		"binary_count", len(binaries))
 	return nil, nil
 }
 
