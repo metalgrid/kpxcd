@@ -15,10 +15,10 @@ import (
 	"filippo.io/age"
 	"github.com/godbus/dbus/v5"
 
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/pamcred"
+	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/pamcred"
-	"github.com/user/kpxcd/internal/xdg"
 	"golang.org/x/term"
 )
 
@@ -195,8 +195,8 @@ func setupSSHClientMode() {
 //
 // Usage:
 //
-// 	kpxcctl unlock              Unlock the default database (PAM credential or password)
-// 	kpxcctl unlock <path>       Unlock a specific database by password
+//	kpxcctl unlock              Unlock the default database (PAM credential or password)
+//	kpxcctl unlock <path>       Unlock a specific database by password
 func cmdUnlock(args []string) {
 	if len(args) == 0 {
 		cmdUnlockDefault()

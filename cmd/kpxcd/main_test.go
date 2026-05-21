@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
 // TestDaemonPing tests that the daemon can start and respond to a ping.

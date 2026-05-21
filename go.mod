@@ -1,4 +1,4 @@
-module github.com/user/kpxcd
+module github.com/metalgrid/kpxcd
 
 go 1.26
 

@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/user/kpxcd/internal/daemon"
+	"github.com/metalgrid/kpxcd/internal/daemon"
 )
 
 func main() {
