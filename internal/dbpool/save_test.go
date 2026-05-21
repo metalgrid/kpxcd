@@ -9,7 +9,7 @@ import (
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 func TestUpdateAndSavePersistsMutation(t *testing.T) {

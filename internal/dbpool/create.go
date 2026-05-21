@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
-	"github.com/user/kpxcd/internal/xdg"
 )
 
 // CreateDatabase creates a new KDBX4 database at path with mode 0600. It never

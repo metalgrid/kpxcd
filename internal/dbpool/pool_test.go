@@ -10,7 +10,7 @@ import (
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 // createTestKDBX creates a minimal KDBX database file with a password

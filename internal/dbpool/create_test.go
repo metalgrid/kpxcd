@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 func TestCreateDatabaseCreatesSecureKDBX(t *testing.T) {

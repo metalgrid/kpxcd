@@ -15,7 +15,7 @@ import (
 
 	"github.com/tobischo/gokeepasslib/v3"
 
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 // CredentialKind identifies the type of credential.
