@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/user/kpxcd/internal/xdg"
+	"github.com/metalgrid/kpxcd/internal/xdg"
 )
 
 //go:embed defaults/config.toml
