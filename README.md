@@ -4,14 +4,21 @@ A headless Linux daemon that keeps KeePass databases unlocked and available thro
 
 Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional YubiKey PCSC support).
 
+> **Status:** pre-1.0, Linux-only, security-sensitive software. Review the
+> threat model and run it in a test user session before trusting it with
+> production secrets.
+
 ## What It Does
 
 - **Unlocks databases at session start** and holds them in memory
 - **Secret Service** — exposes and persists secrets for any `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`)
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — creates and asserts WebAuthn credentials stored in the database
-- **TOTP** — generates time-based one-time passwords
-- **Password generation** — generates random passwords and passphrases
+- **FIDO2 passkeys** — experimental credential creation plumbing (storage and assertions are still in progress)
+
+## Planned / In Progress
+
+- **TOTP** — time-based one-time-password generation
+- **Password generation** — random passwords and passphrases
 
 ## What It Doesn't Do
 
@@ -27,6 +34,9 @@ Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional Yu
 ```bash
 # Build (requires Go 1.26+ with GOEXPERIMENT=runtimesecret)
 GOEXPERIMENT=runtimesecret make
+
+# Run checks (includes the optional Rust PAM module)
+make check
 
 # Install
 make install
@@ -57,6 +67,13 @@ secret-tool lookup kpxcd:dbname Default  # retrieve a password
 | [`doc/dbus-api.md`](doc/dbus-api.md) | D-Bus interface specification |
 | [`doc/config.md`](doc/config.md) | Configuration file reference |
 | [`doc/threat-model.md`](doc/threat-model.md) | Threat model and mitigations |
+| [`doc/security-audit.md`](doc/security-audit.md) | Security review notes and mitigations |
+| [`doc/feature-matrix.md`](doc/feature-matrix.md) | Implemented and planned feature status |
+
+## Contributing and Security
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development workflow and
+[`SECURITY.md`](SECURITY.md) for private vulnerability reporting.
 
 ## License
 
