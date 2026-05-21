@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,49 +42,6 @@ func (app *DaemonApp) isDatabaseOpen(path string) bool {
 		}
 	}
 	return false
-}
-
-func consumePAMToken() ([]byte, error) {
-	path, err := xdg.PAMTokenPath()
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	return data, nil
-}
-
-func (app *DaemonApp) tryPAMAutoUnlock() {
-	db := app.defaultDatabase()
-	if db == nil || !db.AutoUnlock || db.UnlockCredential != "pam" {
-		return
-	}
-	if app.isDatabaseOpen(db.Path) {
-		return
-	}
-
-	token, err := consumePAMToken()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Debug("pam auto-unlock skipped: no PAM token")
-		} else {
-			slog.Warn("pam auto-unlock skipped", "error", err)
-		}
-		return
-	}
-	defer security.Wipe(token)
-
-	if err := app.unlockOrBootstrapWithPAM(*db, token); err != nil {
-		slog.Warn("pam auto-unlock failed", "name", db.Name, "path", db.Path, "error", err)
-	}
 }
 
 func (app *DaemonApp) unlockOrBootstrapWithPAM(db config.DatabaseConfig, token []byte) error {

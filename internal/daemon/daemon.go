@@ -37,6 +37,7 @@ type DaemonApp struct {
 	sshAgent  *sshagent.AgentServer
 	sshClient *sshagent.AgentClient
 	fido2Svc  *fido2.Fido2Service
+	pamSocket *PAMSocketServer
 	dbusConn  *dbus.Conn
 	done      chan struct{}
 }
@@ -98,6 +99,16 @@ func Run(configPath string, cliLevel slog.Level) error {
 	eventCh := make(chan dbpool.Event, 16)
 	app.pool = dbpool.NewDatabasePool(eventCh)
 	defer app.pool.Close()
+
+	// Start the PAM socket listener early so it is ready before PAM
+	// session hooks try to connect.
+	if app.hasPAMDatabase() {
+		app.pamSocket = NewPAMSocketServer(app)
+		if err := app.pamSocket.Listen(); err != nil {
+			slog.Warn("PAM socket setup failed", "error", err)
+			// Non-fatal: PAM auto-unlock will be unavailable.
+		}
+	}
 
 	// Connect to the session bus (shared by DaemonDBus + SecretService).
 	if err := app.startDBus(); err != nil {
@@ -242,6 +253,13 @@ func (app *DaemonApp) startSSHAgentClient() error {
 func (app *DaemonApp) shutdown() {
 	slog.Info("shutting down")
 
+	// Stop PAM socket.
+	if app.pamSocket != nil {
+		if err := app.pamSocket.Close(); err != nil {
+			slog.Error("PAM socket close error", "error", err)
+		}
+	}
+
 	// Stop SSH agent.
 	if app.sshAgent != nil {
 		if err := app.sshAgent.Close(); err != nil {
@@ -284,13 +302,6 @@ func (app *DaemonApp) eventLoop(sigCh <-chan os.Signal, eventCh <-chan dbpool.Ev
 		idleCh = idleTimer.C
 	}
 
-	var pamCh <-chan time.Time
-	if app.hasPAMDatabase() {
-		pamTicker := time.NewTicker(2 * time.Second)
-		defer pamTicker.Stop()
-		pamCh = pamTicker.C
-	}
-
 	for {
 		select {
 		case sig := <-sigCh:
@@ -313,9 +324,6 @@ func (app *DaemonApp) eventLoop(sigCh <-chan os.Signal, eventCh <-chan dbpool.Ev
 			if err := app.pool.LockAll(); err != nil {
 				slog.Error("idle lock failed", "error", err)
 			}
-
-		case <-pamCh:
-			app.tryPAMAutoUnlock()
 		}
 	}
 }
@@ -379,11 +387,6 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 
 // autoUnlock attempts to unlock all databases that have auto_unlock=true.
 func (app *DaemonApp) autoUnlock() {
-	// PAM auto-unlock consumes a one-shot login token and is only supported for
-	// the default database. Try it first so the fresh default DB is available to
-	// Secret Service clients as soon as possible.
-	app.tryPAMAutoUnlock()
-
 	for _, db := range app.cfg.Databases {
 		if !db.AutoUnlock {
 			slog.Debug("skipping locked database", "name", db.Name, "path", db.Path)
