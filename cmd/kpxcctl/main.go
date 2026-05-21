@@ -517,8 +517,9 @@ func cmdAdoptDefault(args []string) {
 
 	sourcePassword := readSecretPrompt("Source database password: ")
 	loginPassword := readSecretPrompt("Login/PAM password to seal default credential: ")
+	loginToken := pamcred.DerivePAMToken([]byte(loginPassword))
 
-	identity, err := loadOrCreateIdentity(identityPath, []byte(loginPassword))
+	identity, err := loadOrCreateIdentity(identityPath, loginToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kpxcctl: failed to prepare age identity: %v\n", err)
 		os.Exit(1)
