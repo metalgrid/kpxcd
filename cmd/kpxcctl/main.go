@@ -7,10 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"filippo.io/age"
 	"github.com/godbus/dbus/v5"
+
+	"github.com/tobischo/gokeepasslib/v3"
+	"github.com/user/kpxcd/internal/pamcred"
+	"github.com/user/kpxcd/internal/xdg"
 	"golang.org/x/term"
 )
 
@@ -42,6 +49,8 @@ func main() {
 		cmdSSH(args)
 	case "passkey":
 		cmdPasskey(args)
+	case "adopt-default":
+		cmdAdoptDefault(args)
 	case "ping":
 		cmdPing()
 	case "help", "--help", "-h":
@@ -69,6 +78,7 @@ Commands:
   ssh remove <fingerprint>  Remove an SSH key from the agent
   passkey create <uuid> <rpID> <username>  Create a new passkey
   passkey assert <rpID> <credID>            Assert a passkey
+  adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
   ping                       Check if daemon is alive
   help                       Show this help message`)
 }
@@ -464,4 +474,157 @@ func getVariantBool(v dbus.Variant) bool {
 		return val
 	}
 	return false
+}
+
+// cmdAdoptDefault copies an existing KeePass database into kpxcd's default
+// PAM-backed store and changes its KDBX password to a generated random secret
+// sealed by the PAM/age credential chain.
+func cmdAdoptDefault(args []string) {
+	replace := false
+	var source string
+	for _, arg := range args {
+		switch arg {
+		case "--replace":
+			replace = true
+		default:
+			if source == "" {
+				source = arg
+			} else {
+				fmt.Fprintf(os.Stderr, "kpxcctl adopt-default: unexpected argument: %s\n", arg)
+				os.Exit(1)
+			}
+		}
+	}
+	if source == "" {
+		fmt.Fprintln(os.Stderr, "kpxcctl adopt-default: missing source .kdbx path")
+		os.Exit(1)
+	}
+
+	defaultPath := xdg.DefaultDatabasePath()
+	identityPath := xdg.DefaultIdentityPath()
+	credentialPath := xdg.DefaultCredentialPath()
+
+	if !replace {
+		if fileExists(defaultPath) {
+			fmt.Fprintf(os.Stderr, "kpxcctl: default database already exists: %s (use --replace to overwrite)\n", defaultPath)
+			os.Exit(1)
+		}
+		if fileExists(credentialPath) {
+			fmt.Fprintf(os.Stderr, "kpxcctl: default credential already exists: %s (use --replace to overwrite)\n", credentialPath)
+			os.Exit(1)
+		}
+	}
+
+	sourcePassword := readSecretPrompt("Source database password: ")
+	loginPassword := readSecretPrompt("Login/PAM password to seal default credential: ")
+
+	identity, err := loadOrCreateIdentity(identityPath, []byte(loginPassword))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to prepare age identity: %v\n", err)
+		os.Exit(1)
+	}
+
+	cred, err := pamcred.NewRandomDBCredential(defaultPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to generate default DB credential: %v\n", err)
+		os.Exit(1)
+	}
+	cred.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	if err := copyAndRekeyDatabase(source, defaultPath, sourcePassword, cred.DBPassword, replace); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to copy/rekey database: %v\n", err)
+		os.Exit(1)
+	}
+	if err := pamcred.WriteSealedCredential(credentialPath, cred, identity.Recipient()); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to write sealed credential: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Adopted %s as default database:\n", source)
+	fmt.Printf("  Database:   %s\n", defaultPath)
+	fmt.Printf("  Identity:   %s\n", identityPath)
+	fmt.Printf("  Credential: %s\n", credentialPath)
+}
+
+func readSecretPrompt(prompt string) string {
+	fmt.Print(prompt)
+	b, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Println()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: failed to read secret: %v\n", err)
+		os.Exit(1)
+	}
+	return string(b)
+}
+
+func loadOrCreateIdentity(path string, loginToken []byte) (*age.X25519Identity, error) {
+	if fileExists(path) {
+		return pamcred.ReadSealedIdentity(path, loginToken)
+	}
+	identity, err := pamcred.GenerateIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if err := pamcred.WriteSealedIdentity(path, identity, loginToken); err != nil {
+		return nil, err
+	}
+	return identity, nil
+}
+
+func copyAndRekeyDatabase(sourcePath, destPath, sourcePassword, destPassword string, replace bool) error {
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	db := gokeepasslib.NewDatabase()
+	db.Credentials = gokeepasslib.NewPasswordCredentials(sourcePassword)
+	if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
+		return err
+	}
+	if err := db.UnlockProtectedEntries(); err != nil {
+		return err
+	}
+	db.Credentials = gokeepasslib.NewPasswordCredentials(destPassword)
+
+	if err := xdg.EnsurePrivateDir(filepath.Dir(destPath)); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+".adopt-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := db.LockProtectedEntries(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := gokeepasslib.NewEncoder(tmp).Encode(db); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if !replace && fileExists(destPath) {
+		return fmt.Errorf("destination exists: %s", destPath)
+	}
+	return os.Rename(tmpName, destPath)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
