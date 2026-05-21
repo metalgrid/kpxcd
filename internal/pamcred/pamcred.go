@@ -8,6 +8,7 @@ package pamcred
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,12 +18,16 @@ import (
 
 	"filippo.io/age"
 	"github.com/user/kpxcd/internal/xdg"
+	"golang.org/x/crypto/hkdf"
 )
 
 const (
 	CredentialVersion = 1
 	ScryptWorkFactor  = 18
 	MaxWorkFactor     = 20
+
+	PAMTokenSalt = "kpxcd-pam-v1"
+	PAMTokenLen  = 32
 )
 
 // DBCredential is the plaintext payload encrypted to the age X25519 identity.
@@ -45,6 +50,19 @@ func NewRandomDBCredential(dbPath string) (DBCredential, error) {
 		DBPassword: base64.RawURLEncoding.EncodeToString(secret),
 		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// DerivePAMToken derives a kpxcd-specific PAM token from the user's
+// login password using HKDF-SHA256. The returned token is never the raw
+// password; leaking it does not compromise the Unix password.
+func DerivePAMToken(password []byte) []byte {
+	token := make([]byte, PAMTokenLen)
+	r := hkdf.New(sha256.New, password, []byte(PAMTokenSalt), nil)
+	if _, err := io.ReadFull(r, token); err != nil {
+		// hkdf.Reader never errors on reads <= Expand output length.
+		panic(fmt.Sprintf("pamcred: hkdf read failed: %v", err))
+	}
+	return token
 }
 
 // GenerateIdentity returns a new age X25519 identity.
