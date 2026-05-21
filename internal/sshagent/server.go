@@ -170,6 +170,13 @@ func (s *AgentServer) processMessage(msg []byte) ([]byte, error) {
 		return s.handleListIdentities()
 	case SSHAgentCSignRequest:
 		return s.handleSignRequest(payload)
+	case SSHAgentCExtension:
+		// OpenSSH clients may send optional extension requests such as
+		// session-bind@openssh.com before fetching identities. We don't
+		// implement extensions yet, but per PROTOCOL.agent unsupported
+		// extensions must return SSH_AGENT_FAILURE without closing the
+		// connection so clients can continue with the base protocol.
+		return []byte{SSHAgentFailure}, nil
 	case SSHAgentCAddIdentity:
 		return s.handleAddIdentity(payload, false)
 	case SSHAgentCAddIdConstrained:
@@ -206,9 +213,13 @@ func (s *AgentServer) handleSignRequest(payload []byte) ([]byte, error) {
 	if keyBlob == nil {
 		return nil, fmt.Errorf("sshagent: failed to parse sign request key blob")
 	}
-	data, _ := decodeString(rest)
+	data, rest := decodeString(rest)
 	if data == nil {
 		return nil, fmt.Errorf("sshagent: failed to parse sign request data")
+	}
+	flags := uint32(0)
+	if len(rest) >= 4 {
+		flags, _ = decodeUint32(rest)
 	}
 
 	key := s.manager.FindIdentityByBlob(keyBlob)
@@ -220,10 +231,24 @@ func (s *AgentServer) handleSignRequest(payload []byte) ([]byte, error) {
 		slog.Info("SSH agent: confirm constraint (auto-allowed)", "fingerprint", key.Key.Fingerprint())
 	}
 
+	algorithm, err := signatureAlgorithmForFlags(flags)
+	if err != nil {
+		return nil, err
+	}
+
 	// Sign inside runtime/secret.Do to protect private key material.
 	var sig *ssh.Signature
 	var signErr error
 	security.Do(func() {
+		if algorithm != "" {
+			algorithmSigner, ok := key.Key.Signer.(ssh.AlgorithmSigner)
+			if !ok {
+				signErr = fmt.Errorf("sshagent: signer does not support algorithm %s", algorithm)
+				return
+			}
+			sig, signErr = algorithmSigner.SignWithAlgorithm(nil, data, algorithm)
+			return
+		}
 		sig, signErr = key.Key.Sign(data)
 	})
 	if signErr != nil {
@@ -235,6 +260,28 @@ func (s *AgentServer) handleSignRequest(payload []byte) ([]byte, error) {
 	resp = append(resp, SSHAgentSignResponse)
 	resp = encodeString(resp, sigBlob)
 	return resp, nil
+}
+
+func signatureAlgorithmForFlags(flags uint32) (string, error) {
+	if flags&SSHAgentSignFlagReserved != 0 {
+		return "", fmt.Errorf("sshagent: unsupported reserved sign flag")
+	}
+	rsa256 := flags&SSHAgentSignFlagRSASHA256 != 0
+	rsa512 := flags&SSHAgentSignFlagRSASHA512 != 0
+	if rsa256 && rsa512 {
+		return "", fmt.Errorf("sshagent: conflicting RSA signature flags")
+	}
+	known := uint32(SSHAgentSignFlagReserved | SSHAgentSignFlagRSASHA256 | SSHAgentSignFlagRSASHA512)
+	if flags&^known != 0 {
+		return "", fmt.Errorf("sshagent: unsupported sign flags 0x%x", flags)
+	}
+	if rsa256 {
+		return ssh.KeyAlgoRSASHA256, nil
+	}
+	if rsa512 {
+		return ssh.KeyAlgoRSASHA512, nil
+	}
+	return "", nil
 }
 
 // handleAddIdentity handles key addition from external clients (not primary use case).

@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // TestReadMessageWriteMessageRoundtrip verifies that a message written
@@ -224,11 +226,11 @@ func TestDecodeMessageType(t *testing.T) {
 // strings.
 func TestDecodeString(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     []byte
-		wantStr   []byte
-		wantRest  []byte
-		wantOK    bool
+		name     string
+		input    []byte
+		wantStr  []byte
+		wantRest []byte
+		wantOK   bool
 	}{
 		{
 			name:     "hello",
@@ -362,6 +364,51 @@ func TestEncodeUint32(t *testing.T) {
 			got := encodeUint32(nil, tc.value)
 			if !bytes.Equal(got, tc.want) {
 				t.Errorf("encodeUint32(%d) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcessExtensionDoesNotCloseProtocol(t *testing.T) {
+	s := &AgentServer{}
+	resp, err := s.processMessage([]byte{SSHAgentCExtension})
+	if err != nil {
+		t.Fatalf("extension request returned error: %v", err)
+	}
+	if !bytes.Equal(resp, []byte{SSHAgentFailure}) {
+		t.Fatalf("extension response = %v, want SSH_AGENT_FAILURE", resp)
+	}
+}
+
+func TestSignatureAlgorithmForFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   uint32
+		want    string
+		wantErr bool
+	}{
+		{name: "default", flags: 0, want: ""},
+		{name: "rsa sha256", flags: SSHAgentSignFlagRSASHA256, want: ssh.KeyAlgoRSASHA256},
+		{name: "rsa sha512", flags: SSHAgentSignFlagRSASHA512, want: ssh.KeyAlgoRSASHA512},
+		{name: "reserved", flags: SSHAgentSignFlagReserved, wantErr: true},
+		{name: "conflicting", flags: SSHAgentSignFlagRSASHA256 | SSHAgentSignFlagRSASHA512, wantErr: true},
+		{name: "unknown", flags: 0x80, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := signatureAlgorithmForFlags(tc.flags)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("algorithm = %q, want %q", got, tc.want)
 			}
 		})
 	}

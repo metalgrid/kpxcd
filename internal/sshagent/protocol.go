@@ -11,25 +11,34 @@ import (
 
 // SSH agent protocol message types (from draft-miller-ssh-agent-00).
 const (
-	SSHAgentFailure            = 5
-	SSHAgentSuccess            = 6
-	SSHAgentCRequestIdentities = 11
-	SSHAgentIdentitiesAnswer   = 12
-	SSHAgentCAddIdentity       = 17
-	SSHAgentCRemoveIdentity    = 18
+	SSHAgentFailure              = 5
+	SSHAgentSuccess              = 6
+	SSHAgentCRequestIdentities   = 11
+	SSHAgentIdentitiesAnswer     = 12
+	SSHAgentCSignRequest         = 13
+	SSHAgentSignResponse         = 14
+	SSHAgentCAddIdentity         = 17
+	SSHAgentCRemoveIdentity      = 18
 	SSHAgentCRemoveAllIdentities = 19
-	SSHAgentCAddIdConstrained  = 25
-	SSHAgentCSignRequest       = 13
-	SSHAgentSignResponse       = 14
+	SSHAgentCAddIdConstrained    = 25
+	SSHAgentCExtension           = 27
+	SSHAgentExtensionFailure     = 28
 	// SSH1 legacy — not implemented but handled gracefully.
 	SSHAgentCRemoveAllRsaIdentities = 9
 )
 
 // Constraint types for constrained key addition.
 const (
-	SSHAgentConstrainLifetime = 1
+	SSHAgentConstrainLifetime  = 1
 	SSHAgentConstrainConfirm   = 2
 	SSHAgentConstrainExtension = 255
+)
+
+// Signature flags for SSH_AGENTC_SIGN_REQUEST.
+const (
+	SSHAgentSignFlagReserved  = 1
+	SSHAgentSignFlagRSASHA256 = 2
+	SSHAgentSignFlagRSASHA512 = 4
 )
 
 // maxMessageLen is the maximum SSH agent message length (8 MiB).
