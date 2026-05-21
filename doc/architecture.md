@@ -46,17 +46,17 @@ kpxcd/
 │   └── kpxcd/          # main() entry point
 │   └── kpxcctl/        # CLI client
 ├── internal/
+│   ├── config/         # TOML config parsing and embedded defaults
 │   ├── daemon/         # DaemonApp — lifecycle, signal handling, systemd notify
-│   ├── dbpool/         # DatabasePool — open, close, lock, unlock, lookup
-│   ├── kdbx/           # KDBX thin wrapper over gokeepasslib + secure key derivation
-│   ├── config/         # TOML config parsing
-│   ├── security/       # runtime/secret + mlock helpers
+│   ├── dbpool/         # DatabasePool — open, close, lock, unlock, lookup, save
 │   ├── dbusapi/        # org.keepassxc.Daemon D-Bus interface
+│   ├── deps/           # Build-time dependency anchors
+│   ├── fido2/          # Experimental FIDO2 / passkey service
+│   ├── pamcred/        # PAM-derived credential bootstrap
 │   ├── secretservice/  # org.freedesktop.secrets D-Bus implementation
-│   ├── sshagent/       # SSH agent protocol server
-│   ├── fido2/          # FIDO2 / passkey service
-│   ├── passutil/       # Password, TOTP, passphrase generation/lookup
-│   └── polkit/         # Polkit authorization helpers
+│   ├── security/       # runtime/secret + mlock helpers
+│   ├── sshagent/       # SSH agent protocol server/client helpers
+│   └── xdg/            # XDG path helpers
 ├── doc/                # Documentation
 └── go.mod
 ```

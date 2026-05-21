@@ -105,6 +105,8 @@ Returns entries without the `password` field. Use `GetEntry` to retrieve secrets
 
 Get the current TOTP code for an entry. Returns the 6-8 digit code and remaining seconds validity.
 
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+
 Returns `"123456:28"` (code `:` seconds remaining).
 
 **Polkit action:** `org.keepassxc.daemon.get-totp`
@@ -112,6 +114,8 @@ Returns `"123456:28"` (code `:` seconds remaining).
 #### `GeneratePassword(length: i, charset: s) → s`
 
 Generate a random password.
+
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -123,6 +127,8 @@ Generate a random password.
 #### `GeneratePassphrase(word_count: i, separator: s) → s`
 
 Generate a diceware passphrase.
+
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -136,6 +142,8 @@ Generate a diceware passphrase.
 #### `SshListKeys(uuid: s) → aa{sv}`
 
 List SSH key entries in a database.
+
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
 
 ```json
 [
@@ -153,6 +161,8 @@ List SSH key entries in a database.
 
 Add an SSH key from an entry to the agent.
 
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `uuid` | `s` | Database UUID |
@@ -166,13 +176,17 @@ Add an SSH key from an entry to the agent.
 
 Remove an SSH key from the agent by its fingerprint.
 
+> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+
 **Polkit action:** `org.keepassxc.daemon.ssh.remove`
 
 ### FIDO2 / Passkey Methods
 
 #### `CreatePasskey(uuid: s, rp_id: s, rp_name: s, user_name: s, user_display_name: s, algorithms: ai) → a{sv}`
 
-Create a new FIDO2 credential (passkey) and store it in the database.
+Create a new FIDO2 credential (passkey).
+
+> Implementation status: experimental; credential material can be created, but database storage is not complete.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -198,6 +212,8 @@ Returns:
 #### `AssertPasskey(rp_id: s, credential_id: s, challenge: s, origin: s) → a{sv}`
 
 Assert (authenticate with) a FIDO2 credential.
+
+> Implementation status: not yet fully implemented; storage/extraction and signing are incomplete.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

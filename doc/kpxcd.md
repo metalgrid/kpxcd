@@ -20,8 +20,7 @@ It exists because the KeePassXC GUI is the wrong tool for unattended or programm
 | Lock databases on demand or timeout | DBus, CLI | `org.keepassxc.Daemon.LockDatabase` / `kpxcctl lock` |
 | Expose and persist passwords as freedesktop Secret Service | DBus | `org.freedesktop.secrets` — Secret Service clients can retrieve, create, and update items |
 | Provide SSH keys to `ssh-agent` | Unix socket | SSH agent protocol server on `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
-| Create and assert FIDO2 / WebAuthn passkeys | DBus, CLI | `org.keepassxc.Daemon.CreatePasskey` / `AssertPasskey` |
-| Generate TOTP codes | DBus, CLI | `org.keepassxc.Daemon.GetTotp` / `kpxcctl totp <entry>` |
+| Create FIDO2 / WebAuthn passkey material | DBus, CLI | Experimental; database storage and assertions are still in progress |
 | Search entries by URL, title, username | DBus, Secret Service | Attribute-based search |
 | Auto-unlock databases at session start | systemd/PAM | Configured via `config.toml`; default DB can unlock from PAM login token |
 | Re-lock on screen lock or inactivity | DBus, systemd | Listen to `org.freedesktop.ScreenSaver` and idle timers |
@@ -51,9 +50,7 @@ These are explicit non-goals. They belong to other tools.
 - Composite keys: password, keyfile, YubiKey challenge-response (via PCSC)
 - SSH agent protocol (OpenSSH agent protocol, Unix socket)
 - Freedesktop Secret Service D-Bus specification v0.2
-- WebAuthn / FIDO2 software authenticator (credential creation and assertion using keys stored in the database)
-- TOTP generation (RFC 6238, HMAC-SHA1/SHA256/SHA512)
-- Password and passphrase generation
+- WebAuthn / FIDO2 software authenticator plumbing (credential creation exists; database storage and assertion signing are incomplete)
 - systemd user service integration
 - Polkit authorization for sensitive operations
 - Secure memory handling (`runtime/secret`, `mlock`)
@@ -66,6 +63,7 @@ These are explicit non-goals. They belong to other tools.
 - Database merging or synchronization
 - Hardware security key provisioning
 - Network connectivity (fetching favicons, update checks)
+- TOTP generation and password/passphrase generation until their D-Bus methods are implemented
 - macOS, Windows, or BSD porting
 
 ## Security Model
