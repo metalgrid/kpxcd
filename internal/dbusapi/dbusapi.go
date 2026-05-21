@@ -10,19 +10,19 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/tobischo/gokeepasslib/v3"
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/fido2"
-	"github.com/user/kpxcd/internal/security"
 )
 
 // DaemonDBus implements the org.keepassxc.Daemon DBus interface.
 type DaemonDBus struct {
-	conn    *dbus.Conn
-	config  *config.Config
-	pool    *dbpool.DatabasePool
-	fido2   *fido2.Fido2Service
+	conn   *dbus.Conn
+	config *config.Config
+	pool   *dbpool.DatabasePool
+	fido2  *fido2.Fido2Service
 }
 
 // NewDaemonDBus creates a new DBus API handler.
@@ -114,10 +114,10 @@ func (d *DaemonDBus) ListDatabases() ([]map[string]dbus.Variant, *dbus.Error) {
 
 	for i, db := range dbs {
 		result[i] = map[string]dbus.Variant{
-			"uuid":       dbus.MakeVariant(db.UUID),
-			"name":       dbus.MakeVariant(db.Name),
-			"path":       dbus.MakeVariant(db.Path),
-			"locked":     dbus.MakeVariant(db.Locked),
+			"uuid":        dbus.MakeVariant(db.UUID),
+			"name":        dbus.MakeVariant(db.Name),
+			"path":        dbus.MakeVariant(db.Path),
+			"locked":      dbus.MakeVariant(db.Locked),
 			"auto_unlock": dbus.MakeVariant(false), // TODO: from config
 		}
 	}

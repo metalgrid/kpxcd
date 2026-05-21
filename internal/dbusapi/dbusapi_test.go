@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/fido2"
 )
 
 // TestPing verifies that the Ping method returns "pong".
