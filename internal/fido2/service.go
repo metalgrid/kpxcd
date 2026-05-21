@@ -18,9 +18,9 @@ import (
 	"log/slog"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 // Constants for WebAuthn/FIDO2.
@@ -54,7 +54,7 @@ type PasskeyEntry struct {
 	UserHandle    string // Base64url-encoded user handle
 	CredentialID  string // Base64url-encoded credential ID
 	PrivateKeyPEM string // PEM-encoded private key
-	PublicKeyCOSE  []byte // COSE-encoded public key
+	PublicKeyCOSE []byte // COSE-encoded public key
 	Subject       string // Entry title for display
 	DBUUID        string // Database UUID
 	EntryUUID     string // Entry UUID
@@ -156,7 +156,7 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 		UserHandle:    userHandle,
 		CredentialID:  credID,
 		PrivateKeyPEM: privKeyPEM,
-		PublicKeyCOSE:  pubKeyCOSE,
+		PublicKeyCOSE: pubKeyCOSE,
 		Subject:       userDisplayName,
 		DBUUID:        dbUUID,
 	}
@@ -202,7 +202,7 @@ func (s *Fido2Service) AssertPasskey(rpID, credentialID, challenge, origin strin
 		AuthenticatorData: base64.RawURLEncoding.EncodeToString(authData),
 		Signature:         base64.RawURLEncoding.EncodeToString(signature),
 		UserHandle:        entry.UserHandle,
-		CredentialID:     entry.CredentialID,
+		CredentialID:      entry.CredentialID,
 	}
 
 	slog.Info("FIDO2: asserted passkey", "rpID", rpID, "credentialID", credentialID)
@@ -293,9 +293,9 @@ func buildAuthenticatorData(rpID string, flags byte, signCount uint32, extension
 // buildClientDataJSON constructs the client data JSON for WebAuthn.
 func buildClientDataJSON(typ, challenge, origin string) string {
 	cd := map[string]string{
-		"type":       typ,
-		"challenge":  challenge,
-		"origin":     origin,
+		"type":        typ,
+		"challenge":   challenge,
+		"origin":      origin,
 		"crossOrigin": "false",
 	}
 	b, _ := json.Marshal(cd)
@@ -304,26 +304,26 @@ func buildClientDataJSON(typ, challenge, origin string) string {
 
 // COSE key structure for ECDSA P-256.
 type coseEC2Key struct {
-	Kty      int    `cbor:"1,keyasint"`
-	Crv      int    `cbor:"-1,keyasint"`
-	X        []byte `cbor:"-2,keyasint"`
-	Y        []byte `cbor:"-3,keyasint"`
-	Alg      int    `cbor:"3,keyasint"`
+	Kty int    `cbor:"1,keyasint"`
+	Crv int    `cbor:"-1,keyasint"`
+	X   []byte `cbor:"-2,keyasint"`
+	Y   []byte `cbor:"-3,keyasint"`
+	Alg int    `cbor:"3,keyasint"`
 }
 
 // COSE key structure for Ed25519 (OKP).
 type coseOKPKey struct {
-	Kty      int    `cbor:"1,keyasint"`
-	Crv      int    `cbor:"-1,keyasint"`
-	X        []byte `cbor:"-2,keyasint"`
-	Alg      int    `cbor:"3,keyasint"`
+	Kty int    `cbor:"1,keyasint"`
+	Crv int    `cbor:"-1,keyasint"`
+	X   []byte `cbor:"-2,keyasint"`
+	Alg int    `cbor:"3,keyasint"`
 }
 
 // encodeECDSAPublicKey encodes an ECDSA P-256 public key as a COSE key.
 func encodeECDSAPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
 	key := coseEC2Key{
-		Kty: 2,     // EC2
-		Crv: 1,     // P-256
+		Kty: 2, // EC2
+		Crv: 1, // P-256
 		X:   pub.X.Bytes(),
 		Y:   pub.Y.Bytes(),
 		Alg: COSEAlgES256,
@@ -334,8 +334,8 @@ func encodeECDSAPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
 // encodeEd25519PublicKey encodes an Ed25519 public key as a COSE key.
 func encodeEd25519PublicKey(pub ed25519.PublicKey) ([]byte, error) {
 	key := coseOKPKey{
-		Kty: 1,     // OKP
-		Crv: 6,     // Ed25519
+		Kty: 1, // OKP
+		Crv: 6, // Ed25519
 		X:   pub,
 		Alg: COSEAlgEdDSA,
 	}
