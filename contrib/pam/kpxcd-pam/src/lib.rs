@@ -117,7 +117,10 @@ fn send_token_to_socket(pamh: &Pam, token: &[u8; TOKEN_LEN]) -> io::Result<()> {
         }
     }
     let mut stream = stream.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::ConnectionRefused, "socket not available after retries")
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "socket not available after retries",
+        )
     })?;
     stream.write_all(token)?;
     stream.shutdown(std::net::Shutdown::Write)?;
