@@ -19,13 +19,13 @@ import (
 	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/godbus/dbus/v5"
 
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/dbusapi"
-	"github.com/user/kpxcd/internal/fido2"
-	"github.com/user/kpxcd/internal/secretservice"
-	"github.com/user/kpxcd/internal/security"
-	"github.com/user/kpxcd/internal/sshagent"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/dbusapi"
+	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/secretservice"
+	"github.com/metalgrid/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/sshagent"
 )
 
 // DaemonApp represents the running daemon.

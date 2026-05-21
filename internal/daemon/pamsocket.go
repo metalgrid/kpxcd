@@ -12,9 +12,9 @@ import (
 	"sync"
 
 	"github.com/coreos/go-systemd/v22/activation"
-	"github.com/user/kpxcd/internal/pamcred"
-	"github.com/user/kpxcd/internal/security"
-	"github.com/user/kpxcd/internal/xdg"
+	"github.com/metalgrid/kpxcd/internal/pamcred"
+	"github.com/metalgrid/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/xdg"
 )
 
 // PAMSocketServer listens on a Unix domain socket for a one-shot PAM

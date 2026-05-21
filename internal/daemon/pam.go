@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/pamcred"
-	"github.com/user/kpxcd/internal/security"
-	"github.com/user/kpxcd/internal/xdg"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/pamcred"
+	"github.com/metalgrid/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/xdg"
 )
 
 func (app *DaemonApp) hasPAMDatabase() bool {
