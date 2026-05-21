@@ -137,7 +137,20 @@ user_verification = "preferred"  # "required" | "preferred" | "discouraged"
 | `log_level` | string | `"info"` | Minimum log severity. |
 | `log_to_journald` | bool | `false` | Log to systemd journal instead of stderr. |
 | `ssh_socket_path` | string | `"kpxcd/ssh.sock"` | Path relative to `$XDG_RUNTIME_DIR` for the SSH agent socket. |
-| `ssh_mode` | string | `"agent"` | `"agent"` = act as SSH agent; `"proxy"` = forward to existing `$SSH_AUTH_SOCK`. |
+| `ssh_mode` | string | `"agent"` | `"agent"` = act as SSH agent; `"proxy"`/`"client"` = push keys into existing `$SSH_AUTH_SOCK`. |
+
+#### SSH_AUTH_SOCK setup
+
+Run:
+
+```bash
+kpxcctl setup-ssh
+```
+
+The command inspects `ssh_mode` and writes the appropriate user-level systemd configuration:
+
+- `ssh_mode = "agent"`: writes `~/.config/environment.d/kpxcd-ssh.conf` so future sessions export `SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/kpxcd/ssh.sock`.
+- `ssh_mode = "client"` or `"proxy"`: writes `~/.config/systemd/user/kpxcd.service.d/ssh-client.conf` with `PassEnvironment=SSH_AUTH_SOCK` so kpxcd can push keys into your existing agent.
 
 ### `[[database]]`
 

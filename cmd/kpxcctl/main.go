@@ -16,6 +16,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/tobischo/gokeepasslib/v3"
+	"github.com/user/kpxcd/internal/config"
 	"github.com/user/kpxcd/internal/pamcred"
 	"github.com/user/kpxcd/internal/xdg"
 	"golang.org/x/term"
@@ -51,6 +52,8 @@ func main() {
 		cmdPasskey(args)
 	case "adopt-default":
 		cmdAdoptDefault(args)
+	case "setup-ssh":
+		cmdSetupSSH(args)
 	case "ping":
 		cmdPing()
 	case "help", "--help", "-h":
@@ -79,6 +82,7 @@ Commands:
   passkey create <uuid> <rpID> <username>  Create a new passkey
   passkey assert <rpID> <credID>            Assert a passkey
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
+  setup-ssh                  Configure SSH_AUTH_SOCK for the current user
   ping                       Check if daemon is alive
   help                       Show this help message`)
 }
@@ -91,6 +95,100 @@ func connectDBus() (dbus.BusObject, *dbus.Conn, error) {
 	}
 	obj := conn.Object(busName, dbus.ObjectPath(objectPath))
 	return obj, conn, nil
+}
+
+// cmdSetupSSH configures SSH_AUTH_SOCK for the current user based on the
+// daemon's ssh_mode setting.
+//
+// Agent mode: writes ~/.config/environment.d/kpxcd-ssh.conf to export
+// SSH_AUTH_SOCK pointing to kpxcd's agent socket.
+//
+// Client mode: writes ~/.config/systemd/user/kpxcd.service.d/ssh-client.conf
+// to pass SSH_AUTH_SOCK into the daemon from the session environment.
+func cmdSetupSSH(args []string) {
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch cfg.Daemon.SSHMode {
+	case "agent":
+		setupSSHAgentMode(cfg)
+	case "client", "proxy":
+		setupSSHClientMode()
+	default:
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: unknown ssh_mode %q\n", cfg.Daemon.SSHMode)
+		os.Exit(1)
+	}
+}
+
+func setupSSHAgentMode(cfg *config.Config) {
+	// Resolve the socket path the same way the daemon does.
+	socketPath := os.ExpandEnv(cfg.Daemon.SSHSocketPath)
+	if !filepath.IsAbs(socketPath) {
+		xdg := os.Getenv("XDG_RUNTIME_DIR")
+		if xdg == "" {
+			xdg = fmt.Sprintf("/run/user/%d", os.Getuid())
+		}
+		socketPath = filepath.Join(xdg, socketPath)
+	}
+
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, _ := os.UserHomeDir()
+		configHome = filepath.Join(home, ".config")
+	}
+	confDir := filepath.Join(configHome, "environment.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: failed to create %s: %v\n", confDir, err)
+		os.Exit(1)
+	}
+
+	confPath := filepath.Join(confDir, "kpxcd-ssh.conf")
+	content := fmt.Sprintf("SSH_AUTH_SOCK=%s\n", socketPath)
+	if err := os.WriteFile(confPath, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: failed to write %s: %v\n", confPath, err)
+		os.Exit(1)
+	}
+
+	// Remove the client-mode drop-in if this user previously configured it.
+	_ = os.Remove(filepath.Join(configHome, "systemd", "user", "kpxcd.service.d", "ssh-client.conf"))
+
+	fmt.Printf("Configured SSH_AUTH_SOCK for agent mode.\n")
+	fmt.Printf("  Written: %s\n", confPath)
+	fmt.Printf("  SSH_AUTH_SOCK=%s\n", socketPath)
+	fmt.Printf("\nLog out and back in for this to take effect.\n")
+}
+
+func setupSSHClientMode() {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, _ := os.UserHomeDir()
+		configHome = filepath.Join(home, ".config")
+	}
+
+	dropinDir := filepath.Join(configHome, "systemd", "user", "kpxcd.service.d")
+	if err := os.MkdirAll(dropinDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: failed to create %s: %v\n", dropinDir, err)
+		os.Exit(1)
+	}
+
+	dropinPath := filepath.Join(dropinDir, "ssh-client.conf")
+	content := "[Service]\nPassEnvironment=SSH_AUTH_SOCK\n"
+	if err := os.WriteFile(dropinPath, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl setup-ssh: failed to write %s: %v\n", dropinPath, err)
+		os.Exit(1)
+	}
+
+	// Remove the agent-mode environment.d file if this user previously configured it.
+	_ = os.Remove(filepath.Join(configHome, "environment.d", "kpxcd-ssh.conf"))
+
+	fmt.Printf("Configured SSH_AUTH_SOCK passthrough for client mode.\n")
+	fmt.Printf("  Written: %s\n", dropinPath)
+	fmt.Printf("\nMake sure SSH_AUTH_SOCK is set in the systemd user manager environment.\n")
+	fmt.Printf("For example: systemctl --user set-environment SSH_AUTH_SOCK=/run/user/$(id -u)/ssh-agent.sock\n")
+	fmt.Printf("Then run: systemctl --user daemon-reload && systemctl --user restart kpxcd\n")
 }
 
 // cmdUnlock unlocks a database.
