@@ -17,7 +17,6 @@ RestartSec=5
 
 # Security hardening
 NoNewPrivileges=true
-ProtectHome=read-only
 ProtectSystem=strict
 PrivateTmp=true
 RestrictNamespaces=true
