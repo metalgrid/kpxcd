@@ -2,8 +2,8 @@
 Description=KeePassXC Headless Daemon
 Documentation=man:kpxcd(1)
 After=network.target
-Wants=kpxcd-pam.socket
-After=kpxcd-pam.socket
+Wants=kpxcd.socket
+After=kpxcd.socket
 
 [Service]
 Type=simple
@@ -25,4 +25,4 @@ MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=default.target
-Also=kpxcd-pam.socket
+Also=kpxcd.socket

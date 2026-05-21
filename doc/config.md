@@ -214,7 +214,7 @@ keyfile = "~/.config/kpxcd/keyfile.key"
 
 The PAM session hook must run **after `pam_systemd.so`**, because `pam_systemd` creates `$XDG_RUNTIME_DIR`.
 
-kpxcd ships a systemd user socket unit (`kpxcd-pam.socket`) that listens on:
+kpxcd ships a systemd user socket unit (`kpxcd.socket`) that listens on:
 
 ```text
 $XDG_RUNTIME_DIR/kpxcd/pam.sock
@@ -243,7 +243,7 @@ On first login, if the derived token is received and neither the default DB nor 
 Enable the socket unit:
 
 ```bash
-systemctl --user enable kpxcd-pam.socket
+systemctl --user enable kpxcd.socket
 ```
 
 Changing the Linux login password will require rewrapping the age identity; automatic password-change rewrap is future work.

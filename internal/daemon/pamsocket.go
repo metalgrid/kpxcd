@@ -21,7 +21,7 @@ import (
 // derived-key handoff. When a 32-byte derived key is received, it is
 // passed to unlockOrBootstrapWithPAM and the listener is closed.
 //
-// The socket may be provided by systemd socket activation (kpxcd-pam.socket)
+// The socket may be provided by systemd socket activation (kpxcd.socket)
 // or created directly by the daemon if systemd is not managing it.
 type PAMSocketServer struct {
 	app      *DaemonApp
@@ -39,7 +39,7 @@ func NewPAMSocketServer(app *DaemonApp) *PAMSocketServer {
 }
 
 // Listen creates the Unix domain socket and starts listening.
-// If systemd has passed a socket via fd activation (kpxcd-pam.socket),
+// If systemd has passed a socket via fd activation (kpxcd.socket),
 // that socket is used directly. Otherwise, a new socket is created.
 func (s *PAMSocketServer) Listen() error {
 	s.mu.Lock()
@@ -60,7 +60,7 @@ func (s *PAMSocketServer) Listen() error {
 // systemdOrDirectListener returns a listener from systemd socket activation
 // if one was provided, otherwise creates a new Unix domain socket listener.
 func (s *PAMSocketServer) systemdOrDirectListener() (net.Listener, error) {
-	// Check for systemd socket activation.
+	// Check for systemd socket activation (kpxcd.socket).
 	listeners, err := activation.Listeners()
 	if err != nil {
 		slog.Debug("PAM socket: systemd activation check failed", "error", err)

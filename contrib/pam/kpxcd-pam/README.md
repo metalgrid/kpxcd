@@ -57,7 +57,7 @@ If the socket does not exist or the connection fails, the module returns
 
 ## systemd socket unit
 
-kpxcd ships a systemd user socket unit `kpxcd-pam.socket` that listens on
+kpxcd ships a systemd user socket unit `kpxcd.socket` that listens on
 `$XDG_RUNTIME_DIR/kpxcd/pam.sock` with mode 0600. The service unit
 `kpxcd.service` requires this socket. If the daemon has not started when the
 PAM module connects, the kernel queues the connection until kpxcd accepts it.
@@ -65,7 +65,7 @@ PAM module connects, the kernel queues the connection until kpxcd accepts it.
 Enable the socket:
 
 ```bash
-systemctl --user enable kpxcd-pam.socket
+systemctl --user enable kpxcd.socket
 ```
 
 ## Password changes

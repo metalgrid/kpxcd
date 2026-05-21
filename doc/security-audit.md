@@ -85,7 +85,7 @@ The current `kpxcd` code has partial `runtime/secret.Do()` coverage and very lim
 
 **Risk:** The raw password was written to the filesystem (tmpfs), exposing it to anyone with root access or a kernel/filesystem bug during the brief window before the daemon consumed it.
 
-**Fix:** The PAM module now derives a 32-byte kpxcd-specific token via HKDF-SHA256 from the login password (salt = `"kpxcd-pam-v1"`) and sends it over a Unix domain socket (`$XDG_RUNTIME_DIR/kpxcd/pam.sock`) managed by `kpxcd-pam.socket`. The raw password is never written to disk. Leaking the derived token does not reveal the user's Unix password.
+**Fix:** The PAM module now derives a 32-byte kpxcd-specific token via HKDF-SHA256 from the login password (salt = `"kpxcd-pam-v1"`) and sends it over a Unix domain socket (`$XDG_RUNTIME_DIR/kpxcd/pam.sock`) managed by `kpxcd.socket`. The raw password is never written to disk. Leaking the derived token does not reveal the user's Unix password.
 
 | Property | Before | After |
 |---|---|---|
@@ -94,7 +94,7 @@ The current `kpxcd` code has partial `runtime/secret.Do()` coverage and very lim
 | Transport | File poll (2s interval) | Unix socket (immediate) |
 | Password reuse risk | High | **None** |
 
-Files changed: `internal/daemon/pamsocket.go`, `internal/daemon/pam.go`, `internal/daemon/daemon.go`, `internal/pamcred/pamcred.go`, `internal/xdg/xdg.go`, `contrib/pam/kpxcd-pam/src/lib.rs`, `contrib/systemd/kpxcd-pam.socket`.
+Files changed: `internal/daemon/pamsocket.go`, `internal/daemon/pam.go`, `internal/daemon/daemon.go`, `internal/pamcred/pamcred.go`, `internal/xdg/xdg.go`, `contrib/pam/kpxcd-pam/src/lib.rs`, `contrib/systemd/kpxcd.socket`.
 
 ## Warnings
 
