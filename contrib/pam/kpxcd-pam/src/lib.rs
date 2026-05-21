@@ -99,8 +99,25 @@ impl PamServiceModule for PamKpxcd {
 
 fn send_token_to_socket(pamh: &Pam, token: &[u8; TOKEN_LEN]) -> io::Result<()> {
     let socket_path = pam_socket_path(pamh)?;
-    let mut stream = UnixStream::connect(&socket_path).map_err(|e| {
-        e // Connection refused / not found — daemon may not be running yet.
+
+    // The daemon may still be starting up when PAM open_session runs.
+    // Retry with a short backoff so the socket has time to appear.
+    let mut stream = None;
+    for attempt in 0..5 {
+        match UnixStream::connect(&socket_path) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(_) if attempt < 4 => {
+                // Wait 50ms, 100ms, 150ms, 200ms.
+                std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let mut stream = stream.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::ConnectionRefused, "socket not available after retries")
     })?;
     stream.write_all(token)?;
     stream.shutdown(std::net::Shutdown::Write)?;
