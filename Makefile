@@ -1,8 +1,9 @@
-.PHONY: build install test lint clean
+.PHONY: build check clean fmt install lint pam test test-pam vet
 
 GOEXPERIMENT = runtimesecret
 BINDIR = build
 PREFIX = /usr/local
+PAM_DIR = contrib/pam/kpxcd-pam
 
 LDFLAGS = -s -w
 GOFLAGS = -trimpath
@@ -41,11 +42,27 @@ install: build
 	install -Dm644 contrib/completion/kpxcctl.fish $(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/kpxcctl.fish
 	install -Dm644 contrib/completion/kpxcctl.zsh $(DESTDIR)$(PREFIX)/share/zsh/site-functions/_kpxcctl
 
+pam:
+	cd $(PAM_DIR) && cargo build --release
+
 test:
 	GOEXPERIMENT=$(GOEXPERIMENT) go test ./...
+
+test-pam:
+	cd $(PAM_DIR) && cargo fmt -- --check
+	cd $(PAM_DIR) && cargo test
+
+fmt:
+	gofmt -w $$(find cmd internal -name '*.go')
+	cd $(PAM_DIR) && cargo fmt
+
+vet:
+	GOEXPERIMENT=$(GOEXPERIMENT) go vet ./...
+
+check: fmt vet test test-pam
 
 lint:
 	golangci-lint run
 
 clean:
-	rm -rf $(BINDIR)/
+	rm -rf $(BINDIR)/ $(PAM_DIR)/target/
