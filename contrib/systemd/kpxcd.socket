@@ -1,6 +1,6 @@
 [Unit]
 Description=KeePassXC Headless Daemon — PAM unlock socket
-Documentation=man:kpxcd(1)
+Documentation=man:kpxcd(8)
 
 [Socket]
 ListenStream=%t/kpxcd/pam.sock

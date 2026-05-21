@@ -4,7 +4,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>kpxcd</vendor>
-  <vendor_url>https://github.com/user/kpxcd</vendor_url>
+  <vendor_url>https://github.com/metalgrid/kpxcd</vendor_url>
 
   <action id="org.keepassxc.daemon.unlock">
     <description>Unlock a KeePassXC database</description>

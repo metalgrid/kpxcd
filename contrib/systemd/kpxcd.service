@@ -1,6 +1,6 @@
 [Unit]
 Description=KeePassXC Headless Daemon
-Documentation=man:kpxcd(1)
+Documentation=man:kpxcd(8)
 After=network.target
 Wants=kpxcd.socket
 After=kpxcd.socket
