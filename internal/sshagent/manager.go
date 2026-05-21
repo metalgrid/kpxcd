@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/user/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/config"
 )
 
 // LoadedKey tracks a key that has been added to the SSH agent,

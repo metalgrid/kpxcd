@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/user/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/config"
 )
 
 // TestGenerateTestKeyForAllTypes verifies that GenerateTestKey works
@@ -111,7 +111,7 @@ func TestKeyEqual(t *testing.T) {
 
 	// Create a copy with same blob — should be equal.
 	key2 := &Key{
-		Blob:  make([]byte, len(key.Blob)),
+		Blob:    make([]byte, len(key.Blob)),
 		Comment: key.Comment,
 	}
 	copy(key2.Blob, key.Blob)
