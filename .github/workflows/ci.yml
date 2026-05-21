@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    env:
+      GOEXPERIMENT: runtimesecret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Check formatting
+        run: |
+          test -z "$(gofmt -l $(find cmd internal -name '*.go'))"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  pam:
+    name: PAM module
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contrib/pam/kpxcd-pam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt -- --check
+      - name: Test
+        run: cargo test
