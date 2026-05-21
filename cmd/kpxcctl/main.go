@@ -69,7 +69,7 @@ Usage:
   kpxcctl <command> [arguments]
 
 Commands:
-  unlock <path>              Unlock a KeePass database
+  unlock [path]               Unlock the default or a specific database
   lock [uuid|name]           Lock a database (or all)
   list                       List unlocked databases
   get <uuid> <entry-path>    Get entry fields (password, username, TOTP)
@@ -94,29 +94,67 @@ func connectDBus() (dbus.BusObject, *dbus.Conn, error) {
 }
 
 // cmdUnlock unlocks a database.
+//
+// Usage:
+//
+// 	kpxcctl unlock              Unlock the default database (PAM credential or password)
+// 	kpxcctl unlock <path>       Unlock a specific database by password
 func cmdUnlock(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "kpxcctl unlock: missing database path")
-		os.Exit(1)
+	if len(args) == 0 {
+		cmdUnlockDefault()
+	} else {
+		cmdUnlockPath(args[0])
+	}
+}
+
+// cmdUnlockDefault unlocks the default database. If the database uses PAM
+// credentials, the user's login password is used to derive a key that unwraps
+// the sealed age identity and decrypts the database password. Otherwise, a
+// plain password prompt is used.
+func cmdUnlockDefault() {
+	defaultPath := xdg.DefaultDatabasePath()
+	identityPath := xdg.DefaultIdentityPath()
+	credentialPath := xdg.DefaultCredentialPath()
+
+	// Try PAM credential chain if sealed identity and credential exist.
+	if fileExists(identityPath) && fileExists(credentialPath) {
+		loginPassword := readSecretPrompt("Login password: ")
+		token := pamcred.DerivePAMToken([]byte(loginPassword))
+
+		identity, err := pamcred.ReadSealedIdentity(identityPath, token)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to unseal identity (wrong password?): %v\n", err)
+			os.Exit(1)
+		}
+		cred, err := pamcred.ReadSealedCredential(credentialPath, identity)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to decrypt database credential: %v\n", err)
+			os.Exit(1)
+		}
+
+		unlockViaDBus(defaultPath, cred.DBPassword)
+		return
 	}
 
-	path := args[0]
+	// No PAM credentials — prompt for database password directly.
+	password := readSecretPrompt("Database password: ")
+	unlockViaDBus(defaultPath, password)
+}
+
+// cmdUnlockPath unlocks a specific database by path with a password prompt.
+func cmdUnlockPath(path string) {
+	password := readSecretPrompt("Database password: ")
+	unlockViaDBus(path, password)
+}
+
+// unlockViaDBus calls the daemon's UnlockDatabase over DBus.
+func unlockViaDBus(path, password string) {
 	obj, conn, err := connectDBus()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	defer conn.Close()
-
-	// Read password from terminal without echoing.
-	fmt.Print("Database password: ")
-	pwBytes, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println() // newline after masked input
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "kpxcctl: failed to read password: %v\n", err)
-		os.Exit(1)
-	}
-	password := string(pwBytes)
 
 	variant := dbus.MakeVariant(password)
 	result := obj.Call(iface+".UnlockDatabase", 0, path, "password", variant)
