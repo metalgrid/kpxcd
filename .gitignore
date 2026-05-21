@@ -9,6 +9,13 @@
 /kpxcd
 /kpxcctl
 
+# Arch Linux packaging artifacts
+*.pkg.tar.zst
+*.pkg.tar.xz
+/pkg/
+/src/
+PKGBUILD
+
 # Test artifacts
 *.test
 *.prof
