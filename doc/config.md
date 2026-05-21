@@ -210,15 +210,17 @@ keyfile = "~/.config/kpxcd/keyfile.key"
 
 ### `pam`
 
-`pam` is the default zero-dependency bootstrap mode. A small PAM module captures the login token during authentication and writes it during session setup to:
-
-```text
-$XDG_RUNTIME_DIR/kpxcd/pam-token
-```
+`pam` uses a Unix domain socket for secure PAM-to-daemon IPC. A small PAM module captures the login password during authentication, derives a kpxcd-specific token via HKDF-SHA256, and sends the derived token over a socket during session setup. The **raw password is never written to the filesystem.**
 
 The PAM session hook must run **after `pam_systemd.so`**, because `pam_systemd` creates `$XDG_RUNTIME_DIR`.
 
-`kpxcd` consumes and deletes this runtime token. The token unwraps:
+kpxcd ships a systemd user socket unit (`kpxcd-pam.socket`) that listens on:
+
+```text
+$XDG_RUNTIME_DIR/kpxcd/pam.sock
+```
+
+The `kpxcd.service` unit requires this socket. When the PAM module connects, kpxcd accepts the connection, reads the 32-byte derived token, and uses it to unwrap:
 
 ```text
 $XDG_DATA_HOME/kpxcd/default.identity.age
@@ -236,7 +238,13 @@ which contains the random password for the default KDBX database. The default da
 $XDG_DATA_HOME/kpxcd/default.kdbx
 ```
 
-On first login, if the PAM token exists and neither the default DB nor sealed credential exist, `kpxcd` creates all of them with private permissions. If the DB already exists but the sealed credential is missing, `kpxcd` refuses to modify it.
+On first login, if the derived token is received and neither the default DB nor sealed credential exist, `kpxcd` creates all of them with private permissions. If the DB already exists but the sealed credential is missing, `kpxcd` refuses to modify it.
+
+Enable the socket unit:
+
+```bash
+systemctl --user enable kpxcd-pam.socket
+```
 
 Changing the Linux login password will require rewrapping the age identity; automatic password-change rewrap is future work.
 

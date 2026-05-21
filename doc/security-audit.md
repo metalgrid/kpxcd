@@ -77,6 +77,25 @@ The current `kpxcd` code has partial `runtime/secret.Do()` coverage and very lim
 8. **Session key storage** — `secretservice/session.go`  
    Store AES session keys in `security.Alloc()` memory; wipe on `Close()`.
 
+## Resolved Issues
+
+### PAM token plaintext file (fixed 2026-05-21)
+
+**Previously:** The PAM module (`pam_kpxcd.so`) wrote the user's raw Unix login password to `$XDG_RUNTIME_DIR/kpxcd/pam-token` as a plaintext file. The daemon polled for this file every 2 seconds, read it, and deleted it.
+
+**Risk:** The raw password was written to the filesystem (tmpfs), exposing it to anyone with root access or a kernel/filesystem bug during the brief window before the daemon consumed it.
+
+**Fix:** The PAM module now derives a 32-byte kpxcd-specific token via HKDF-SHA256 from the login password (salt = `"kpxcd-pam-v1"`) and sends it over a Unix domain socket (`$XDG_RUNTIME_DIR/kpxcd/pam.sock`) managed by `kpxcd-pam.socket`. The raw password is never written to disk. Leaking the derived token does not reveal the user's Unix password.
+
+| Property | Before | After |
+|---|---|---|
+| Password on filesystem | Yes (tmpfs, ephemeral) | **No** |
+| Raw password exposed | Yes | **No** (HKDF-derived key) |
+| Transport | File poll (2s interval) | Unix socket (immediate) |
+| Password reuse risk | High | **None** |
+
+Files changed: `internal/daemon/pamsocket.go`, `internal/daemon/pam.go`, `internal/daemon/daemon.go`, `internal/pamcred/pamcred.go`, `internal/xdg/xdg.go`, `contrib/pam/kpxcd-pam/src/lib.rs`, `contrib/systemd/kpxcd-pam.socket`.
+
 ## Warnings
 
 - `security_fallback.go:18-20` — When built without `GOEXPERIMENT=runtimesecret`, `security.Do()` is a no-op. All audit claims only hold for `linux && runtimesecret` builds.
