@@ -60,6 +60,20 @@ func DefaultDatabasePath() string   { return filepath.Join(DataDir(), "default.k
 func DefaultIdentityPath() string   { return filepath.Join(DataDir(), "default.identity.age") }
 func DefaultCredentialPath() string { return filepath.Join(DataDir(), "default.cred.age") }
 
+// PAMSocketPath returns the path to the Unix domain socket used for
+// PAM-to-daemon IPC. The PAM module writes a derived key to this socket
+// instead of writing a plaintext password file.
+func PAMSocketPath() (string, error) {
+	dir, err := RuntimeKpxcdDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "pam.sock"), nil
+}
+
+// PAMTokenPath returns the legacy plaintext token file path.
+// Deprecated: PAM now uses a Unix socket (PAMSocketPath); this file is
+// no longer created or consumed.
 func PAMTokenPath() (string, error) {
 	dir, err := RuntimeKpxcdDir()
 	if err != nil {
