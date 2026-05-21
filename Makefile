@@ -22,6 +22,8 @@ install: build
 	install -Dm755 $(BINDIR)/kpxcctl $(DESTDIR)$(PREFIX)/bin/kpxcctl
 	install -Dm644 contrib/systemd/kpxcd.service \
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.service
+	install -Dm644 contrib/systemd/kpxcd-pam.socket \
+		$(DESTDIR)/usr/lib/systemd/user/kpxcd-pam.socket
 	install -Dm600 contrib/kpxcd.toml.example \
 		$(DESTDIR)/etc/kpxcd/kpxcd.toml.example
 	install -Dm644 contrib/polkit/org.keepassxc.daemon.policy \

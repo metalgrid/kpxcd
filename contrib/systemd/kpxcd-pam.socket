@@ -1,0 +1,12 @@
+[Unit]
+Description=KeePassXC Headless Daemon — PAM unlock socket
+Documentation=man:kpxcd(1)
+
+[Socket]
+ListenStream=%t/kpxcd/pam.sock
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
