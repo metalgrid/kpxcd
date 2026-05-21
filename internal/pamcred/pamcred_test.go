@@ -2,7 +2,36 @@
 
 package pamcred
 
-import "testing"
+import (
+	"bytes"
+	"encoding/hex"
+	"testing"
+)
+
+func TestDerivePAMToken(t *testing.T) {
+	got := DerivePAMToken([]byte("login-password"))
+	want, err := hex.DecodeString("6746851997ae6dd1b118025baa56753514a2bf21ad02d1f0254bdfbfa9450c74")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("DerivePAMToken() = %x, want %x", got, want)
+	}
+	if len(got) != PAMTokenLen {
+		t.Fatalf("len(DerivePAMToken()) = %d, want %d", len(got), PAMTokenLen)
+	}
+	if bytes.Equal(got, []byte("login-password")) {
+		t.Fatal("derived token must not equal the raw password")
+	}
+}
+
+func TestDerivePAMTokenDistinctInputs(t *testing.T) {
+	first := DerivePAMToken([]byte("login-password"))
+	second := DerivePAMToken([]byte("login-password-2"))
+	if bytes.Equal(first, second) {
+		t.Fatal("different passwords produced the same PAM token")
+	}
+}
 
 func TestSealOpenIdentity(t *testing.T) {
 	token := []byte("login-password")

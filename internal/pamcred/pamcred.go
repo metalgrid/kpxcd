@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/user/kpxcd/internal/xdg"
+	"github.com/metalgrid/kpxcd/internal/xdg"
 	"golang.org/x/crypto/hkdf"
 )
 
