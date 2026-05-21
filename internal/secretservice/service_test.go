@@ -10,7 +10,7 @@ import (
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 
-	"github.com/user/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
 // TestPKCS7Padding verifies PKCS#7 padding and unpadding.
@@ -222,64 +222,64 @@ func TestMatchAttributes(t *testing.T) {
 	odb := newTestOpenDatabase("Work.kdbx", "work-uuid", false)
 
 	tests := []struct {
-		name      string
+		name       string
 		attributes map[string]string
-		wantMatch bool
+		wantMatch  bool
 	}{
 		{
-			name:      "match by title",
+			name:       "match by title",
 			attributes: map[string]string{AttrTitle: "GitHub"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "match by username",
+			name:       "match by username",
 			attributes: map[string]string{AttrUserName: "dev@example.com"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "match by URL",
+			name:       "match by URL",
 			attributes: map[string]string{AttrURL: "https://github.com/user/repo"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "partial URL match",
+			name:       "partial URL match",
 			attributes: map[string]string{AttrURL: "github.com"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "match by database name",
+			name:       "match by database name",
 			attributes: map[string]string{AttrDBNamePrefix: "Work.kdbx"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "match by custom attribute",
+			name:       "match by custom attribute",
 			attributes: map[string]string{"CustomAttr": "custom_val"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "non-matching title",
+			name:       "non-matching title",
 			attributes: map[string]string{AttrTitle: "GitLab"},
-			wantMatch: false,
+			wantMatch:  false,
 		},
 		{
-			name:      "non-matching username",
+			name:       "non-matching username",
 			attributes: map[string]string{AttrUserName: "admin@test.com"},
-			wantMatch: false,
+			wantMatch:  false,
 		},
 		{
-			name:      "multiple matching attributes",
+			name:       "multiple matching attributes",
 			attributes: map[string]string{AttrTitle: "GitHub", AttrUserName: "dev@example.com"},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 		{
-			name:      "one matching one not",
+			name:       "one matching one not",
 			attributes: map[string]string{AttrTitle: "GitHub", AttrUserName: "nobody@test.com"},
-			wantMatch: false,
+			wantMatch:  false,
 		},
 		{
-			name:      "empty attributes",
+			name:       "empty attributes",
 			attributes: map[string]string{},
-			wantMatch: true,
+			wantMatch:  true,
 		},
 	}
 

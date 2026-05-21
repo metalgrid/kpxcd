@@ -12,9 +12,9 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 
-	"github.com/user/kpxcd/internal/config"
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 // SecretService implements the org.freedesktop.Secret.Service D-Bus API.

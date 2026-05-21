@@ -13,11 +13,11 @@ import (
 // require user authorization (via Polkit or similar). For now, prompts are
 // auto-accepted since Polkit integration is planned for Phase 6.
 type Prompt struct {
-	conn       *dbus.Conn
-	path       dbus.ObjectPath
-	completed  chan struct{}
-	dismissed  bool
-	result     dbus.Variant
+	conn      *dbus.Conn
+	path      dbus.ObjectPath
+	completed chan struct{}
+	dismissed bool
+	result    dbus.Variant
 }
 
 // NewPrompt creates a new Prompt object.

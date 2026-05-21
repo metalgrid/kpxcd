@@ -10,8 +10,8 @@ import (
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/tobischo/gokeepasslib/v3"
 
-	"github.com/user/kpxcd/internal/dbpool"
-	"github.com/user/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/security"
 )
 
 const (

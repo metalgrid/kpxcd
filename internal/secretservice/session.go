@@ -18,8 +18,8 @@ import (
 type Session struct {
 	conn   *dbus.Conn
 	path   dbus.ObjectPath
-	alg    string       // "plain" or "dh-ietf1024-sha256-aes128-cbc"
-	key    []byte       // AES key (for encrypted sessions)
+	alg    string // "plain" or "dh-ietf1024-sha256-aes128-cbc"
+	key    []byte // AES key (for encrypted sessions)
 	closed bool
 }
 
@@ -162,9 +162,9 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 // using HKDF-SHA256 per RFC 5869, as required by the Secret Service spec
 // for the "dh-ietf1024-sha256-aes128-cbc-pkcs7" algorithm.
 //
-//   salt = empty (0x00 * HashLen)
-//   info = empty string
-//   hash = SHA-256
+//	salt = empty (0x00 * HashLen)
+//	info = empty string
+//	hash = SHA-256
 //
 // PRK  = HMAC-SHA256(salt, sharedSecret)
 // OKM  = HMAC-SHA256(PRK, 0x01)

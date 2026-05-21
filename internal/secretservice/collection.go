@@ -9,7 +9,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/tobischo/gokeepasslib/v3"
 
-	"github.com/user/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
 // Collection represents a single unlocked KeePass database exposed via

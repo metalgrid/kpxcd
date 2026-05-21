@@ -7,7 +7,7 @@ import (
 
 	"github.com/tobischo/gokeepasslib/v3"
 
-	"github.com/user/kpxcd/internal/dbpool"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
 // Well-known Secret Service attribute keys.
