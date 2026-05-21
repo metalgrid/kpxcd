@@ -515,6 +515,10 @@ func cmdAdoptDefault(args []string) {
 		}
 	}
 
+	// If the daemon is running, lock the default database so it releases the
+	// old file. After adopt, the next PAM login will unlock the new database.
+	lockDefaultInDaemon()
+
 	sourcePassword := readSecretPrompt("Source database password: ")
 	loginPassword := readSecretPrompt("Login/PAM password to seal default credential: ")
 	loginToken := pamcred.DerivePAMToken([]byte(loginPassword))
@@ -556,6 +560,42 @@ func readSecretPrompt(prompt string) string {
 		os.Exit(1)
 	}
 	return string(b)
+}
+
+// lockDefaultInDaemon attempts to lock the default database in a running
+// daemon via DBus. If the daemon is not running or the database is not open,
+// this is a no-op.
+func lockDefaultInDaemon() {
+	obj, conn, err := connectDBus()
+	if err != nil {
+		return // daemon not running
+	}
+	defer conn.Close()
+
+	// Find the default database UUID.
+	result := obj.Call(iface+".ListDatabases", 0)
+	if result.Err != nil {
+		return
+	}
+
+	var dbs []map[string]dbus.Variant
+	if err := result.Store(&dbs); err != nil {
+		return
+	}
+
+	defaultPath := xdg.DefaultDatabasePath()
+	for _, db := range dbs {
+		if getVariantString(db["path"]) == defaultPath {
+			uuid := getVariantString(db["uuid"])
+			locked := false
+			lockResult := obj.Call(iface+".LockDatabase", 0, uuid)
+			_ = lockResult.Store(&locked)
+			if locked {
+				fmt.Fprintf(os.Stderr, "Locked default database in daemon (UUID: %s)\n", uuid)
+			}
+			return
+		}
+	}
 }
 
 func loadOrCreateIdentity(path string, loginToken []byte) (*age.X25519Identity, error) {
