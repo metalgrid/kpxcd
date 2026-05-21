@@ -69,8 +69,8 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| Passkey creation | ✅ | `kpxcctl passkey create` |
-| Passkey assertion | ✅ | `kpxcctl passkey assert` |
+| Passkey creation | 🚧 | Creates credential material; database storage integration is not complete |
+| Passkey assertion | ❌ | Assertion signing is not yet fully implemented |
 | Configurable AAGUID | ✅ | Defaults to KeePassXC's AAGUID |
 | ES256 / EdDSA algorithms | ✅ | `-7`, `-8` |
 | User verification | ✅ | `preferred` / `required` / `discouraged` |
@@ -85,8 +85,10 @@
 | `LockAll` | ✅ | |
 | `GetEntry` | ✅ | By UUID + entry path |
 | `SearchEntries` | ✅ | By UUID + query |
-| `CreatePasskey` | ✅ | |
-| `AssertPasskey` | ✅ | |
+| `CreatePasskey` | 🚧 | Creates credential material; persistent storage still incomplete |
+| `AssertPasskey` | ❌ | Signing/extraction not yet fully implemented |
+| `GetTotp` | ❌ | Returns "not yet implemented" |
+| `GeneratePassword` / `GeneratePassphrase` | ❌ | Return "not yet implemented" |
 
 ## Security
 
@@ -106,8 +108,8 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| Makefile | ✅ | `make build install test` |
-| PKGBUILD (Arch Linux) | ✅ | Installs binary, PAM module, systemd units, man pages, completions |
+| Makefile | ✅ | `make build install test check pam` |
+| Arch Linux package recipe | 🚧 | Keep package build artifacts out of the source tree; publish PKGBUILD separately or under `contrib/packaging/` |
 | Vendored dependencies | ✅ | Full `vendor/` for offline/reproducible builds |
 | Go 1.26 + `GOEXPERIMENT=runtimesecret` | ✅ | Required for secret scope support |
 | Rust PAM module | ✅ | Built with Cargo, installed as `pam_kpxcd.so` |
@@ -119,6 +121,9 @@
 | Feature | Status | Notes |
 |---|---|---|
 | PAM password change rewrap | ❌ | Changing login password breaks sealed identity |
+| TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
+| Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
+| FIDO2 passkey storage and assertion signing | ❌ | Creation plumbing exists, but storage/extraction and signing are incomplete |
 | Secret Service credential source | 🚧 | `unlock_credential = "secret-service"` stub exists |
 | `kpxcctl ssh list` | ❌ | Returns "not yet implemented" |
 | Database reload on file change | ❌ | Watcher detects changes but doesn't reload in-memory |
