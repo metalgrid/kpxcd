@@ -240,14 +240,17 @@ func TestPAMSocketHandlesMultipleConnections(t *testing.T) {
 }
 
 // waitForDB polls until the pool has the expected number of databases or
-// the test times out.
+// the test times out. PAM bootstrap uses age scrypt work factors that can be
+// noticeably slower on GitHub Actions runners than on developer machines, so
+// keep this deadline generous to avoid timing-based flakes.
 func waitForDB(t *testing.T, app *DaemonApp, want int) {
 	t.Helper()
-	for i := 0; i < 100; i++ {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
 		if len(app.pool.List()) >= want {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	if want > 0 && len(app.pool.List()) < want {
 		t.Fatalf("timed out waiting for %d databases, got %d", want, len(app.pool.List()))
