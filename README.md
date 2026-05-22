@@ -77,4 +77,9 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development workflow and
 
 ## License
 
-GPL-3.0-or-later
+This repository contains mixed-license components:
+
+- Go daemon and CLI code: MIT, see [`LICENSE`](LICENSE).
+- Rust PAM module under [`contrib/pam/kpxcd-pam`](contrib/pam/kpxcd-pam): GPL-3.0-or-later, as declared in its `Cargo.toml`.
+
+When distributing packages that include the PAM module, include the GPL-3.0-or-later license terms for that component.
