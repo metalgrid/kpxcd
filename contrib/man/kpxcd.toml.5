@@ -108,9 +108,6 @@ Unwrap kpxcd's age-sealed credential using a PAM login token from
 .B "systemd-credential"
 Read from a systemd \fBLoadCredential=\fR file descriptor.
 .TP
-.B "secret-service"
-Look up in an existing Secret Service provider (e.g., gnome-keyring).
-.TP
 .B "keyfile"
 Read a keyfile from disk.
 .TP
@@ -126,11 +123,6 @@ Default: \fB"prompt"\fR.
 String. Name of the systemd credential holding the password. Only used when
 \fBunlock_credential = "systemd-credential"\fR. The credential is read from
 \fI$CREDENTIALS_DIRECTORY/<name>\fR. Default: empty string.
-.TP
-.B secret_service_label
-String. Label to search for when using \fBunlock_credential =
-"secret-service"\fR. Lookup attributes are \fBapplication=kpxcd\fR and
-\fBdbname=<database name>\fR.
 .TP
 .B keyfile
 String. Path to a keyfile. Used when \fBunlock_credential = "keyfile"\fR or
@@ -287,14 +279,6 @@ auto_unlock = true
 unlock_credential = "systemd-credential"
 systemd_credential_name = "kpxcd-personal"
 ssh_auto_add = true
-
-[[database]]
-path = "/home/user/Work.kdbx"
-name = "Work"
-auto_unlock = true
-unlock_credential = "secret-service"
-secret_service_label = "kpxcd-work-db-password"
-ssh_auto_add = false
 
 [secret_service]
 enabled = true

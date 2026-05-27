@@ -40,7 +40,6 @@ type DatabaseConfig struct {
 	Keyfile                  string `toml:"keyfile"`
 	YubikeySlot              int    `toml:"yubikey_slot"`
 	SecretServiceExposeGroup string `toml:"secret_service_expose_group"`
-	SecretServiceLabel       string `toml:"secret_service_label"`
 	SSHAutoAdd               bool   `toml:"ssh_auto_add"`
 }
 
@@ -234,13 +233,13 @@ func (c *Config) Validate() error {
 		}
 
 		switch db.UnlockCredential {
-		case "", "prompt", "systemd-credential", "secret-service", "keyfile", "pam", "none":
+		case "", "prompt", "systemd-credential", "keyfile", "pam", "none":
 			if db.UnlockCredential == "" {
 				c.Databases[i].UnlockCredential = "prompt"
 			}
 		default:
 			return fmt.Errorf("config: database[%d] (%s): invalid unlock_credential %q, "+
-				"must be one of: systemd-credential, secret-service, keyfile, pam, prompt, none",
+				"must be one of: systemd-credential, keyfile, pam, prompt, none",
 				i, db.Name, db.UnlockCredential)
 		}
 

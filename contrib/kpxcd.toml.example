@@ -49,7 +49,6 @@ auto_unlock = true
 # How to get the password for auto-unlock.
 #   "pam"                — unwrap age-sealed credential with PAM login token
 #   "systemd-credential" — read from $CREDENTIALS_DIRECTORY
-#   "secret-service"     — look up in gnome-keyring / kwallet
 #   "keyfile"            — read a keyfile from disk
 #   "prompt"             — don't auto-unlock; wait for kpxcctl unlock
 #   "none"               — database has no password (dangerous)

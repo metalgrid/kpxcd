@@ -169,7 +169,7 @@ func (app *DaemonApp) startDBus() error {
 	app.dbusConn = conn
 
 	// Export org.keepassxc.Daemon interface.
-	app.dbusAPI = dbusapi.NewDaemonDBusWithConn(app.cfg, app.pool, app.fido2Svc, conn)
+	app.dbusAPI = dbusapi.NewDaemonDBusWithConn(app.cfg, app.pool, app.fido2Svc, app.sshAgent, conn)
 	if err := app.dbusAPI.Export(); err != nil {
 		return fmt.Errorf("export daemon DBus API: %w", err)
 	}
@@ -489,9 +489,6 @@ func resolveCredential(db config.DatabaseConfig) (dbpool.Credential, error) {
 		}
 		return dbpool.PasswordCredential(ss), nil
 
-	case "secret-service":
-		// TODO: query existing Secret Service for the password.
-		return dbpool.Credential{}, fmt.Errorf("secret-service credential source not yet implemented")
 
 	case "pam":
 		return dbpool.Credential{}, fmt.Errorf("pam credential source is handled by daemon auto-unlock")
