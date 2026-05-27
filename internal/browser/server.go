@@ -231,16 +231,11 @@ func (s *Server) handleGetDatabaseHash(keys *sessionKeys, req *Request) *Respons
 		return errorResponse("not associated")
 	}
 
-	// Decrypt the inner message to get action details (url, etc.).
-	// For get-databasehash the inner message is just the action string.
-	// But we don't actually need it — we just return the hash of the
-	// first unlocked database.
 	dbs := s.pool.List()
 	if len(dbs) == 0 {
-		return errorResponse("no database open")
+		return encryptedError(keys, "no database open")
 	}
 
-	// Use the first unlocked database as the "active" database.
 	var db *dbpool.OpenDatabase
 	for _, d := range dbs {
 		if !d.Locked {
@@ -249,7 +244,7 @@ func (s *Server) handleGetDatabaseHash(keys *sessionKeys, req *Request) *Respons
 		}
 	}
 	if db == nil {
-		return errorResponse("database is locked")
+		return encryptedError(keys, "database is locked")
 	}
 
 	hash := databaseHash(db.UUID)
@@ -262,7 +257,7 @@ func (s *Server) handleGetDatabaseHash(keys *sessionKeys, req *Request) *Respons
 
 	msg, nonce, err := keys.encryptJSON(inner)
 	if err != nil {
-		return errorResponse("encryption failed")
+		return encryptedError(keys, "encryption failed")
 	}
 
 	return &Response{
@@ -277,16 +272,105 @@ func (s *Server) handleTestAssociate(keys *sessionKeys, req *Request) *Response 
 	if keys == nil {
 		return errorResponse("not associated")
 	}
-	// TODO: decrypt message, find stored identity key, verify match.
-	return errorResponse("not yet implemented")
+
+	decrypted, err := keys.decryptMessage(req.Message)
+	if err != nil {
+		return encryptedError(keys, "decryption failed")
+	}
+
+	var inner struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(decrypted, &inner); err != nil {
+		return encryptedError(keys, "invalid message")
+	}
+
+	dbUUID, err := findAssociation(s.pool, inner.Key)
+	if err != nil {
+		return encryptedError(keys, "association not found")
+	}
+
+	hash := databaseHash(dbUUID)
+	resp := map[string]string{
+		"id":      inner.ID,
+		"hash":    hash,
+		"version": protocolVersion,
+		"success": "true",
+	}
+
+	msg, nonce, err := keys.encryptJSON(resp)
+	if err != nil {
+		return encryptedError(keys, "encryption failed")
+	}
+
+	return &Response{
+		Message: msg,
+		Nonce:   nonce,
+		Success: "true",
+		Hash:    hash,
+	}
 }
 
 func (s *Server) handleAssociate(keys *sessionKeys, req *Request) *Response {
 	if keys == nil {
 		return errorResponse("not associated")
 	}
-	// TODO: decrypt message, store identity key in database.
-	return errorResponse("not yet implemented")
+
+	decrypted, err := keys.decryptMessage(req.Message)
+	if err != nil {
+		return encryptedError(keys, "decryption failed")
+	}
+
+	var inner struct {
+		Key   string `json:"key"`
+		IDKey string `json:"idKey"`
+	}
+	if err := json.Unmarshal(decrypted, &inner); err != nil {
+		return encryptedError(keys, "invalid message")
+	}
+
+	dbs := s.pool.List()
+	var db *dbpool.OpenDatabase
+	for _, d := range dbs {
+		if !d.Locked {
+			db = d
+			break
+		}
+	}
+	if db == nil {
+		return encryptedError(keys, "no database open")
+	}
+
+	assocID, err := generateAssociationID()
+	if err != nil {
+		return encryptedError(keys, "failed to generate association ID")
+	}
+
+	if err := storeAssociation(s.pool, db.UUID, assocID, inner.IDKey); err != nil {
+		return encryptedError(keys, err.Error())
+	}
+
+	hash := databaseHash(db.UUID)
+	resp := map[string]string{
+		"id":      assocID,
+		"hash":    hash,
+		"version": protocolVersion,
+		"success": "true",
+	}
+
+	msg, nonce, err := keys.encryptJSON(resp)
+	if err != nil {
+		return encryptedError(keys, "encryption failed")
+	}
+
+	return &Response{
+		Message: msg,
+		Nonce:   nonce,
+		Success: "true",
+		Hash:    hash,
+		ID:      assocID,
+	}
 }
 
 func (s *Server) handleGetLogins(keys *sessionKeys, req *Request) *Response {
@@ -338,6 +422,20 @@ func (s *Server) handleCreateNewGroup(keys *sessionKeys, req *Request) *Response
 
 func errorResponse(msg string) *Response {
 	return &Response{Success: "false", Error: msg}
+}
+
+func encryptedError(keys *sessionKeys, msg string) *Response {
+	inner := map[string]string{
+		"success": "false",
+		"error":   msg,
+		"version": protocolVersion,
+	}
+	msg2, nonce, err := keys.encryptJSON(inner)
+	if err != nil {
+		// If encryption fails, return unencrypted error.
+		return errorResponse(msg)
+	}
+	return &Response{Message: msg2, Nonce: nonce, Success: "false", Error: msg}
 }
 
 func defaultSocketPath() string {
