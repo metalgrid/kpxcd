@@ -4,6 +4,8 @@
 package dbusapi
 
 import (
+	"encoding/pem"
+	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,34 +16,39 @@ import (
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2"
 	"github.com/metalgrid/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/tobischo/gokeepasslib/v3"
+	"golang.org/x/crypto/ssh"
 )
 
 // DaemonDBus implements the org.keepassxc.Daemon DBus interface.
 type DaemonDBus struct {
-	conn   *dbus.Conn
-	config *config.Config
-	pool   *dbpool.DatabasePool
-	fido2  *fido2.Fido2Service
+	conn     *dbus.Conn
+	config   *config.Config
+	pool     *dbpool.DatabasePool
+	fido2    *fido2.Fido2Service
+	sshAgent *sshagent.AgentServer
 }
 
 // NewDaemonDBus creates a new DBus API handler.
-func NewDaemonDBus(cfg *config.Config, pool *dbpool.DatabasePool, f2 *fido2.Fido2Service) *DaemonDBus {
+func NewDaemonDBus(cfg *config.Config, pool *dbpool.DatabasePool, f2 *fido2.Fido2Service, sshAgent *sshagent.AgentServer) *DaemonDBus {
 	return &DaemonDBus{
-		config: cfg,
-		pool:   pool,
-		fido2:  f2,
+		config:   cfg,
+		pool:     pool,
+		fido2:    f2,
+		sshAgent: sshAgent,
 	}
 }
 
 // NewDaemonDBusWithConn creates a DBus API handler with an existing connection.
 // Use this when sharing a bus connection with other DBus services (e.g. Secret Service).
-func NewDaemonDBusWithConn(cfg *config.Config, pool *dbpool.DatabasePool, f2 *fido2.Fido2Service, conn *dbus.Conn) *DaemonDBus {
+func NewDaemonDBusWithConn(cfg *config.Config, pool *dbpool.DatabasePool, f2 *fido2.Fido2Service, sshAgent *sshagent.AgentServer, conn *dbus.Conn) *DaemonDBus {
 	return &DaemonDBus{
-		config: cfg,
-		pool:   pool,
-		fido2:  f2,
-		conn:   conn,
+		config:   cfg,
+		pool:     pool,
+		fido2:    f2,
+		sshAgent: sshAgent,
+		conn:     conn,
 	}
 }
 
@@ -265,22 +272,380 @@ func (d *DaemonDBus) GeneratePassphrase(wordCount int, separator string) (string
 	return "", dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
 }
 
-// SshListKeys lists SSH keys in a database.
+// SshListKeys lists SSH keys loaded in the agent. If uuid is non-empty,
+// only keys from that database are returned.
 func (d *DaemonDBus) SshListKeys(uuid string) ([]map[string]dbus.Variant, *dbus.Error) {
-	// TODO: Integrate with sshagent.IdentityManager
-	return nil, dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	if d.sshAgent == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+	}
+
+	keys := d.sshAgent.Manager().ListIdentities()
+	var result []map[string]dbus.Variant
+	for _, lk := range keys {
+		if uuid != "" && lk.DBUUID != uuid {
+			continue
+		}
+		result = append(result, map[string]dbus.Variant{
+			"fingerprint": dbus.MakeVariant(lk.Key.Fingerprint()),
+			"comment":     dbus.MakeVariant(lk.Key.Comment),
+			"type":        dbus.MakeVariant(lk.Key.Format),
+			"entry_path":  dbus.MakeVariant(lk.Key.EntryUUID()),
+			"db_uuid":     dbus.MakeVariant(lk.DBUUID),
+		})
+	}
+	return result, nil
 }
 
-// SshAddKey adds an SSH key to the agent.
+// SshAddKey extracts an SSH key from a database entry and adds it to the agent.
 func (d *DaemonDBus) SshAddKey(uuid string, entryPath string, lifetime uint32, confirm bool) (bool, *dbus.Error) {
-	// TODO: Integrate with sshagent.AgentServer
-	return false, dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	if d.sshAgent == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+	}
+
+	db, err := d.pool.Get(uuid)
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+	}
+	if db.Locked {
+		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+	}
+
+	db.RLock()
+	entry := findEntryByPath(db, entryPath)
+	db.RUnlock()
+	if entry == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("entry not found: %s", entryPath))
+	}
+
+	key, err := sshagent.ExtractKeyFromEntry(entry, db.Db)
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to extract key: %w", err))
+	}
+	if key == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("entry does not contain an SSH key"))
+	}
+	key.SetDBUUID(db.UUID)
+
+	if err := d.sshAgent.Manager().AddIdentity(key, lifetime, confirm, d.config.SSHAgent.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to add key to agent: %w", err))
+	}
+	slog.Info("DBus: SSH key added", "fingerprint", key.Fingerprint(), "db", db.Name, "entry", entryPath)
+	return true, nil
 }
 
-// SshRemoveKey removes an SSH key from the agent.
+// SshScanDatabase scans an unlocked database for entries that contain SSH keys.
+// If uuid is empty, all unlocked databases are scanned.
+func (d *DaemonDBus) SshScanDatabase(uuid string) ([]map[string]dbus.Variant, *dbus.Error) {
+	var dbs []*dbpool.OpenDatabase
+	if uuid != "" {
+		db, err := d.pool.Get(uuid)
+		if err != nil {
+			return nil, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+		}
+		dbs = []*dbpool.OpenDatabase{db}
+	} else {
+		dbs = d.pool.List()
+	}
+
+	var results []map[string]dbus.Variant
+	for _, db := range dbs {
+		if db.Locked {
+			continue
+		}
+		db.RLock()
+		entries := db.RootEntries()
+		db.RUnlock()
+
+		for i := range entries {
+			key, err := sshagent.ExtractKeyFromEntry(&entries[i], db.Db)
+			if err != nil || key == nil {
+				continue
+			}
+			results = append(results, map[string]dbus.Variant{
+				"title":       dbus.MakeVariant(entries[i].GetTitle()),
+				"uuid":        dbus.MakeVariant(fmt.Sprintf("%x", entries[i].UUID[:])),
+				"type":        dbus.MakeVariant(key.Format),
+				"fingerprint": dbus.MakeVariant(key.Fingerprint()),
+				"db_uuid":     dbus.MakeVariant(db.UUID),
+				"db_name":     dbus.MakeVariant(db.Name),
+			})
+		}
+	}
+	return results, nil
+}
+
+// SshGenerateKey generates a new SSH key pair, stores it as an attachment in
+// the specified database entry, and sets KeeAgent metadata.
+func (d *DaemonDBus) SshGenerateKey(uuid string, entryPath string, keyType string, bits uint32, comment string) (bool, *dbus.Error) {
+	db, err := d.pool.Get(uuid)
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+	}
+	if db.Locked {
+		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+	}
+
+	key, pemBytes, err := sshagent.GenerateSSHKeyPair(keyType, int(bits))
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("key generation failed: %w", err))
+	}
+	if comment != "" {
+		key.SetComment(comment)
+	}
+
+	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
+			return fmt.Errorf("database has no root group")
+		}
+
+		// Find existing entry by title or create a new one in the root group.
+		var entry *gokeepasslib.Entry
+		var group *gokeepasslib.Group
+		for gi := range kdb.Content.Root.Groups {
+			g := &kdb.Content.Root.Groups[gi]
+			for ei := range g.Entries {
+				if g.Entries[ei].GetTitle() == entryPath {
+					entry = &g.Entries[ei]
+					group = g
+					break
+				}
+			}
+			if entry != nil {
+				break
+			}
+		}
+		if entry == nil {
+			group = &kdb.Content.Root.Groups[0]
+			newEntry := gokeepasslib.NewEntry()
+			newEntry.Values = append(newEntry.Values, gokeepasslib.ValueData{
+				Key:   "Title",
+				Value: gokeepasslib.V{Content: entryPath},
+			})
+			group.Entries = append(group.Entries, newEntry)
+			entry = &group.Entries[len(group.Entries)-1]
+		}
+
+		// Add private key as a binary attachment.
+		binary := kdb.AddBinary(pemBytes)
+		ref := binary.CreateReference("ssh-key")
+		found := false
+		for i := range entry.Binaries {
+			if entry.Binaries[i].Name == "ssh-key" {
+				entry.Binaries[i] = ref
+				found = true
+				break
+			}
+		}
+		if !found {
+			entry.Binaries = append(entry.Binaries, ref)
+		}
+
+		// Set KeeAgent settings.
+		settings := sshagent.KeeAgentSettings{
+			AllowUseOfSshKey:      true,
+			AddAtDatabaseOpen:     true,
+			RemoveAtDatabaseClose: true,
+			Location: sshagent.Location{
+				SelectedType: "attachment",
+				Attachment:   "ssh-key",
+			},
+		}
+		settingsXML, err := xml.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("marshal KeeAgent settings: %w", err)
+		}
+		cdFound := false
+		for i := range entry.CustomData {
+			if strings.EqualFold(entry.CustomData[i].Key, "KeeAgent.settings") {
+				entry.CustomData[i].Value = string(settingsXML)
+				cdFound = true
+				break
+			}
+		}
+		if !cdFound {
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{
+				Key:   "KeeAgent.settings",
+				Value: string(settingsXML),
+			})
+		}
+
+		// Store comment in Notes if provided.
+		if comment != "" {
+			notesFound := false
+			for i := range entry.Values {
+				if entry.Values[i].Key == "Notes" {
+					entry.Values[i].Value.Content = comment
+					notesFound = true
+					break
+				}
+			}
+			if !notesFound {
+				entry.Values = append(entry.Values, gokeepasslib.ValueData{
+					Key:   "Notes",
+					Value: gokeepasslib.V{Content: comment},
+				})
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to save database: %w", err))
+	}
+
+	slog.Info("DBus: SSH key generated", "type", keyType, "db", db.Name, "entry", entryPath, "fingerprint", key.Fingerprint())
+	return true, nil
+}
+
+// SshImportKey imports an existing SSH private key into a database entry.
+func (d *DaemonDBus) SshImportKey(uuid string, entryPath string, keyData []byte, passphrase string) (bool, *dbus.Error) {
+	db, err := d.pool.Get(uuid)
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+	}
+	if db.Locked {
+		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+	}
+
+	key, err := sshagent.ParsePrivateKey(keyData, passphrase)
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to parse key: %w", err))
+	}
+
+	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
+			return fmt.Errorf("database has no root group")
+		}
+
+		var entry *gokeepasslib.Entry
+		for gi := range kdb.Content.Root.Groups {
+			g := &kdb.Content.Root.Groups[gi]
+			for ei := range g.Entries {
+				if g.Entries[ei].GetTitle() == entryPath {
+					entry = &g.Entries[ei]
+					break
+				}
+			}
+			if entry != nil {
+				break
+			}
+		}
+		if entry == nil {
+			group := &kdb.Content.Root.Groups[0]
+			newEntry := gokeepasslib.NewEntry()
+			newEntry.Values = append(newEntry.Values, gokeepasslib.ValueData{
+				Key:   "Title",
+				Value: gokeepasslib.V{Content: entryPath},
+			})
+			group.Entries = append(group.Entries, newEntry)
+			entry = &group.Entries[len(group.Entries)-1]
+		}
+
+		binary := kdb.AddBinary(keyData)
+		ref := binary.CreateReference("ssh-key")
+		found := false
+		for i := range entry.Binaries {
+			if entry.Binaries[i].Name == "ssh-key" {
+				entry.Binaries[i] = ref
+				found = true
+				break
+			}
+		}
+		if !found {
+			entry.Binaries = append(entry.Binaries, ref)
+		}
+
+		settings := sshagent.KeeAgentSettings{
+			AllowUseOfSshKey:      true,
+			AddAtDatabaseOpen:     true,
+			RemoveAtDatabaseClose: true,
+			Location: sshagent.Location{
+				SelectedType: "attachment",
+				Attachment:   "ssh-key",
+			},
+		}
+		settingsXML, err := xml.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("marshal KeeAgent settings: %w", err)
+		}
+		cdFound := false
+		for i := range entry.CustomData {
+			if strings.EqualFold(entry.CustomData[i].Key, "KeeAgent.settings") {
+				entry.CustomData[i].Value = string(settingsXML)
+				cdFound = true
+				break
+			}
+		}
+		if !cdFound {
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{
+				Key:   "KeeAgent.settings",
+				Value: string(settingsXML),
+			})
+		}
+
+		return nil
+	}); err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to save database: %w", err))
+	}
+
+	slog.Info("DBus: SSH key imported", "db", db.Name, "entry", entryPath, "fingerprint", key.Fingerprint())
+	return true, nil
+}
+
+// SshExportKey exports a loaded SSH private key by fingerprint.
+// Returns the PEM-encoded private key bytes.
+func (d *DaemonDBus) SshExportKey(fingerprint string) ([]byte, *dbus.Error) {
+	if d.sshAgent == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+	}
+
+	lk := d.sshAgent.Manager().FindIdentityByFingerprint(fingerprint)
+	if lk == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("key not found: %s", fingerprint))
+	}
+	if lk.Key.PrivateKey == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("key has no exportable private material"))
+	}
+
+	pemBlock, err := ssh.MarshalPrivateKey(lk.Key.PrivateKey, lk.Key.Comment)
+	if err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("failed to marshal key: %w", err))
+	}
+	return pem.EncodeToMemory(pemBlock), nil
+}
+
+// SshTestSign signs test data with a loaded SSH key and returns the signature.
+func (d *DaemonDBus) SshTestSign(fingerprint string, data []byte) ([]byte, *dbus.Error) {
+	if d.sshAgent == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+	}
+
+	lk := d.sshAgent.Manager().FindIdentityByFingerprint(fingerprint)
+	if lk == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("key not found: %s", fingerprint))
+	}
+
+	var sig *ssh.Signature
+	var signErr error
+	security.Do(func() {
+		sig, signErr = lk.Key.Sign(data)
+	})
+	if signErr != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("sign failed: %w", signErr))
+	}
+	return ssh.Marshal(sig), nil
+}
+
+// SshRemoveKey removes an SSH key from the agent by fingerprint.
 func (d *DaemonDBus) SshRemoveKey(fingerprint string) (bool, *dbus.Error) {
-	// TODO: Integrate with sshagent.AgentServer
-	return false, dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	if d.sshAgent == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+	}
+
+	if err := d.sshAgent.Manager().RemoveIdentity(fingerprint); err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("failed to remove key: %w", err))
+	}
+	slog.Info("DBus: SSH key removed", "fingerprint", fingerprint)
+	return true, nil
 }
 
 // CreatePasskey creates a new FIDO2 credential.

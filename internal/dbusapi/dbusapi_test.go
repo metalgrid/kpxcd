@@ -16,7 +16,7 @@ func TestPing(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
 	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
-	handler := NewDaemonDBus(cfg, pool, f2)
+	handler := NewDaemonDBus(cfg, pool, f2, nil)
 
 	if handler == nil {
 		t.Fatal("NewDaemonDBus returned nil")
@@ -36,7 +36,7 @@ func TestPing(t *testing.T) {
 func TestPingDoesNotRequireDBusConnection(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	result, err := handler.Ping()
 	if err != nil {
@@ -52,7 +52,7 @@ func TestPingDoesNotRequireDBusConnection(t *testing.T) {
 func TestListDatabasesOnEmptyPool(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	dbs, err := handler.ListDatabases()
 	if err != nil {
@@ -78,7 +78,7 @@ func TestListDatabasesWithDatabases(t *testing.T) {
 	// exported methods. Instead, we just test with an empty pool.
 	// The actual integration is tested in pool_test.go.
 
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	dbs, err := handler.ListDatabases()
 	if err != nil {
@@ -97,7 +97,7 @@ func TestListDatabasesReturnFields(t *testing.T) {
 	cfg := config.DefaultConfig()
 	eventCh := make(chan dbpool.Event, 10)
 	pool := dbpool.NewDatabasePool(eventCh)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	dbs, err := handler.ListDatabases()
 	if err != nil {
@@ -117,7 +117,7 @@ func TestNewDaemonDBus(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
-	handler := NewDaemonDBus(cfg, pool, f2)
+	handler := NewDaemonDBus(cfg, pool, f2, nil)
 	if handler == nil {
 		t.Fatal("NewDaemonDBus returned nil")
 	}
@@ -142,7 +142,7 @@ func TestNewDaemonDBusWithNilFido2(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
 
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 	if handler == nil {
 		t.Fatal("NewDaemonDBus returned nil")
 	}
@@ -156,7 +156,7 @@ func TestNewDaemonDBusWithNilFido2(t *testing.T) {
 func TestCloseDoesNotPanic(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	// Should not panic.
 	handler.Close()
@@ -167,7 +167,7 @@ func TestCloseDoesNotPanic(t *testing.T) {
 func TestLockAllOnEmptyPool(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	ok, err := handler.LockAll()
 	if err != nil {
@@ -183,7 +183,7 @@ func TestLockAllOnEmptyPool(t *testing.T) {
 func TestLockDatabaseNotFound(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	ok, err := handler.LockDatabase("nonexistent-uuid")
 	if err == nil {
@@ -199,7 +199,7 @@ func TestLockDatabaseNotFound(t *testing.T) {
 func TestGetEntryDatabaseNotFound(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	_, err := handler.GetEntry("nonexistent-uuid", "some-entry")
 	if err == nil {
@@ -212,7 +212,7 @@ func TestGetEntryDatabaseNotFound(t *testing.T) {
 func TestSearchEntriesEmptyPool(t *testing.T) {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
 	results, err := handler.SearchEntries("", "test")
 	if err != nil {
