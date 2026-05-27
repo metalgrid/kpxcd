@@ -76,9 +76,20 @@ Commands:
   lock [uuid|name]           Lock a database (or all)
   list                       List unlocked databases
   get <uuid> <entry-path>    Get entry fields (password, username, TOTP)
-  ssh list                   List SSH keys in the agent
-  ssh add <uuid> <entry>    Add an SSH key to the agent
-  ssh remove <fingerprint>  Remove an SSH key from the agent
+  ssh list [uuid]            List SSH keys loaded in the agent
+  ssh add <uuid> <entry>     Add an SSH key from a database entry to the agent
+  ssh remove <fingerprint>   Remove an SSH key from the agent
+  ssh scan [uuid]            Scan database(s) for SSH key entries
+  ssh show <fingerprint>     Show details of a loaded SSH key
+  ssh generate <uuid> <entry> [--type rsa|ed25519|ecdsa] [--bits N] [--comment text]
+                             Generate a new SSH key and store it in the database
+  ssh import <uuid> <entry> <file> [--passphrase] [--delete-after]
+                             Import an existing SSH private key into the database
+  ssh export <fingerprint> <file>
+                             Export a loaded SSH private key to a file
+  ssh test-sign <fingerprint>
+                             Test-sign a challenge with a loaded key
+  ssh diag                   Show SSH agent diagnostics
   passkey create <uuid> <rpID> <username>  Create a new passkey
   passkey assert <rpID> <credID>            Assert a passkey
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
@@ -415,7 +426,7 @@ func cmdGet(args []string) {
 // cmdSSH handles SSH key subcommands.
 func cmdSSH(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "kpxcctl ssh: missing subcommand (list, add, remove)")
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh: missing subcommand (list, add, remove, scan, show)")
 		os.Exit(1)
 	}
 
@@ -487,6 +498,211 @@ func cmdSSH(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println("SSH key removed successfully")
+
+	case "generate":
+		if len(subArgs) < 2 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh generate: missing uuid or entry path")
+			os.Exit(1)
+		}
+		uuid := subArgs[0]
+		entryPath := subArgs[1]
+		keyType := "ed25519"
+		bits := uint32(0)
+		comment := ""
+		for i := 2; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "--type":
+				if i+1 < len(subArgs) {
+					keyType = subArgs[i+1]
+					i++
+				}
+			case "--bits":
+				if i+1 < len(subArgs) {
+					var b int
+					fmt.Sscanf(subArgs[i+1], "%d", &b)
+					bits = uint32(b)
+					i++
+				}
+			case "--comment":
+				if i+1 < len(subArgs) {
+					comment = subArgs[i+1]
+					i++
+				}
+			}
+		}
+		result := obj.Call(iface+".SshGenerateKey", 0, uuid, entryPath, keyType, bits, comment)
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to generate SSH key: %v\n", result.Err)
+			os.Exit(1)
+		}
+		fmt.Printf("SSH key generated and stored in entry %q\n", entryPath)
+
+	case "import":
+		if len(subArgs) < 3 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh import: missing uuid, entry path, or key file")
+			os.Exit(1)
+		}
+		uuid := subArgs[0]
+		entryPath := subArgs[1]
+		keyFile := subArgs[2]
+		passphrase := ""
+		deleteAfter := false
+		for i := 3; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "--passphrase":
+				if i+1 < len(subArgs) {
+					passphrase = subArgs[i+1]
+					i++
+				}
+			case "--delete-after":
+				deleteAfter = true
+			}
+		}
+		keyData, err := os.ReadFile(keyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to read key file: %v\n", err)
+			os.Exit(1)
+		}
+		result := obj.Call(iface+".SshImportKey", 0, uuid, entryPath, keyData, passphrase)
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to import SSH key: %v\n", result.Err)
+			os.Exit(1)
+		}
+		if deleteAfter {
+			if err := os.Remove(keyFile); err != nil {
+				fmt.Fprintf(os.Stderr, "kpxcctl: imported but failed to delete source file: %v\n", err)
+			}
+		}
+		fmt.Printf("SSH key imported into entry %q\n", entryPath)
+
+	case "export":
+		if len(subArgs) < 2 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: missing fingerprint or output file")
+			os.Exit(1)
+		}
+		fingerprint := subArgs[0]
+		outFile := subArgs[1]
+		result := obj.Call(iface+".SshExportKey", 0, fingerprint)
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to export SSH key: %v\n", result.Err)
+			os.Exit(1)
+		}
+		var keyData []byte
+		if err := result.Store(&keyData); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(outFile, keyData, 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to write key file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("SSH key exported to %s\n", outFile)
+
+	case "scan":
+		uuid := ""
+		if len(subArgs) > 0 {
+			uuid = subArgs[0]
+		}
+		result := obj.Call(iface+".SshScanDatabase", 0, uuid)
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to scan database: %v\n", result.Err)
+			os.Exit(1)
+		}
+		var entries []map[string]dbus.Variant
+		if err := result.Store(&entries); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
+			os.Exit(1)
+		}
+		if len(entries) == 0 {
+			fmt.Println("No SSH key entries found")
+			return
+		}
+		fmt.Printf("%-36s %-20s %-15s %-50s %s\n", "Entry UUID", "Title", "Type", "Fingerprint", "Database")
+		for _, e := range entries {
+			fmt.Printf("%-36s %-20s %-15s %-50s %s\n",
+				getVariantString(e["uuid"]),
+				getVariantString(e["title"]),
+				getVariantString(e["type"]),
+				getVariantString(e["fingerprint"]),
+				getVariantString(e["db_name"]))
+		}
+
+	case "show":
+		if len(subArgs) < 1 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh show: missing fingerprint")
+			os.Exit(1)
+		}
+		fingerprint := subArgs[0]
+		result := obj.Call(iface+".SshListKeys", 0, "")
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to list SSH keys: %v\n", result.Err)
+			os.Exit(1)
+		}
+		var keys []map[string]dbus.Variant
+		if err := result.Store(&keys); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
+			os.Exit(1)
+		}
+		var found *map[string]dbus.Variant
+		for i := range keys {
+			if getVariantString(keys[i]["fingerprint"]) == fingerprint {
+				found = &keys[i]
+				break
+			}
+		}
+		if found == nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: no loaded key with fingerprint %s\n", fingerprint)
+			os.Exit(1)
+		}
+		fmt.Printf("Fingerprint: %s\n", getVariantString((*found)["fingerprint"]))
+		fmt.Printf("Type:        %s\n", getVariantString((*found)["type"]))
+		fmt.Printf("Comment:     %s\n", getVariantString((*found)["comment"]))
+		fmt.Printf("Database:    %s\n", getVariantString((*found)["db_uuid"]))
+		fmt.Printf("Entry:       %s\n", getVariantString((*found)["entry_path"]))
+
+	case "test-sign":
+		if len(subArgs) < 1 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh test-sign: missing fingerprint")
+			os.Exit(1)
+		}
+		fingerprint := subArgs[0]
+		testData := []byte("kpxcd-ssh-test-challenge")
+		result := obj.Call(iface+".SshTestSign", 0, fingerprint, testData)
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: test sign failed: %v\n", result.Err)
+			os.Exit(1)
+		}
+		var sig []byte
+		if err := result.Store(&sig); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Test signature (%d bytes) succeeded\n", len(sig))
+
+	case "diag":
+		result := obj.Call(iface+".SshListKeys", 0, "")
+		var keys []map[string]dbus.Variant
+		if result.Err == nil {
+			_ = result.Store(&keys)
+		}
+		cfg, err := config.Load("")
+		mode := "unknown"
+		if err == nil {
+			mode = cfg.Daemon.SSHMode
+		}
+		socketPath := os.Getenv("SSH_AUTH_SOCK")
+		if socketPath == "" && err == nil {
+			socketPath = os.ExpandEnv(cfg.Daemon.SSHSocketPath)
+		}
+		fmt.Printf("SSH Agent Mode:   %s\n", mode)
+		fmt.Printf("SSH_AUTH_SOCK:    %s\n", socketPath)
+		fmt.Printf("Loaded Keys:      %d\n", len(keys))
+		for _, k := range keys {
+			fmt.Printf("  %-15s %s (%s)\n",
+				getVariantString(k["type"]),
+				getVariantString(k["fingerprint"]),
+				getVariantString(k["comment"]))
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "kpxcctl ssh: unknown subcommand: %s\n", subcmd)
