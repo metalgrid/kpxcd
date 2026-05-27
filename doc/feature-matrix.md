@@ -131,3 +131,4 @@
 | `kpxcctl ssh import/export` | ✅ | PEM key import/export with attachment handling |
 | `kpxcctl ssh test-sign/diag` | ✅ | Test signing and diagnostics |
 | Database reload on file change | ❌ | Watcher detects changes but doesn't reload in-memory |
+| KeePassXC browser extension | ✅ | NaCl-encrypted protocol over Unix socket |

@@ -54,6 +54,8 @@ func main() {
 		cmdAdoptDefault(args)
 	case "setup-ssh":
 		cmdSetupSSH(args)
+	case "browser":
+		cmdBrowser(args)
 	case "ping":
 		cmdPing()
 	case "help", "--help", "-h":
@@ -94,6 +96,7 @@ Commands:
   passkey assert <rpID> <credID>            Assert a passkey
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
   setup-ssh                  Configure SSH_AUTH_SOCK for the current user
+  browser status             Show browser extension server status
   ping                       Check if daemon is alive
   help                       Show this help message`)
 }
@@ -114,6 +117,27 @@ func connectDBus() (dbus.BusObject, *dbus.Conn, error) {
 // Agent mode: writes ~/.config/environment.d/kpxcd-ssh.conf to export
 // SSH_AUTH_SOCK pointing to kpxcd's agent socket.
 //
+// cmdBrowser handles browser extension subcommands.
+func cmdBrowser(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "kpxcctl browser: missing subcommand (status)")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "status":
+		cfg, err := config.Load("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl: failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Browser Extension:  %s\n", enabledStr(cfg.Browser.Enabled))
+		fmt.Printf("Socket Path:      %s\n", os.ExpandEnv(cfg.Browser.SocketPath))
+	default:
+		fmt.Fprintf(os.Stderr, "kpxcctl browser: unknown subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
 // Client mode: writes ~/.config/systemd/user/kpxcd.service.d/ssh-client.conf
 // to pass SSH_AUTH_SOCK into the daemon from the session environment.
 func cmdSetupSSH(args []string) {
@@ -812,6 +836,13 @@ func cmdPing() {
 }
 
 // Helper functions for extracting variant values.
+func enabledStr(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
+}
+
 func getVariantString(v dbus.Variant) string {
 	switch val := v.Value().(type) {
 	case string:
