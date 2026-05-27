@@ -7,6 +7,9 @@ package browser
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -115,8 +118,226 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	slog.Debug("browser: new connection", "remote", conn.RemoteAddr())
-	_ = ctx // TODO: use in protocol dispatch
-	// TODO: read length-prefixed message, dispatch to handler, write response
+
+	var keys *sessionKeys
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.done:
+			return
+		default:
+		}
+
+		raw, err := readMessage(conn)
+		if err != nil {
+			slog.Debug("browser: read error, closing connection", "error", err)
+			return
+		}
+
+		var req Request
+		if err := json.Unmarshal(raw, &req); err != nil {
+			slog.Warn("browser: invalid JSON from client", "error", err)
+			return
+		}
+
+		resp := s.dispatch(&req, keys)
+		if resp == nil {
+			return
+		}
+
+		// change-public-keys establishes the session; all other encrypted
+		// actions need the session keys.
+		if req.Action == "change-public-keys" {
+			newKeys, pkResp := s.handleChangePublicKeys(&req)
+			if pkResp == nil {
+				return
+			}
+			keys = newKeys
+			resp = pkResp
+		}
+
+		if err := encodeResponse(conn, resp); err != nil {
+			slog.Warn("browser: write error", "error", err)
+			return
+		}
+	}
+}
+
+// dispatch routes an action to its handler. Returns nil if the connection
+// should be closed.
+func (s *Server) dispatch(req *Request, keys *sessionKeys) *Response {
+	switch req.Action {
+	case "change-public-keys":
+		// Handled separately in handleConn because it mutates session state.
+		return &Response{Success: "false", Error: "unexpected change-public-keys"}
+	case "get-databasehash":
+		return s.handleGetDatabaseHash(keys, req)
+	case "test-associate":
+		return s.handleTestAssociate(keys, req)
+	case "associate":
+		return s.handleAssociate(keys, req)
+	case "get-logins":
+		return s.handleGetLogins(keys, req)
+	case "set-login":
+		return s.handleSetLogin(keys, req)
+	case "lock-database":
+		return s.handleLockDatabase(keys, req)
+	case "get-totp":
+		return s.handleGetTotp(keys, req)
+	case "generate-password":
+		return s.handleGeneratePassword(req)
+	case "get-database-groups":
+		return s.handleGetDatabaseGroups(keys, req)
+	case "create-new-group":
+		return s.handleCreateNewGroup(keys, req)
+	default:
+		slog.Warn("browser: unknown action", "action", req.Action)
+		return &Response{Success: "false", Error: fmt.Sprintf("unknown action: %s", req.Action)}
+	}
+}
+
+func (s *Server) handleChangePublicKeys(req *Request) (*sessionKeys, *Response) {
+	clientPubB64 := req.PublicKey
+	if clientPubB64 == "" {
+		return nil, &Response{Action: "change-public-keys", Success: "false", Error: "missing publicKey"}
+	}
+
+	clientPubSlice, err := base64.StdEncoding.DecodeString(clientPubB64)
+	if err != nil || len(clientPubSlice) != 32 {
+		return nil, &Response{Action: "change-public-keys", Success: "false", Error: "invalid publicKey"}
+	}
+
+	keys, err := newSessionKeys()
+	if err != nil {
+		return nil, &Response{Action: "change-public-keys", Success: "false", Error: "key generation failed"}
+	}
+
+	var clientPub [32]byte
+	copy(clientPub[:], clientPubSlice)
+	keys.establish(&clientPub)
+
+	return keys, &Response{
+		Action:    "change-public-keys",
+		Version:   protocolVersion,
+		PublicKey: base64.StdEncoding.EncodeToString(keys.hostPublicKey[:]),
+		Success:   "true",
+	}
+}
+
+func (s *Server) handleGetDatabaseHash(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+
+	// Decrypt the inner message to get action details (url, etc.).
+	// For get-databasehash the inner message is just the action string.
+	// But we don't actually need it — we just return the hash of the
+	// first unlocked database.
+	dbs := s.pool.List()
+	if len(dbs) == 0 {
+		return errorResponse("no database open")
+	}
+
+	// Use the first unlocked database as the "active" database.
+	var db *dbpool.OpenDatabase
+	for _, d := range dbs {
+		if !d.Locked {
+			db = d
+			break
+		}
+	}
+	if db == nil {
+		return errorResponse("database is locked")
+	}
+
+	hash := databaseHash(db.UUID)
+
+	inner := map[string]string{
+		"hash":    hash,
+		"version": protocolVersion,
+		"success": "true",
+	}
+
+	msg, nonce, err := keys.encryptJSON(inner)
+	if err != nil {
+		return errorResponse("encryption failed")
+	}
+
+	return &Response{
+		Action:  "database-hash",
+		Message: msg,
+		Nonce:   nonce,
+		Success: "true",
+	}
+}
+
+func (s *Server) handleTestAssociate(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	// TODO: decrypt message, find stored identity key, verify match.
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleAssociate(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	// TODO: decrypt message, store identity key in database.
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleGetLogins(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleSetLogin(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleLockDatabase(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleGetTotp(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleGeneratePassword(req *Request) *Response {
+	// generate-password is unencrypted.
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleGetDatabaseGroups(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func (s *Server) handleCreateNewGroup(keys *sessionKeys, req *Request) *Response {
+	if keys == nil {
+		return errorResponse("not associated")
+	}
+	return errorResponse("not yet implemented")
+}
+
+func errorResponse(msg string) *Response {
+	return &Response{Success: "false", Error: msg}
 }
 
 func defaultSocketPath() string {
@@ -125,4 +346,9 @@ func defaultSocketPath() string {
 		xdg = fmt.Sprintf("/run/user/%d", os.Getuid())
 	}
 	return filepath.Join(xdg, "app/org.keepassxc.KeePassXC", "browser.sock")
+}
+
+func init() {
+	// Ensure rand.Reader is available.
+	_ = rand.Reader
 }
