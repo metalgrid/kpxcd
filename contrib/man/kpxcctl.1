@@ -62,19 +62,53 @@ current TOTP code (if configured). Password retrieval may require Polkit
 authorization.
 
 .SS ssh
-Manage SSH keys stored in the database.
+Manage SSH keys stored in KeePass databases and served by the agent.
 
 .TP
 .B kpxcctl ssh list [uuid]
-List SSH keys. Optionally filter by database UUID.
+List SSH keys loaded in the agent. Optionally filter by database UUID.
 
 .TP
 .B kpxcctl ssh add <uuid> <entry-path>
-Add an SSH key from the specified entry to the agent.
+Add an SSH key from the specified database entry to the agent.
 
 .TP
 .B kpxcctl ssh remove <fingerprint>
 Remove an SSH key from the agent by its SHA256 fingerprint.
+
+.TP
+.B kpxcctl ssh scan [uuid]
+Scan unlocked database(s) for entries containing SSH keys.
+Shows entry UUID, title, key type, and fingerprint.
+
+.TP
+.B kpxcctl ssh show <fingerprint>
+Show metadata for a loaded SSH key.
+
+.TP
+.B kpxcctl ssh generate <uuid> <entry-path> [\-\-type rsa|ed25519|ecdsa] [\-\-bits N] [\-\-comment text]
+Generate a new SSH key pair, store the private key as an attachment in the
+specified entry, and set KeeAgent metadata. The public key is not stored
+separately; it can be derived from the private key attachment.
+
+.TP
+.B kpxcctl ssh import <uuid> <entry-path> <file> [\-\-passphrase] [\-\-delete-after]
+Import an existing SSH private key into the database. The key file is
+read, parsed, attached to the entry, and KeeAgent metadata is set.
+With \fB\-\-delete-after\fR, the source file is removed after successful import.
+
+.TP
+.B kpxcctl ssh export <fingerprint> <file>
+Export a loaded SSH private key to a file with mode 0600.
+Warning: this writes unencrypted private key material to disk.
+
+.TP
+.B kpxcctl ssh test-sign <fingerprint>
+Sign a test challenge with the specified loaded key to verify it works.
+
+.TP
+.B kpxcctl ssh diag
+Print SSH agent diagnostics: mode, socket path, and loaded key summary.
 
 .SS passkey
 Manage FIDO2 / WebAuthn passkeys.
