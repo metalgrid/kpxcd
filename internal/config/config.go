@@ -60,6 +60,12 @@ type SSHAgentConfig struct {
 	SecurityKeyProvider string `toml:"security_key_provider"`
 }
 
+// BrowserConfig holds settings for the KeePassXC browser extension interface.
+type BrowserConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	SocketPath string `toml:"socket_path"`
+}
+
 // Fido2Config holds settings for the FIDO2 / passkey interface.
 type Fido2Config struct {
 	Enabled          bool   `toml:"enabled"`
@@ -74,6 +80,7 @@ type Config struct {
 	Databases     []DatabaseConfig    `toml:"database"`
 	SecretService SecretServiceConfig `toml:"secret_service"`
 	SSHAgent      SSHAgentConfig      `toml:"ssh_agent"`
+	Browser       BrowserConfig       `toml:"browser"`
 	Fido2         Fido2Config         `toml:"fido2"`
 }
 
@@ -165,6 +172,10 @@ func DefaultConfig() *Config {
 			ConfirmOnUse:        false,
 			Lifetime:            0,
 			SecurityKeyProvider: "internal",
+		},
+		Browser: BrowserConfig{
+			Enabled:    true,
+			SocketPath: "app/org.keepassxc.KeePassXC/browser.sock",
 		},
 		Fido2: Fido2Config{
 			Enabled:          true,

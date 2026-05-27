@@ -19,6 +19,7 @@ import (
 	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/godbus/dbus/v5"
 
+	"github.com/metalgrid/kpxcd/internal/browser"
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/dbusapi"
@@ -36,8 +37,9 @@ type DaemonApp struct {
 	secSvc    *secretservice.SecretService
 	sshAgent  *sshagent.AgentServer
 	sshClient *sshagent.AgentClient
-	fido2Svc  *fido2.Fido2Service
-	pamSocket *PAMSocketServer
+	fido2Svc    *fido2.Fido2Service
+	browserSrv *browser.Server
+	pamSocket   *PAMSocketServer
 	dbusConn  *dbus.Conn
 	done      chan struct{}
 }
@@ -119,6 +121,12 @@ func Run(configPath string, cliLevel slog.Level) error {
 	// Start the SSH agent.
 	if err := app.startSSHAgent(); err != nil {
 		slog.Error("SSH agent setup failed", "error", err)
+		// Non-fatal: other services can still run.
+	}
+
+	// Start the browser extension server.
+	if err := app.startBrowser(); err != nil {
+		slog.Error("browser server setup failed", "error", err)
 		// Non-fatal: other services can still run.
 	}
 
@@ -249,6 +257,38 @@ func (app *DaemonApp) startSSHAgentClient() error {
 	return nil
 }
 
+// startBrowser starts the KeePassXC browser extension protocol server.
+func (app *DaemonApp) startBrowser() error {
+	if !app.cfg.Browser.Enabled {
+		return nil
+	}
+
+	socketPath := os.ExpandEnv(app.cfg.Browser.SocketPath)
+	if !filepath.IsAbs(socketPath) {
+		xdg := os.Getenv("XDG_RUNTIME_DIR")
+		if xdg == "" {
+			xdg = fmt.Sprintf("/run/user/%d", os.Getuid())
+		}
+		socketPath = filepath.Join(xdg, socketPath)
+	}
+
+	app.browserSrv = browser.NewServer(&app.cfg.Browser, app.pool, socketPath)
+	if err := app.browserSrv.Listen(); err != nil {
+		return fmt.Errorf("browser server listen: %w", err)
+	}
+
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if err := app.browserSrv.Serve(ctx); err != nil {
+			slog.Error("browser server serve error", "error", err)
+		}
+	}()
+
+	slog.Info("Browser extension server started", "socket", socketPath)
+	return nil
+}
+
 // shutdown performs a clean shutdown of all services.
 func (app *DaemonApp) shutdown() {
 	slog.Info("shutting down")
@@ -268,6 +308,13 @@ func (app *DaemonApp) shutdown() {
 	}
 	if app.sshClient != nil {
 		app.sshClient.Close()
+	}
+
+	// Stop browser extension server.
+	if app.browserSrv != nil {
+		if err := app.browserSrv.Close(); err != nil {
+			slog.Error("browser server close error", "error", err)
+		}
 	}
 
 	// Release DBus names and close connection.
