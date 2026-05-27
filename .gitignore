@@ -14,7 +14,7 @@
 *.pkg.tar.xz
 /pkg/
 /src/
-PKGBUILD
+/PKGBUILD
 
 # Test artifacts
 *.test

@@ -1,0 +1,85 @@
+# Maintainer: Iskren Hadzhinedev <iskren@coreweave.com>
+pkgname=kpxcd
+pkgver=r75.9bce2d6
+pkgrel=1
+pkgdesc="KeePassXC headless daemon for Linux"
+arch=('x86_64')
+url="https://github.com/metalgrid/kpxcd"
+license=('MIT')
+depends=('pam' 'polkit')
+makedepends=('go>=1.26' 'rust' 'gcc')
+source=("git+https://github.com/metalgrid/kpxcd.git")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$srcdir/kpxcd"
+	printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+	cd "$srcdir/kpxcd"
+	export GOEXPERIMENT=runtimesecret
+	go mod download
+}
+
+build() {
+	cd "$srcdir/kpxcd"
+	export GOEXPERIMENT=runtimesecret
+
+	# Go binaries
+	go build -trimpath -ldflags '-s -w' ./cmd/kpxcd
+	go build -trimpath -ldflags '-s -w' ./cmd/kpxcctl
+
+	# PAM module
+	cd contrib/pam/kpxcd-pam
+	cargo build --release
+}
+
+package() {
+	cd "$srcdir/kpxcd"
+
+	# Binaries
+	install -Dm755 kpxcd "$pkgdir/usr/bin/kpxcd"
+	install -Dm755 kpxcctl "$pkgdir/usr/bin/kpxcctl"
+
+	# PAM module
+	install -Dm755 contrib/pam/kpxcd-pam/target/release/libpam_kpxcd.so \
+		"$pkgdir/usr/lib/security/pam_kpxcd.so"
+
+	# PAM config
+	install -Dm644 contrib/pam/etc/kpxcd \
+		"$pkgdir/etc/pam.d/kpxcd"
+
+	# Example config
+	install -Dm600 contrib/kpxcd.toml.example \
+		"$pkgdir/etc/kpxcd/kpxcd.toml.example"
+
+	# systemd user units
+	install -Dm644 contrib/systemd/kpxcd.service \
+		"$pkgdir/usr/lib/systemd/user/kpxcd.service"
+	install -Dm644 contrib/systemd/kpxcd.socket \
+		"$pkgdir/usr/lib/systemd/user/kpxcd.socket"
+
+	# Polkit policy
+	install -Dm644 contrib/polkit/org.keepassxc.daemon.policy \
+		"$pkgdir/usr/share/polkit-1/actions/org.keepassxc.daemon.policy"
+
+	# Man pages
+	install -Dm644 contrib/man/kpxcd.8 \
+		"$pkgdir/usr/share/man/man8/kpxcd.8"
+	install -Dm644 contrib/man/kpxcctl.1 \
+		"$pkgdir/usr/share/man/man1/kpxcctl.1"
+	install -Dm644 contrib/man/kpxcd.toml.5 \
+		"$pkgdir/usr/share/man/man5/kpxcd.toml.5"
+
+	# Shell completions
+	install -Dm644 contrib/completion/kpxcctl.bash \
+		"$pkgdir/usr/share/bash-completion/completions/kpxcctl"
+	install -Dm644 contrib/completion/kpxcctl.fish \
+		"$pkgdir/usr/share/fish/vendor_completions.d/kpxcctl.fish"
+	install -Dm644 contrib/completion/kpxcctl.zsh \
+		"$pkgdir/usr/share/zsh/site-functions/_kpxcctl"
+
+	# License
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
