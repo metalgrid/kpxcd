@@ -1,6 +1,6 @@
 # Maintainer: Iskren Hadzhinedev <iskren@coreweave.com>
 pkgname=kpxcd
-pkgver=r75.9bce2d6
+pkgver=r100.3a94879
 pkgrel=1
 pkgdesc="KeePassXC headless daemon for Linux"
 arch=('x86_64')
@@ -47,7 +47,7 @@ package() {
 		"$pkgdir/usr/lib/security/pam_kpxcd.so"
 
 	# PAM config
-	install -Dm644 contrib/pam/etc/kpxcd \
+	install -Dm644 contrib/pam/etc/pam.d/kpxcd \
 		"$pkgdir/etc/pam.d/kpxcd"
 
 	# Example config
