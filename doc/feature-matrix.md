@@ -124,6 +124,10 @@
 | TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
 | Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
 | FIDO2 passkey storage and assertion signing | ❌ | Creation plumbing exists, but storage/extraction and signing are incomplete |
-| Secret Service credential source | 🚧 | `unlock_credential = "secret-service"` stub exists |
-| `kpxcctl ssh list` | ❌ | Returns "not yet implemented" |
+| Secret Service credential source | ❌ | Removed — circular dependency with kpxcd's own Secret Service server |
+| `kpxcctl ssh list/add/remove` | ✅ | Wired to AgentServer IdentityManager |
+| `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |
+| `kpxcctl ssh generate` | ✅ | In-place key generation with KeeAgent metadata |
+| `kpxcctl ssh import/export` | ✅ | PEM key import/export with attachment handling |
+| `kpxcctl ssh test-sign/diag` | ✅ | Test signing and diagnostics |
 | Database reload on file change | ❌ | Watcher detects changes but doesn't reload in-memory |

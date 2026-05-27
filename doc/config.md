@@ -52,7 +52,6 @@ auto_unlock = true
 # Credential source for auto-unlock
 # "pam"                — unwrap age-sealed credential using PAM login token
 # "systemd-credential" — read from systemd LoadCredential
-# "secret-service"     — look up in org.freedesktop.secrets
 # "keyfile"            — read a keyfile from disk
 # "prompt"             — do not auto-unlock; wait for kpxcctl unlock
 # "none"               — database has no password (dangerous)
@@ -69,14 +68,6 @@ secret_service_expose_group = ""
 
 # Whether to auto-add SSH keys from this database to the agent
 ssh_auto_add = true
-
-[[database]]
-path = "/home/user/Work.kdbx"
-name = "Work"
-auto_unlock = true
-unlock_credential = "secret-service"
-secret_service_label = "kpxcd-work-db-password"
-ssh_auto_add = false
 
 [secret_service]
 # Whether to expose the Secret Service interface on D-Bus
@@ -162,7 +153,7 @@ This is a TOML array of tables — repeat the `[[database]]` header for each dat
 | `name` | string | filename | Human-readable name for the database. |
 | `default` | bool | `false` | Mark this as the default database. At most one database may be default. |
 | `auto_unlock` | bool | `false` | Attempt to unlock this database when the daemon starts. |
-| `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `pam`, `systemd-credential`, `secret-service`, `keyfile`, `prompt`, `none`. |
+| `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `pam`, `systemd-credential`, `keyfile`, `prompt`, `none`. |
 | `systemd_credential_name` | string | `""` | Name of the systemd credential holding the password. Only used when `unlock_credential = "systemd-credential"`. |
 | `keyfile` | string | `""` | Path to a keyfile. Used when `unlock_credential = "keyfile"` or as a secondary factor. |
 | `yubikey_slot` | int | `0` | YubiKey challenge-response slot. `0` = disabled, `1` or `2` = slot number. |
@@ -279,17 +270,6 @@ The credential file should be readable only by the user:
 echo -n 'my-password' > ~/.local/share/kpxcd/personal.pass
 chmod 600 ~/.local/share/kpxcd/personal.pass
 ```
-
-### `secret-service`
-
-`kpxcd` connects to an existing Secret Service provider (gnome-keyring, kwallet) and looks up the database password by label and attributes. This is circular — `kpxcd` itself provides Secret Service — so this source is only useful for auto-unlock before `kpxcd` registers its own service.
-
-Lookup attributes:
-
-| Attribute | Value |
-|-----------|-------|
-| `application` | `kpxcd` |
-| `dbname` | database `name` from config |
 
 ### `keyfile`
 
