@@ -7,7 +7,7 @@ After=kpxcd.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/kpxcd
+ExecStart=/usr/bin/kpxcd
 Restart=on-failure
 RestartSec=5
 
