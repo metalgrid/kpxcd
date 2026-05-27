@@ -377,7 +377,126 @@ func (s *Server) handleGetLogins(keys *sessionKeys, req *Request) *Response {
 	if keys == nil {
 		return errorResponse("not associated")
 	}
-	return errorResponse("not yet implemented")
+
+	decrypted, err := keys.decryptMessage(req.Message)
+	if err != nil {
+		return encryptedError(keys, "decryption failed")
+	}
+
+	var inner struct {
+		URL       string `json:"url"`
+		SubmitURL string `json:"submitUrl"`
+		HTTPAuth  string `json:"httpAuth"`
+		Keys      []struct {
+			ID  string `json:"id"`
+			Key string `json:"key"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(decrypted, &inner); err != nil {
+		return encryptedError(keys, "invalid message")
+	}
+
+	searchURL := inner.URL
+	if inner.SubmitURL != "" {
+		searchURL = inner.SubmitURL
+	}
+
+	// Search all unlocked databases for matching entries.
+	type loginEntry struct {
+		Login    string `json:"login"`
+		Name     string `json:"name"`
+		Password string `json:"password"`
+		UUID     string `json:"uuid"`
+		Expired  string `json:"expired,omitempty"`
+	}
+
+	var entries []loginEntry
+	dbs := s.pool.List()
+	for _, db := range dbs {
+		if db.Locked {
+			continue
+		}
+
+		// Verify the database hash matches one of the provided keys.
+		hash := databaseHash(db.UUID)
+		hashMatched := len(inner.Keys) == 0
+		for _, k := range inner.Keys {
+			if k.ID != "" && k.ID == hash {
+				hashMatched = true
+				break
+			}
+		}
+		if !hashMatched {
+			continue
+		}
+
+		db.RLock()
+		allEntries := db.RootEntries()
+		db.RUnlock()
+
+		for i := range allEntries {
+			e := &allEntries[i]
+			entryURL := e.GetContent("URL")
+			if !matchURL(entryURL, searchURL) {
+				continue
+			}
+
+			// Skip the browser settings entry itself.
+			if e.GetTitle() == browserSettingsKey {
+				continue
+			}
+
+			login := e.GetContent("UserName")
+			name := e.GetTitle()
+			password := e.GetContent("Password")
+			uuid := fmt.Sprintf("%x", e.UUID[:])
+
+			entries = append(entries, loginEntry{
+				Login:    login,
+				Name:     name,
+				Password: password,
+				UUID:     uuid,
+			})
+		}
+	}
+
+	if entries == nil {
+		entries = []loginEntry{}
+	}
+
+	dbs2 := s.pool.List()
+	var activeDB *dbpool.OpenDatabase
+	for _, d := range dbs2 {
+		if !d.Locked {
+			activeDB = d
+			break
+		}
+	}
+	activeHash := ""
+	if activeDB != nil {
+		activeHash = databaseHash(activeDB.UUID)
+	}
+
+	resp := map[string]interface{}{
+		"count":   fmt.Sprintf("%d", len(entries)),
+		"entries": entries,
+		"success": "true",
+		"version": protocolVersion,
+		"hash":    activeHash,
+	}
+
+	msg, nonce, err := keys.encryptJSON(resp)
+	if err != nil {
+		return encryptedError(keys, "encryption failed")
+	}
+
+	return &Response{
+		Message: msg,
+		Nonce:   nonce,
+		Success: "true",
+		Hash:    activeHash,
+		Count:   fmt.Sprintf("%d", len(entries)),
+	}
 }
 
 func (s *Server) handleSetLogin(keys *sessionKeys, req *Request) *Response {
