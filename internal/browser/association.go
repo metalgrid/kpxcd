@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -252,4 +253,86 @@ func extractHost(urlStr string) string {
 		u = u[:idx]
 	}
 	return u
+}
+
+// findGroupByUUID searches for a group by UUID string (recursive).
+func findGroupByUUID(group *gokeepasslib.Group, uuid string) *gokeepasslib.Group {
+	if fmt.Sprintf("%x", group.UUID[:]) == uuid {
+		return group
+	}
+	for i := range group.Groups {
+		if g := findGroupByUUID(&group.Groups[i], uuid); g != nil {
+			return g
+		}
+	}
+	return nil
+}
+
+// findEntryByUUID finds an entry by UUID string within a group (non-recursive).
+func findEntryByUUID(group *gokeepasslib.Group, uuid string) *gokeepasslib.Entry {
+	for i := range group.Entries {
+		if fmt.Sprintf("%x", group.Entries[i].UUID[:]) == uuid {
+			return &group.Entries[i]
+		}
+	}
+	return nil
+}
+
+// findEntryByUsername finds an entry by username and URL within a group.
+func findEntryByUsername(group *gokeepasslib.Group, username, url string) *gokeepasslib.Entry {
+	for i := range group.Entries {
+		if group.Entries[i].GetContent("UserName") == username && group.Entries[i].GetContent("URL") == url {
+			return &group.Entries[i]
+		}
+	}
+	return nil
+}
+
+// setEntryValue sets a value on an entry, updating in place if the key exists.
+func setEntryValue(entry *gokeepasslib.Entry, key, value string) {
+	for i := range entry.Values {
+		if entry.Values[i].Key == key {
+			entry.Values[i].Value.Content = value
+			return
+		}
+	}
+	entry.Values = append(entry.Values, gokeepasslib.ValueData{
+		Key:   key,
+		Value: gokeepasslib.V{Content: value},
+	})
+}
+
+// generatePassword generates a random password from the given charset.
+func generatePassword(charset string, length int) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b), nil
+}
+
+// serializeGroups converts a group tree to the protocol's JSON format.
+func serializeGroups(groups []gokeepasslib.Group) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(groups))
+	for _, g := range groups {
+		elem := map[string]interface{}{
+			"name":    g.Name,
+			"uuid":    fmt.Sprintf("%x", g.UUID[:]),
+			"children": serializeGroups(g.Groups),
+		}
+		result = append(result, elem)
+	}
+	return result
+}
+
+// encryptedResponse wraps a response in an encrypted message.
+func encryptedResponse(keys *sessionKeys, v any) *Response {
+	msg, nonce, err := keys.encryptJSON(v)
+	if err != nil {
+		return errorResponse("encryption failed")
+	}
+	return &Response{Message: msg, Nonce: nonce, Success: "true"}
 }

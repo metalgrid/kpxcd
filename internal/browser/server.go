@@ -19,6 +19,7 @@ import (
 
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
+	"github.com/tobischo/gokeepasslib/v3"
 )
 
 // Server listens on the KeePassXC browser socket and dispatches protocol
@@ -517,26 +518,107 @@ func (s *Server) handleGetTotp(keys *sessionKeys, req *Request) *Response {
 	if keys == nil {
 		return errorResponse("not associated")
 	}
+	// get-totp is sent unencrypted: {"action":"get-totp","uuid":"<uuid>"}
+	// Requires adding UUID to Request struct.
 	return errorResponse("not yet implemented")
 }
 
 func (s *Server) handleGeneratePassword(req *Request) *Response {
-	// generate-password is unencrypted.
-	return errorResponse("not yet implemented")
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	const length = 20
+	password, err := generatePassword(charset, length)
+	if err != nil {
+		return &Response{Success: "false", Error: "generation failed", Version: protocolVersion}
+	}
+	return &Response{Version: protocolVersion, Password: password, Success: "true"}
 }
 
 func (s *Server) handleGetDatabaseGroups(keys *sessionKeys, req *Request) *Response {
 	if keys == nil {
 		return errorResponse("not associated")
 	}
-	return errorResponse("not yet implemented")
+
+	dbs := s.pool.List()
+	var db *dbpool.OpenDatabase
+	for _, d := range dbs {
+		if !d.Locked {
+			db = d
+			break
+		}
+	}
+	if db == nil {
+		return encryptedError(keys, "no database open")
+	}
+
+	db.RLock()
+	groups := serializeGroups(db.Db.Content.Root.Groups)
+	db.RUnlock()
+
+	defaultGroup := browserGroupName
+	_, g, _ := findBrowserGroup(s.pool)
+	if g == nil {
+		defaultGroup = ""
+	}
+
+	resp := map[string]interface{}{
+		"defaultGroup": defaultGroup, "groups": groups,
+		"success": "true", "version": protocolVersion,
+	}
+	msg, nonce, err := keys.encryptJSON(resp)
+	if err != nil {
+		return encryptedError(keys, "encryption failed")
+	}
+	return &Response{Message: msg, Nonce: nonce, Success: "true"}
 }
 
 func (s *Server) handleCreateNewGroup(keys *sessionKeys, req *Request) *Response {
 	if keys == nil {
 		return errorResponse("not associated")
 	}
-	return errorResponse("not yet implemented")
+
+	decrypted, err := keys.decryptMessage(req.Message)
+	if err != nil {
+		return encryptedError(keys, "decryption failed")
+	}
+
+	var inner struct {
+		GroupName string `json:"groupName"`
+	}
+	if err := json.Unmarshal(decrypted, &inner); err != nil {
+		return encryptedError(keys, "invalid message")
+	}
+
+	dbs := s.pool.List()
+	var db *dbpool.OpenDatabase
+	for _, d := range dbs {
+		if !d.Locked {
+			db = d
+			break
+		}
+	}
+	if db == nil {
+		return encryptedError(keys, "no database open")
+	}
+
+	var groupUUID string
+	err = db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
+			return fmt.Errorf("database has no root group")
+		}
+		group := findOrCreateGroup(&kdb.Content.Root.Groups[0], inner.GroupName)
+		groupUUID = fmt.Sprintf("%x", group.UUID[:])
+		return nil
+	})
+	if err != nil {
+		return encryptedError(keys, err.Error())
+	}
+
+	resp := map[string]string{"name": inner.GroupName, "uuid": groupUUID, "success": "true"}
+	msg, nonce, err2 := keys.encryptJSON(resp)
+	if err2 != nil {
+		return encryptedError(keys, "encryption failed")
+	}
+	return &Response{Message: msg, Nonce: nonce, Success: "true"}
 }
 
 func errorResponse(msg string) *Response {
