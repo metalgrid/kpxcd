@@ -249,3 +249,46 @@ func encodeEd25519PrivateKey(key ed25519.PrivateKey) (string, error) {
 		base64.StdEncoding.EncodeToString(der) +
 		"\n-----END PRIVATE KEY-----", nil
 }
+
+// GenerateSSHKeyPair generates a new SSH key pair of the given type.
+// Supported types: "rsa", "ed25519", "ecdsa-p256", "ecdsa-p384", "ecdsa-p521".
+// For RSA, bits defaults to 3072 if bits <= 0.
+// Returns the parsed Key and the PEM-encoded private key bytes.
+func GenerateSSHKeyPair(keyType string, bits int) (*Key, []byte, error) {
+	var priv crypto.Signer
+	var err error
+
+	switch keyType {
+	case "rsa":
+		if bits <= 0 {
+			bits = 3072
+		}
+		priv, err = rsa.GenerateKey(rand.Reader, bits)
+	case "ed25519":
+		_, priv, err = ed25519.GenerateKey(rand.Reader)
+	case "ecdsa", "ecdsa-p256":
+		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case "ecdsa-p384":
+		priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case "ecdsa-p521":
+		priv, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	default:
+		return nil, nil, fmt.Errorf("unsupported key type: %s", keyType)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("key generation failed: %w", err)
+	}
+
+	key, err := NewKey(priv, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create key wrapper: %w", err)
+	}
+
+	pemBlock, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	pemBytes := pem.EncodeToMemory(pemBlock)
+
+	return key, pemBytes, nil
+}

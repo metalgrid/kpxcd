@@ -112,6 +112,12 @@ func resolveKeeAgentSettingsFromDB(entry *gokeepasslib.Entry, db *gokeepasslib.D
 }
 
 // extractKeyFromEntryWithDB resolves binary references using the database metadata.
+// ExtractKeyFromEntry extracts an SSH key from a single KeePass entry using
+// KeeAgent settings or attachment heuristics.
+func ExtractKeyFromEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
+	return extractKeyFromEntryWithDB(entry, db)
+}
+
 func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
 	// Try the full-resolution path first: parse the real KeeAgent.settings
 	// XML from the database. This gives us the actual attachment name.
