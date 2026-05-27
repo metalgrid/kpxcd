@@ -8,7 +8,9 @@ url="https://github.com/metalgrid/kpxcd"
 license=('MIT')
 depends=('pam' 'polkit')
 makedepends=('go>=1.26' 'rust' 'gcc')
-source=("git+https://github.com/metalgrid/kpxcd.git")
+# Branch can be overridden: makepkg -p PKGBUILD -- -Dbranch=feat/browser-integration
+: ${_branch:=master}
+source=("git+https://github.com/metalgrid/kpxcd.git#branch=$_branch")
 sha256sums=('SKIP')
 
 pkgver() {
