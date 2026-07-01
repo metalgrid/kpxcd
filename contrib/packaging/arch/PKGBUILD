@@ -1,0 +1,67 @@
+# Maintainer: Iskren Hadzhinedev <iskren.hadzhinedev@gmail.com>
+pkgname=kpxcd-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="KeePassXC headless daemon with D-Bus, Secret Service, SSH agent and PAM auto-unlock support"
+arch=('x86_64' 'aarch64')
+url="https://github.com/metalgrid/kpxcd"
+license=('MIT' 'GPL-3.0-or-later')
+depends=('systemd' 'dbus' 'polkit')
+makedepends=('git' 'go' 'rust' 'cargo' 'pam')
+optdepends=('pam: for PAM auto-unlock module')
+provides=('kpxcd' 'kpxcctl' 'pam_kpxcd')
+conflicts=('kpxcd')
+install=kpxcd.install
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$srcdir/kpxcd"
+	git describe --long --tags --abbrev=7 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' || \
+		printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+	cd "$srcdir/kpxcd"
+	export GOEXPERIMENT=runtimesecret
+	go mod verify
+}
+
+build() {
+	cd "$srcdir/kpxcd"
+	export GOEXPERIMENT=runtimesecret
+	make build pam
+}
+
+check() {
+	cd "$srcdir/kpxcd"
+	export GOEXPERIMENT=runtimesecret
+	make test
+	make test-pam
+}
+
+package() {
+	cd "$srcdir/kpxcd"
+
+	# Binaries, man pages, completions, systemd units, polkit policy.
+	make install PREFIX=/usr DESTDIR="$pkgdir"
+
+	# PAM module.
+	install -Dm755 "contrib/pam/kpxcd-pam/target/release/libpam_kpxcd.so" \
+		"$pkgdir/usr/lib/security/pam_kpxcd.so"
+
+	# PAM service configuration.
+	install -Dm644 "contrib/pam/etc/pam.d/kpxcd" \
+		"$pkgdir/etc/pam.d/kpxcd"
+
+	# Example configuration.
+	install -Dm644 "contrib/kpxcd.toml.example" \
+		"$pkgdir/etc/kpxcd/kpxcd.toml.example"
+
+	# AppArmor profile.
+	install -Dm644 "contrib/apparmor/kpxcd.profile" \
+		"$pkgdir/etc/apparmor.d/usr.bin.kpxcd"
+
+	# License.
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
