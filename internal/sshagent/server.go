@@ -27,6 +27,7 @@ type AgentServer struct {
 	socketPath string
 	mu         sync.Mutex
 	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 // NewAgentServer creates a new SSH agent server.
@@ -115,7 +116,7 @@ func (s *AgentServer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	close(s.done)
+	s.closeOnce.Do(func() { close(s.done) })
 
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
@@ -218,8 +219,17 @@ func (s *AgentServer) handleSignRequest(payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("sshagent: failed to parse sign request data")
 	}
 	flags := uint32(0)
-	if len(rest) >= 4 {
-		flags, _ = decodeUint32(rest)
+	if len(rest) > 0 {
+		if len(rest) < 4 {
+			return nil, fmt.Errorf("sshagent: truncated sign request flags")
+		}
+		flags, rest = decodeUint32(rest)
+		if rest == nil {
+			return nil, fmt.Errorf("sshagent: failed to parse sign request flags")
+		}
+		if len(rest) != 0 {
+			return nil, fmt.Errorf("sshagent: trailing bytes in sign request")
+		}
 	}
 
 	key := s.manager.FindIdentityByBlob(keyBlob)
@@ -294,8 +304,8 @@ func (s *AgentServer) handleAddIdentity(payload []byte, constrained bool) ([]byt
 
 // handleRemoveIdentity removes a key by its public blob.
 func (s *AgentServer) handleRemoveIdentity(payload []byte) ([]byte, error) {
-	keyBlob, _ := decodeString(payload)
-	if keyBlob == nil {
+	keyBlob, rest := decodeString(payload)
+	if keyBlob == nil || len(rest) != 0 {
 		return []byte{SSHAgentFailure}, nil
 	}
 

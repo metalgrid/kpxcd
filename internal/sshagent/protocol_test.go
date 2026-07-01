@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/metalgrid/kpxcd/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -378,6 +379,41 @@ func TestProcessExtensionDoesNotCloseProtocol(t *testing.T) {
 	if !bytes.Equal(resp, []byte{SSHAgentFailure}) {
 		t.Fatalf("extension response = %v, want SSH_AGENT_FAILURE", resp)
 	}
+}
+
+// FuzzReadMessage verifies that readMessage never panics on arbitrary input.
+func FuzzReadMessage(f *testing.F) {
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00})
+	f.Add(append([]byte{0x00, 0x00, 0x00, 0x05}, []byte("hello")...))
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		buf := bytes.NewReader(data)
+		_, _ = readMessage(buf)
+	})
+}
+
+// FuzzDecodeString verifies that decodeString never panics on arbitrary input.
+func FuzzDecodeString(f *testing.F) {
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00})
+	f.Add(append([]byte{0x00, 0x00, 0x00, 0x05}, []byte("hello")...))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = decodeString(data)
+	})
+}
+
+// FuzzProcessMessage verifies that processMessage never panics on arbitrary
+// SSH agent payloads.
+func FuzzProcessMessage(f *testing.F) {
+	f.Add([]byte{SSHAgentCRequestIdentities})
+	f.Add([]byte{SSHAgentCRemoveAllIdentities})
+	f.Add([]byte{SSHAgentCExtension, 0x00})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		s := &AgentServer{manager: NewIdentityManager(&config.SSHAgentConfig{})}
+		_, _ = s.processMessage(data)
+	})
 }
 
 func TestSignatureAlgorithmForFlags(t *testing.T) {
