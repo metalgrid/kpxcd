@@ -42,35 +42,56 @@ type DBusSecret struct {
 
 // Item represents a single KeePass entry exposed via the Secret Service.
 type Item struct {
-	conn  *dbus.Conn
-	path  dbus.ObjectPath
-	coll  *Collection
-	entry gokeepasslib.Entry
-	db    *dbpool.OpenDatabase
+	conn      *dbus.Conn
+	path      dbus.ObjectPath
+	coll      *Collection
+	entry     gokeepasslib.Entry
+	entryUUID string
+	db        *dbpool.OpenDatabase
 }
 
 func newItem(conn *dbus.Conn, coll *Collection, entry gokeepasslib.Entry) *Item {
 	entryUUID := entryUUIDString(entry)
 	itemPath := dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUID)
 	return &Item{
-		conn:  conn,
-		path:  itemPath,
-		coll:  coll,
-		entry: entry,
-		db:    coll.db,
+		conn:      conn,
+		path:      itemPath,
+		coll:      coll,
+		entry:     entry,
+		entryUUID: entryUUID,
+		db:        coll.db,
 	}
 }
 
 func (i *Item) Path() dbus.ObjectPath { return i.path }
 
+// refresh updates the cached entry by looking it up in the database by UUID.
+// Returns a pointer to the cached entry, or nil if the entry no longer exists.
+func (i *Item) refresh() *gokeepasslib.Entry {
+	i.db.RLock()
+	defer i.db.RUnlock()
+	if i.db.Db == nil || i.db.Db.Content == nil || i.db.Db.Content.Root == nil {
+		return nil
+	}
+	if entry := findEntryPtrByUUID(i.db.Db.Content.Root.Groups, i.entryUUID); entry != nil {
+		i.entry = *entry
+		return &i.entry
+	}
+	return nil
+}
+
 // Locked returns whether this item is locked.
 func (i *Item) Locked() bool { return false }
 
 // Label returns the entry's title.
-func (i *Item) Label() string { return i.entry.GetTitle() }
+func (i *Item) Label() string {
+	i.refresh()
+	return i.entry.GetTitle()
+}
 
 // Attributes returns the Secret Service attributes for this entry.
 func (i *Item) Attributes() map[string]string {
+	i.refresh()
 	i.db.RLock()
 	defer i.db.RUnlock()
 	return EntryAttributes(i.db, i.entry)
@@ -78,6 +99,7 @@ func (i *Item) Attributes() map[string]string {
 
 // Created returns the Unix timestamp of when this entry was created.
 func (i *Item) Created() int64 {
+	i.refresh()
 	if i.entry.Times.CreationTime != nil {
 		return i.entry.Times.CreationTime.Time.Unix()
 	}
@@ -86,36 +108,64 @@ func (i *Item) Created() int64 {
 
 // Modified returns the Unix timestamp of when this entry was last modified.
 func (i *Item) Modified() int64 {
+	i.refresh()
 	if i.entry.Times.LastModificationTime != nil {
 		return i.entry.Times.LastModificationTime.Time.Unix()
 	}
 	return 0
 }
 
-// Delete removes this item. Deletion support is intentionally deferred until
-// save/restore UX is more mature.
+// Delete removes this item and persists the database.
 func (i *Item) Delete() (dbus.ObjectPath, *dbus.Error) {
-	return "/", dbus.NewError(ErrIsLocked,
-		[]interface{}{"Items cannot be deleted through the Secret Service API"})
+	if i.refresh() == nil {
+		return "/", dbus.NewError(ErrNoSuchObject,
+			[]interface{}{"item no longer exists"})
+	}
+	uuid := i.entryUUID
+	if err := i.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		if !removeEntryByUUID(db.Content.Root.Groups, uuid) {
+			return fmt.Errorf("secretservice: item not found: %s", uuid)
+		}
+		return nil
+	}); err != nil {
+		return "/", dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
+	}
+
+	if i.conn != nil {
+		_ = i.conn.Export(nil, i.path, InterfaceItem)
+		_ = i.conn.Emit(i.coll.path, InterfaceCollection+".ItemDeleted", i.path)
+	}
+	slog.Info("secretservice: item deleted", "path", string(i.path), "collection", i.coll.db.Name)
+	return "/", nil
 }
 
 // SetSecret updates this item's secret and persists the database.
 func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
+	if err := i.coll.svc.validateSession(secret.Session); err != nil {
+		return dbus.NewError(ErrNoSession, []interface{}{err.Error()})
+	}
 	plaintext, err := i.coll.svc.decryptSecret(secret)
 	if err != nil {
 		return dbus.NewError(ErrNoSession, []interface{}{err.Error()})
 	}
-	uuid := entryUUIDString(i.entry)
+	if i.refresh() == nil {
+		return dbus.NewError(ErrNoSuchObject, []interface{}{"item no longer exists"})
+	}
+	uuid := i.entryUUID
 	if err := i.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
 		entry := findEntryPtrByUUID(db.Content.Root.Groups, uuid)
 		if entry == nil {
 			return fmt.Errorf("secretservice: item not found: %s", uuid)
 		}
+		appendHistory(entry, db)
 		setEntryValue(entry, "Password", string(plaintext), true)
+		updateModificationTime(entry)
 		return nil
 	}); err != nil {
 		return dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
 	}
+	i.refresh()
+	slog.Info("secretservice: item secret updated", "path", string(i.path), "collection", i.coll.db.Name)
 	return nil
 }
 
@@ -123,6 +173,11 @@ func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
 // Method name matches spec: org.freedesktop.Secret.Item.GetSecret.
 // Returns a Secret struct (oayays).
 func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) {
+	if i.refresh() == nil {
+		return DBusSecret{}, dbus.NewError(ErrNoSuchObject,
+			[]interface{}{"item no longer exists"})
+	}
+
 	svc := i.coll.svc
 	caller := svc.callerInfo(sender)
 	if err := svc.authorizeSecretAccess(caller, i); err != nil {
@@ -154,9 +209,7 @@ func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusS
 	var secretErr error
 
 	security.Do(func() {
-		i.db.RLock()
 		password := i.entry.GetPassword()
-		i.db.RUnlock()
 		iv, ciphertext, secretErr = sess.Encrypt([]byte(password))
 	})
 	if secretErr != nil {
@@ -222,14 +275,9 @@ func itemIntrospectNode(item *Item) *introspect.Node {
 						{Name: "secret", Type: "(oayays)", Direction: "in"},
 					}},
 				},
-				Properties: []introspect.Property{
-					{Name: "Locked", Type: "b", Access: "read"},
-					{Name: "Attributes", Type: "a{ss}", Access: "read"},
-					{Name: "Label", Type: "s", Access: "read"},
-					{Name: "Created", Type: "x", Access: "read"},
-					{Name: "Modified", Type: "x", Access: "read"},
-				},
+				Properties: itemIntrospectProperties(),
 			},
+			propertiesIntrospectData(),
 		},
 	}
 }
@@ -239,5 +287,5 @@ func collectEntriesSafe(db *dbpool.OpenDatabase) []gokeepasslib.Entry {
 	if db.Db == nil || db.Db.Content == nil || db.Db.Content.Root == nil {
 		return nil
 	}
-	return collectEntries(db.Db.Content.Root.Groups)
+	return collectEntries(db.Db.Content.Root.Groups, dbpool.RecycleBinUUIDForDB(db.Db))
 }

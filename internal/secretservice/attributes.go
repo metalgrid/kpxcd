@@ -140,7 +140,8 @@ func SearchEntries(pool *dbpool.DatabasePool, attributes map[string]string) []Se
 			continue
 		}
 
-		for _, entry := range collectEntries(odb.Db.Content.Root.Groups) {
+		recycleBinUUID := dbpool.RecycleBinUUIDForDB(odb.Db)
+		for _, entry := range collectEntries(odb.Db.Content.Root.Groups, recycleBinUUID) {
 			if MatchAttributes(entry, odb, attributes) {
 				results = append(results, SearchResult{
 					Database: odb,
@@ -154,12 +155,17 @@ func SearchEntries(pool *dbpool.DatabasePool, attributes map[string]string) []Se
 	return results
 }
 
-// collectEntries recursively collects all entries from a list of groups.
-func collectEntries(groups []gokeepasslib.Group) []gokeepasslib.Entry {
+// collectEntries recursively collects all entries from a list of groups,
+// excluding the recycle bin.
+func collectEntries(groups []gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID) []gokeepasslib.Entry {
 	var entries []gokeepasslib.Entry
-	for _, g := range groups {
+	for i := range groups {
+		g := &groups[i]
+		if dbpool.IsRecycled(g, recycleBinUUID) {
+			continue
+		}
 		entries = append(entries, g.Entries...)
-		entries = append(entries, collectEntries(g.Groups)...)
+		entries = append(entries, collectEntries(g.Groups, recycleBinUUID)...)
 	}
 	return entries
 }

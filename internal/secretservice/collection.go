@@ -107,7 +107,8 @@ func (c *Collection) SearchItems(attributes map[string]string) ([]dbus.ObjectPat
 	}
 
 	var results []dbus.ObjectPath
-	allEntries := collectEntries(c.db.Db.Content.Root.Groups)
+	recycleBinUUID := dbpool.RecycleBinUUIDForDB(c.db.Db)
+	allEntries := collectEntries(c.db.Db.Content.Root.Groups, recycleBinUUID)
 	for _, entry := range allEntries {
 		if MatchAttributes(entry, c.db, strAttrs) {
 			itemPath := CollectionPrefix + sanitizeCollectionName(c.db.Name) + "/" + entryUUIDString(entry)
@@ -130,6 +131,9 @@ func (c *Collection) Delete() (dbus.ObjectPath, *dbus.Error) {
 func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusSecret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	slog.Debug("secretservice: CreateItem", "collection", string(c.path), "replace", replace)
 
+	if err := c.svc.validateSession(secret.Session); err != nil {
+		return "/", "/", dbus.NewError(ErrNoSession, []interface{}{err.Error()})
+	}
 	plaintext, err := c.svc.decryptSecret(secret)
 	if err != nil {
 		return "/", "/", dbus.NewError(ErrNoSession, []interface{}{err.Error()})
@@ -139,13 +143,17 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 	attrs := propertyAttributes(properties)
 	var itemPath dbus.ObjectPath
 	var created gokeepasslib.Entry
+	var replaced bool
 
 	if err := c.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
 		if replace && len(attrs) > 0 {
 			if entry := findMatchingEntryPtr(db.Content.Root.Groups, c.db.Name, c.db.UUID, attrs); entry != nil {
+				appendHistory(entry, db)
 				applyEntryFields(entry, label, attrs, string(plaintext))
+				updateModificationTime(entry)
 				itemPath = itemPathForEntry(c.db.Name, *entry)
 				created = *entry
+				replaced = true
 				return nil
 			}
 		}
@@ -163,8 +171,13 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 	item := newItem(c.conn, c, created)
 	exportItemIfPossible(c, item)
 	if c.conn != nil {
-		_ = c.conn.Emit(c.path, InterfaceCollection+".ItemCreated", itemPath)
+		signal := InterfaceCollection + ".ItemCreated"
+		if replaced {
+			signal = InterfaceCollection + ".ItemChanged"
+		}
+		_ = c.conn.Emit(c.path, signal, itemPath)
 	}
+	slog.Info("secretservice: item created", "path", string(itemPath), "collection", c.db.Name, "replaced", replaced)
 	return itemPath, "/", nil
 }
 
@@ -181,7 +194,8 @@ func (c *Collection) items() []*Item {
 		return nil
 	}
 
-	entries := collectEntries(c.db.Db.Content.Root.Groups)
+	recycleBinUUID := dbpool.RecycleBinUUIDForDB(c.db.Db)
+	entries := collectEntries(c.db.Db.Content.Root.Groups, recycleBinUUID)
 	items := make([]*Item, 0, len(entries))
 	for _, entry := range entries {
 		item := newItem(c.conn, c, entry)

@@ -87,26 +87,7 @@ func (ss *SecretService) Export(conn *dbus.Conn) error {
 		Name: string(ServicePath),
 		Interfaces: []introspect.Interface{
 			introspect.IntrospectData,
-			intropectProperties(),
-			{
-				Name: "org.freedesktop.DBus.Properties",
-				Methods: []introspect.Method{
-					{Name: "Get", Args: []introspect.Arg{
-						{Name: "interface", Type: "s", Direction: "in"},
-						{Name: "property", Type: "s", Direction: "in"},
-						{Name: "value", Type: "v", Direction: "out"},
-					}},
-					{Name: "GetAll", Args: []introspect.Arg{
-						{Name: "interface", Type: "s", Direction: "in"},
-						{Name: "properties", Type: "a{sv}", Direction: "out"},
-					}},
-					{Name: "Set", Args: []introspect.Arg{
-						{Name: "interface", Type: "s", Direction: "in"},
-						{Name: "property", Type: "s", Direction: "in"},
-						{Name: "value", Type: "v", Direction: "in"},
-					}},
-				},
-			},
+			propertiesIntrospectData(),
 		},
 		Children: []introspect.Node{
 			{Name: "collection"},
@@ -140,28 +121,6 @@ func (ss *SecretService) Export(conn *dbus.Conn) error {
 	ss.seedCollections()
 
 	return nil
-}
-
-func intropectProperties() introspect.Interface {
-	return introspect.Interface{
-		Name: "org.freedesktop.DBus.Properties",
-		Methods: []introspect.Method{
-			{Name: "Get", Args: []introspect.Arg{
-				{Name: "interface", Type: "s", Direction: "in"},
-				{Name: "property", Type: "s", Direction: "in"},
-				{Name: "value", Type: "v", Direction: "out"},
-			}},
-			{Name: "GetAll", Args: []introspect.Arg{
-				{Name: "interface", Type: "s", Direction: "in"},
-				{Name: "properties", Type: "a{sv}", Direction: "out"},
-			}},
-			{Name: "Set", Args: []introspect.Arg{
-				{Name: "interface", Type: "s", Direction: "in"},
-				{Name: "property", Type: "s", Direction: "in"},
-				{Name: "value", Type: "v", Direction: "in"},
-			}},
-		},
-	}
 }
 
 // seedCollections creates collections for all currently unlocked databases.
@@ -256,14 +215,19 @@ func (ss *SecretService) createCollection(odb *dbpool.OpenDatabase) {
 		return
 	}
 
-	// Export introspection for the collection (auto-derive methods + child items).
+	// Export introspection for the collection (auto-derive methods + properties).
 	collNode := &introspect.Node{
 		Name: string(path),
 		Interfaces: []introspect.Interface{
 			introspect.IntrospectData,
+			{
+				Name:       InterfaceCollection,
+				Methods:    introspect.Methods(coll),
+				Properties: collectionIntrospectProperties(),
+			},
+			propertiesIntrospectData(),
 		},
 	}
-	collNode.Interfaces = append(collNode.Interfaces, introspect.Interface{Name: InterfaceCollection, Methods: introspect.Methods(coll)})
 	ss.conn.Export(introspect.NewIntrospectable(collNode), path,
 		"org.freedesktop.DBus.Introspectable")
 
@@ -279,12 +243,54 @@ func (ss *SecretService) createCollection(odb *dbpool.OpenDatabase) {
 	ss.mu.Lock()
 	if _, exists := ss.aliases["default"]; !exists {
 		ss.aliases["default"] = path
+		ss.exportAlias("default", coll)
 		slog.Debug("secretservice: assigned default alias", "collection", string(path))
 	}
 	ss.mu.Unlock()
 
 	// Signal CollectionsChanged.
 	ss.emitCollectionsChanged(nil, []dbus.ObjectPath{path})
+}
+
+// exportAlias registers an alias path (/org/freedesktop/secrets/aliases/<alias>)
+// that points to the given collection. libsecret clients commonly access the
+// default collection through its alias path rather than the real collection path.
+func (ss *SecretService) exportAlias(alias string, coll *Collection) {
+	if ss.conn == nil {
+		return
+	}
+	aliasPath := ss.aliasPath(alias)
+	if err := ss.conn.Export(coll, aliasPath, InterfaceCollection); err != nil {
+		slog.Warn("secretservice: export alias collection interface",
+			"alias", alias, "path", aliasPath, "error", err)
+		return
+	}
+	collNode := &introspect.Node{
+		Name: string(aliasPath),
+		Interfaces: []introspect.Interface{
+			introspect.IntrospectData,
+			{
+				Name:       InterfaceCollection,
+				Methods:    introspect.Methods(coll),
+				Properties: collectionIntrospectProperties(),
+			},
+			propertiesIntrospectData(),
+		},
+	}
+	if err := ss.conn.Export(introspect.NewIntrospectable(collNode), aliasPath,
+		"org.freedesktop.DBus.Introspectable"); err != nil {
+		slog.Warn("secretservice: export alias introspection",
+			"alias", alias, "path", aliasPath, "error", err)
+	}
+	if err := ss.conn.Export(newCollectionProperties(coll), aliasPath,
+		"org.freedesktop.DBus.Properties"); err != nil {
+		slog.Warn("secretservice: export alias properties",
+			"alias", alias, "path", aliasPath, "error", err)
+	}
+}
+
+func (ss *SecretService) aliasPath(alias string) dbus.ObjectPath {
+	return dbus.ObjectPath(ServicePath + "/aliases/" + alias)
 }
 
 // removeCollectionLocked removes a collection. Must be called with ss.mu held.
@@ -470,7 +476,8 @@ func (ss *SecretService) SearchItems(attributes map[string]string) ([]dbus.Objec
 			continue
 		}
 
-		entries := collectEntries(coll.db.Db.Content.Root.Groups)
+		recycleBinUUID := dbpool.RecycleBinUUIDForDB(coll.db.Db)
+		entries := collectEntries(coll.db.Db.Content.Root.Groups, recycleBinUUID)
 		for _, entry := range entries {
 			if MatchAttributes(entry, coll.db, attributes) {
 				itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
@@ -611,11 +618,11 @@ func (ss *SecretService) ReadAlias(alias string) (dbus.ObjectPath, *dbus.Error) 
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
-	path, ok := ss.aliases[alias]
+	_, ok := ss.aliases[alias]
 	if !ok {
 		return "/", nil
 	}
-	return path, nil
+	return ss.aliasPath(alias), nil
 }
 
 // SetAlias sets an alias for a collection.
@@ -623,12 +630,14 @@ func (ss *SecretService) SetAlias(alias string, collectionPath dbus.ObjectPath) 
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	if _, ok := ss.collections[collectionPath]; !ok {
+	coll, ok := ss.collections[collectionPath]
+	if !ok {
 		return dbus.NewError(ErrNoSuchObject,
 			[]interface{}{"No such collection"})
 	}
 
 	ss.aliases[alias] = collectionPath
+	ss.exportAlias(alias, coll)
 	return nil
 }
 
@@ -651,7 +660,8 @@ func (ss *SecretService) getItemByPath(path dbus.ObjectPath) (*Item, bool) {
 			coll.db.RUnlock()
 			continue
 		}
-		entries := collectEntries(coll.db.Db.Content.Root.Groups)
+		recycleBinUUID := dbpool.RecycleBinUUIDForDB(coll.db.Db)
+		entries := collectEntries(coll.db.Db.Content.Root.Groups, recycleBinUUID)
 		for _, entry := range entries {
 			itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
 			if dbus.ObjectPath(itemPath) == path {

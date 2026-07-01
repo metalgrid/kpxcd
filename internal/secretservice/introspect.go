@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5/introspect"
 	"github.com/tobischo/gokeepasslib/v3"
 )
 
@@ -81,8 +82,8 @@ func collectionProps(coll *Collection) map[string]dbus.Variant {
 		"Items":    dbus.MakeVariant(itemPaths),
 		"Label":    dbus.MakeVariant(coll.Label()),
 		"Locked":   dbus.MakeVariant(coll.Locked()),
-		"Created":  dbus.MakeVariant(uint64(coll.Created())),
-		"Modified": dbus.MakeVariant(uint64(coll.Modified())),
+		"Created":  dbus.MakeVariant(coll.Created()),
+		"Modified": dbus.MakeVariant(coll.Modified()),
 	}
 }
 
@@ -92,8 +93,56 @@ func itemProps(item *Item) map[string]dbus.Variant {
 		"Locked":     dbus.MakeVariant(item.Locked()),
 		"Label":      dbus.MakeVariant(item.Label()),
 		"Attributes": dbus.MakeVariant(item.Attributes()),
-		"Created":    dbus.MakeVariant(uint64(item.Created())),
-		"Modified":   dbus.MakeVariant(uint64(item.Modified())),
+		"Created":    dbus.MakeVariant(item.Created()),
+		"Modified":   dbus.MakeVariant(item.Modified()),
+	}
+}
+
+// propertiesIntrospectData returns the standard org.freedesktop.DBus.Properties
+// interface description for introspection documents.
+func propertiesIntrospectData() introspect.Interface {
+	return introspect.Interface{
+		Name: "org.freedesktop.DBus.Properties",
+		Methods: []introspect.Method{
+			{Name: "Get", Args: []introspect.Arg{
+				{Name: "interface", Type: "s", Direction: "in"},
+				{Name: "property", Type: "s", Direction: "in"},
+				{Name: "value", Type: "v", Direction: "out"},
+			}},
+			{Name: "GetAll", Args: []introspect.Arg{
+				{Name: "interface", Type: "s", Direction: "in"},
+				{Name: "properties", Type: "a{sv}", Direction: "out"},
+			}},
+			{Name: "Set", Args: []introspect.Arg{
+				{Name: "interface", Type: "s", Direction: "in"},
+				{Name: "property", Type: "s", Direction: "in"},
+				{Name: "value", Type: "v", Direction: "in"},
+			}},
+		},
+	}
+}
+
+// collectionIntrospectProperties returns the property descriptions for a
+// Secret Service collection.
+func collectionIntrospectProperties() []introspect.Property {
+	return []introspect.Property{
+		{Name: "Items", Type: "ao", Access: "read"},
+		{Name: "Label", Type: "s", Access: "read"},
+		{Name: "Locked", Type: "b", Access: "read"},
+		{Name: "Created", Type: "x", Access: "read"},
+		{Name: "Modified", Type: "x", Access: "read"},
+	}
+}
+
+// itemIntrospectProperties returns the property descriptions for a Secret
+// Service item.
+func itemIntrospectProperties() []introspect.Property {
+	return []introspect.Property{
+		{Name: "Locked", Type: "b", Access: "read"},
+		{Name: "Attributes", Type: "a{ss}", Access: "read"},
+		{Name: "Label", Type: "s", Access: "read"},
+		{Name: "Created", Type: "x", Access: "read"},
+		{Name: "Modified", Type: "x", Access: "read"},
 	}
 }
 

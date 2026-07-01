@@ -338,7 +338,7 @@ func TestCollectEntries(t *testing.T) {
 		},
 	}
 
-	entries := collectEntries(groups)
+	entries := collectEntries(groups, gokeepasslib.UUID{})
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}

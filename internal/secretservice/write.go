@@ -15,16 +15,26 @@ import (
 
 const secretServiceGroupName = "Secret Service"
 
-func (ss *SecretService) decryptSecret(secret DBusSecret) ([]byte, error) {
+func (ss *SecretService) validateSession(sessionPath dbus.ObjectPath) error {
 	ss.sessionsMu.RLock()
-	sess, ok := ss.sessions[secret.Session]
-	ss.sessionsMu.RUnlock()
+	defer ss.sessionsMu.RUnlock()
+	sess, ok := ss.sessions[sessionPath]
 	if !ok {
-		return nil, fmt.Errorf("secretservice: no such session: %s", secret.Session)
+		return fmt.Errorf("secretservice: no such session: %s", sessionPath)
 	}
 	if sess.closed {
-		return nil, fmt.Errorf("secretservice: session %s is closed", secret.Session)
+		return fmt.Errorf("secretservice: session %s is closed", sessionPath)
 	}
+	return nil
+}
+
+func (ss *SecretService) decryptSecret(secret DBusSecret) ([]byte, error) {
+	if err := ss.validateSession(secret.Session); err != nil {
+		return nil, err
+	}
+	ss.sessionsMu.RLock()
+	sess := ss.sessions[secret.Session]
+	ss.sessionsMu.RUnlock()
 	return sess.Decrypt(secret.Parameters, secret.Value)
 }
 
@@ -83,6 +93,88 @@ func findEntryPtrByUUID(groups []gokeepasslib.Group, uuidHex string) *gokeepassl
 		}
 	}
 	return nil
+}
+
+// removeEntryByUUID removes the first entry matching uuidHex from groups or
+// their subgroups. It returns true if an entry was removed.
+func removeEntryByUUID(groups []gokeepasslib.Group, uuidHex string) bool {
+	for gi := range groups {
+		for ei := range groups[gi].Entries {
+			if entryUUIDString(groups[gi].Entries[ei]) == uuidHex {
+				groups[gi].Entries = append(groups[gi].Entries[:ei], groups[gi].Entries[ei+1:]...)
+				return true
+			}
+		}
+		if removeEntryByUUID(groups[gi].Groups, uuidHex) {
+			return true
+		}
+	}
+	return false
+}
+
+// updateModificationTime updates the last-modification and last-access times.
+func updateModificationTime(entry *gokeepasslib.Entry) {
+	now := wrappers.Now()
+	entry.Times.LastModificationTime = &now
+	entry.Times.LastAccessTime = &now
+}
+
+// appendHistory archives the current entry state before mutation. KeePass
+// stores historical versions in entry.Histories[0].Entries and trims to the
+// database's HistoryMaxItems setting.
+func appendHistory(entry *gokeepasslib.Entry, db *gokeepasslib.Database) {
+	if entry == nil {
+		return
+	}
+	clone := entry.Clone()
+	clone.Histories = nil // history entries don't carry nested history
+
+	if len(entry.Histories) == 0 {
+		entry.Histories = append(entry.Histories, gokeepasslib.History{})
+	}
+	entry.Histories[0].Entries = append(entry.Histories[0].Entries, clone)
+	trimHistory(entry, db)
+}
+
+func trimHistory(entry *gokeepasslib.Entry, db *gokeepasslib.Database) {
+	if len(entry.Histories) == 0 || len(entry.Histories[0].Entries) == 0 {
+		return
+	}
+	maxItems := int64(10)
+	maxSize := int64(6 * 1024 * 1024)
+	if db != nil && db.Content != nil && db.Content.Meta != nil {
+		if db.Content.Meta.HistoryMaxItems > 0 {
+			maxItems = db.Content.Meta.HistoryMaxItems
+		}
+		if db.Content.Meta.HistoryMaxSize > 0 {
+			maxSize = db.Content.Meta.HistoryMaxSize
+		}
+	}
+
+	h := &entry.Histories[0]
+	// Drop oldest entries while over the item limit.
+	for int64(len(h.Entries)) > maxItems {
+		h.Entries = h.Entries[1:]
+	}
+	// Drop oldest entries while over the size limit (best-effort count).
+	for {
+		size := historySize(h)
+		if size <= maxSize || len(h.Entries) <= 1 {
+			break
+		}
+		h.Entries = h.Entries[1:]
+	}
+}
+
+func historySize(h *gokeepasslib.History) int64 {
+	var size int64
+	for _, e := range h.Entries {
+		for _, v := range e.Values {
+			size += int64(len(v.Key) + len(v.Value.Content))
+		}
+		size += int64(len(e.Tags) + len(e.OverrideURL))
+	}
+	return size
 }
 
 func findMatchingEntryPtr(groups []gokeepasslib.Group, dbName, dbUUID string, attrs map[string]string) *gokeepasslib.Entry {
