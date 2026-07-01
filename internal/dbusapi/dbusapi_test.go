@@ -54,7 +54,7 @@ func TestListDatabasesOnEmptyPool(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	dbs, err := handler.ListDatabases()
+	dbs, err := handler.ListDatabases("")
 	if err != nil {
 		t.Fatalf("ListDatabases returned error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestListDatabasesWithDatabases(t *testing.T) {
 
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	dbs, err := handler.ListDatabases()
+	dbs, err := handler.ListDatabases("")
 	if err != nil {
 		t.Fatalf("ListDatabases returned error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestListDatabasesReturnFields(t *testing.T) {
 	pool := dbpool.NewDatabasePool(eventCh)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	dbs, err := handler.ListDatabases()
+	dbs, err := handler.ListDatabases("")
 	if err != nil {
 		t.Fatalf("ListDatabases returned error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestLockAllOnEmptyPool(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	ok, err := handler.LockAll()
+	ok, err := handler.LockAll("")
 	if err != nil {
 		t.Fatalf("LockAll returned error: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestLockDatabaseNotFound(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	ok, err := handler.LockDatabase("nonexistent-uuid")
+	ok, err := handler.LockDatabase("", "nonexistent-uuid")
 	if err == nil {
 		t.Fatal("expected error for nonexistent database, got nil")
 	}
@@ -201,9 +201,34 @@ func TestGetEntryDatabaseNotFound(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	_, err := handler.GetEntry("nonexistent-uuid", "some-entry")
+	_, err := handler.GetEntry("", "nonexistent-uuid", "some-entry")
 	if err == nil {
 		t.Fatal("expected error for nonexistent database, got nil")
+	}
+}
+
+// TestAuthorizeAllowsEmptySenderWithNoConnection verifies that the
+// authorization helper permits unit-test-style calls with no connection
+// and an empty sender.
+func TestAuthorizeAllowsEmptySenderWithNoConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	pool := dbpool.NewDatabasePool(nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
+
+	if err := handler.authorize(""); err != nil {
+		t.Fatalf("authorize with empty sender and no conn should succeed, got %v", err)
+	}
+}
+
+// TestAuthorizeDeniesNonEmptySenderWithNoConnection verifies that a real
+// sender name is rejected when there is no bus connection to validate it.
+func TestAuthorizeDeniesNonEmptySenderWithNoConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	pool := dbpool.NewDatabasePool(nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
+
+	if err := handler.authorize(":1.2"); err == nil {
+		t.Fatal("expected authorize to deny non-empty sender with no conn")
 	}
 }
 
@@ -214,7 +239,7 @@ func TestSearchEntriesEmptyPool(t *testing.T) {
 	pool := dbpool.NewDatabasePool(nil)
 	handler := NewDaemonDBus(cfg, pool, nil, nil)
 
-	results, err := handler.SearchEntries("", "test")
+	results, err := handler.SearchEntries("", "", "test")
 	if err != nil {
 		t.Fatalf("SearchEntries returned error: %v", err)
 	}

@@ -418,9 +418,8 @@ func cmdGet(args []string) {
 
 	fmt.Printf("Title:    %s\n", getVariantString(entry["title"]))
 	fmt.Printf("Username: %s\n", getVariantString(entry["username"]))
-	fmt.Printf("Password: %s\n", getVariantString(entry["password"]))
 	fmt.Printf("URL:      %s\n", getVariantString(entry["url"]))
-	fmt.Printf("TOTP:     %s\n", getVariantString(entry["totp"]))
+	fmt.Printf("Notes:    %s\n", getVariantString(entry["notes"]))
 }
 
 // cmdSSH handles SSH key subcommands.
