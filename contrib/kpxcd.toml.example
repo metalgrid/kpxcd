@@ -148,7 +148,7 @@ security_key_provider = "internal"
 # ──────────────────────────────────────────────────────────────
 
 [fido2]
-enabled = true
+enabled = false
 
 # AAGUID identifies this authenticator in attestation objects.
 # This is the same AAGUID KeePassXC uses for software passkeys.

@@ -100,8 +100,8 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.SSHAgent.Enabled {
 		t.Error("default ssh_agent.enabled should be true")
 	}
-	if !cfg.Fido2.Enabled {
-		t.Error("default fido2.enabled should be true")
+	if cfg.Fido2.Enabled {
+		t.Error("default fido2.enabled should be false")
 	}
 }
 

@@ -34,7 +34,7 @@ lifetime = 0
 security_key_provider = "internal"
 
 [fido2]
-enabled = true
+enabled = false
 aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
 algorithms = [-7, -8]
 user_verification = "preferred"

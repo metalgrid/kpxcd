@@ -167,7 +167,7 @@ func DefaultConfig() *Config {
 			SecurityKeyProvider: "internal",
 		},
 		Fido2: Fido2Config{
-			Enabled:          true,
+			Enabled:          false,
 			AAGUID:           "f8a011f3-8c0a-4d15-8006-17111f9edc7d",
 			Algorithms:       []int{-7, -8},
 			UserVerification: "preferred",
