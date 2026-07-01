@@ -484,11 +484,11 @@ func resolveCredential(db config.DatabaseConfig) (dbpool.Credential, error) {
 			return dbpool.Credential{}, fmt.Errorf("read systemd credential %s: %w", db.SystemdCredentialName, err)
 		}
 		ss, err := security.NewSecureString(string(data))
+		security.Wipe(data)
 		if err != nil {
 			return dbpool.Credential{}, err
 		}
 		return dbpool.PasswordCredential(ss), nil
-
 
 	case "pam":
 		return dbpool.Credential{}, fmt.Errorf("pam credential source is handled by daemon auto-unlock")
