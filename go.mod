@@ -18,6 +18,7 @@ require (
 require (
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/boombuler/barcode v1.0.1 // indirect
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/tobischo/argon2 v0.1.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 )
