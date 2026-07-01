@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/metalgrid/kpxcd/internal/security"
@@ -83,7 +85,8 @@ func (o *OpenDatabase) RLock() { o.mu.RLock() }
 // RUnlock releases a read lock on the database.
 func (o *OpenDatabase) RUnlock() { o.mu.RUnlock() }
 
-// RootEntries returns all entries recursively from the root group.
+// RootEntries returns all entries recursively from the root group,
+// excluding entries in the recycle bin.
 func (o *OpenDatabase) RootEntries() []gokeepasslib.Entry {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -91,9 +94,10 @@ func (o *OpenDatabase) RootEntries() []gokeepasslib.Entry {
 	if o.Db == nil || o.Db.Content == nil || o.Db.Content.Root == nil {
 		return nil
 	}
+	recycleBinUUID := RecycleBinUUIDForDB(o.Db)
 	var entries []gokeepasslib.Entry
 	for i := range o.Db.Content.Root.Groups {
-		collectEntries(&o.Db.Content.Root.Groups[i], &entries)
+		collectEntries(&o.Db.Content.Root.Groups[i], recycleBinUUID, &entries)
 	}
 	return entries
 }
@@ -109,22 +113,37 @@ func (o *OpenDatabase) RootGroups() []gokeepasslib.Group {
 	return o.Db.Content.Root.Groups
 }
 
-// isRecycled checks if a group is the recycle bin.
-// KeePassXC names the recycle bin group "Recycle Bin" by default.
-func isRecycled(group *gokeepasslib.Group) bool {
-	return group.Name == "Recycle Bin"
+// RecycleBinUUIDForDB returns the recycle bin UUID from database metadata,
+// or the zero UUID if none is configured.
+func RecycleBinUUIDForDB(db *gokeepasslib.Database) gokeepasslib.UUID {
+	if db == nil || db.Content == nil || db.Content.Meta == nil {
+		return gokeepasslib.UUID{}
+	}
+	return db.Content.Meta.RecycleBinUUID
+}
+
+// IsRecycled checks if a group is the recycle bin, either by the default
+// KeePassXC name or by matching the configured recycle bin UUID.
+func IsRecycled(group *gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID) bool {
+	if group.Name == "Recycle Bin" {
+		return true
+	}
+	if recycleBinUUID != (gokeepasslib.UUID{}) && group.UUID == recycleBinUUID {
+		return true
+	}
+	return false
 }
 
 // collectEntries recursively collects all entries from non-recycled groups.
-func collectEntries(group *gokeepasslib.Group, entries *[]gokeepasslib.Entry) {
-	if isRecycled(group) {
+func collectEntries(group *gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID, entries *[]gokeepasslib.Entry) {
+	if IsRecycled(group, recycleBinUUID) {
 		return
 	}
 	for i := range group.Entries {
 		*entries = append(*entries, group.Entries[i])
 	}
 	for i := range group.Groups {
-		collectEntries(&group.Groups[i], entries)
+		collectEntries(&group.Groups[i], recycleBinUUID, entries)
 	}
 }
 
@@ -189,7 +208,12 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	security.Do(func() {
 		// Set credentials before decoding — the decoder needs them
 		// to derive the transformed key and decrypt the database content.
-		db.Credentials = buildCredentials(cred)
+		creds, err := buildCredentials(cred)
+		if err != nil {
+			openErr = fmt.Errorf("dbpool: credentials %s: %w", path, err)
+			return
+		}
+		db.Credentials = creds
 
 		if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
 			openErr = fmt.Errorf("dbpool: decode %s: %w", path, err)
@@ -237,7 +261,10 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	p.mu.Unlock()
 
 	if p.event != nil {
-		p.event <- Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path}
+		select {
+		case p.event <- Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path}:
+		default:
+		}
 	}
 
 	return uuid, nil
@@ -257,7 +284,8 @@ func (p *DatabasePool) Lock(uuid string) error {
 	defer odb.mu.Unlock()
 
 	security.Do(func() {
-		odb.Db.Content = nil
+		wipeDatabaseContent(odb.Db)
+		odb.Db = nil
 	})
 	odb.Locked = true
 
@@ -269,7 +297,10 @@ func (p *DatabasePool) Lock(uuid string) error {
 	}
 
 	if p.event != nil {
-		p.event <- Event{Type: EventDatabaseLocked, UUID: uuid, Name: odb.Name, Path: odb.Path}
+		select {
+		case p.event <- Event{Type: EventDatabaseLocked, UUID: uuid, Name: odb.Name, Path: odb.Path}:
+		default:
+		}
 	}
 
 	return nil
@@ -280,7 +311,10 @@ func (p *DatabasePool) LockAll() error {
 	p.mu.RLock()
 	uuids := make([]string, 0, len(p.dbs))
 	for uuid, odb := range p.dbs {
-		if !odb.Locked {
+		odb.mu.RLock()
+		locked := odb.Locked
+		odb.mu.RUnlock()
+		if !locked {
 			uuids = append(uuids, uuid)
 		}
 	}
@@ -329,25 +363,35 @@ func (p *DatabasePool) Close() error {
 }
 
 // buildCredentials converts a Credential into gokeepasslib DBCredentials.
-func buildCredentials(cred Credential) *gokeepasslib.DBCredentials {
+// Any intermediate password copies are wiped before returning.
+func buildCredentials(cred Credential) (*gokeepasslib.DBCredentials, error) {
 	switch cred.Kind {
 	case CredentialPassword:
 		if cred.Password == nil {
-			return nil
+			return nil, nil
 		}
-		return gokeepasslib.NewPasswordCredentials(string(cred.Password.Bytes()))
+		pw := cred.Password.Bytes()
+		defer security.Wipe(pw)
+		return gokeepasslib.NewPasswordCredentials(string(pw)), nil
 	case CredentialKeyfile:
-		c, _ := gokeepasslib.NewKeyCredentials(cred.Keyfile)
-		return c
-	case CredentialPasswordAndKeyfile:
-		var pw string
-		if cred.Password != nil {
-			pw = string(cred.Password.Bytes())
+		c, err := gokeepasslib.NewKeyCredentials(cred.Keyfile)
+		if err != nil {
+			return nil, fmt.Errorf("keyfile %s: %w", cred.Keyfile, err)
 		}
-		c, _ := gokeepasslib.NewPasswordAndKeyCredentials(pw, cred.Keyfile)
-		return c
+		return c, nil
+	case CredentialPasswordAndKeyfile:
+		var pw []byte
+		if cred.Password != nil {
+			pw = cred.Password.Bytes()
+		}
+		defer security.Wipe(pw)
+		c, err := gokeepasslib.NewPasswordAndKeyCredentials(string(pw), cred.Keyfile)
+		if err != nil {
+			return nil, fmt.Errorf("password+keyfile %s: %w", cred.Keyfile, err)
+		}
+		return c, nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
@@ -367,32 +411,100 @@ func extractUUID(db *gokeepasslib.Database, path string) string {
 	return hex.EncodeToString(h[:16])
 }
 
-// watchFile monitors a file for changes and sends reload events.
+// watchFile monitors a file for changes using fsnotify/inotify and sends
+// reload events when the database file is modified.
 func watchFile(ctx context.Context, path string, eventCh chan Event, uuid string) {
-	// Simple polling-based file watcher for the scaffold.
-	// In production, use fsnotify.Watcher for efficient inotify-based watching.
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		slog.Warn("dbpool: failed to create file watcher", "path", path, "error", err)
+		return
+	}
+	defer watcher.Close()
 
-	var lastMod time.Time
-	if info, err := os.Stat(path); err == nil {
-		lastMod = info.ModTime()
+	if err := addWatch(watcher, path); err != nil {
+		slog.Warn("dbpool: failed to watch database file", "path", path, "error", err)
+		return
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			info, err := os.Stat(path)
-			if err != nil {
+		case evt, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if !isWatchEventForFile(evt, path) {
 				continue
 			}
-			if info.ModTime().After(lastMod) {
-				lastMod = info.ModTime()
-				if eventCh != nil {
-					eventCh <- Event{Type: EventDatabaseReloaded, UUID: uuid, Path: path}
+			// Re-add the watch if the file was removed or renamed; on Linux
+			// inotify stops watching a file once it is unlinked.
+			if evt.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				_ = watcher.Remove(path)
+				_ = watcher.Remove(filepath.Dir(path))
+				if err := waitForRecreate(ctx, path); err != nil {
+					return
 				}
+				if err := addWatch(watcher, path); err != nil {
+					slog.Warn("dbpool: failed to re-watch database file", "path", path, "error", err)
+					return
+				}
+			}
+			if eventCh != nil {
+				select {
+				case eventCh <- Event{Type: EventDatabaseReloaded, UUID: uuid, Path: path}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			slog.Warn("dbpool: file watcher error", "path", path, "error", err)
+		}
+	}
+}
+
+// addWatch watches both the file and its parent directory. Watching the
+// directory is necessary to detect renames/removals and re-creations.
+func addWatch(watcher *fsnotify.Watcher, path string) error {
+	if err := watcher.Add(path); err != nil {
+		return fmt.Errorf("watch file: %w", err)
+	}
+	if err := watcher.Add(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("watch parent dir: %w", err)
+	}
+	return nil
+}
+
+// isWatchEventForFile returns true if the fsnotify event concerns path.
+func isWatchEventForFile(evt fsnotify.Event, path string) bool {
+	if evt.Name == path {
+		return evt.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0
+	}
+	// Events on the parent directory may report the basename only on some systems.
+	if filepath.Base(evt.Name) == filepath.Base(path) {
+		return evt.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0
+	}
+	return false
+}
+
+// waitForRecreate polls briefly for path to reappear after a rename/remove.
+func waitForRecreate(ctx context.Context, path string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for %s to reappear", path)
+		case <-ticker.C:
+			if _, err := os.Stat(path); err == nil {
+				return nil
 			}
 		}
 	}

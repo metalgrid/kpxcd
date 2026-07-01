@@ -5,6 +5,7 @@ package dbpool
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/tobischo/gokeepasslib/v3"
@@ -313,5 +314,116 @@ func TestLockAndUnlockCycle(t *testing.T) {
 		}
 	default:
 		t.Error("expected lock event on channel")
+	}
+}
+
+// TestLockAllConcurrent verifies that concurrent Lock, LockAll, and Get
+// calls do not race on the OpenDatabase.Locked field.
+func TestLockAllConcurrent(t *testing.T) {
+	dir := t.TempDir()
+
+	entries := []gokeepasslib.Entry{
+		{
+			UUID: gokeepasslib.NewUUID(),
+			Values: []gokeepasslib.ValueData{
+				{Key: "Title", Value: gokeepasslib.V{Content: "RaceTest"}},
+			},
+		},
+	}
+	dbPath := createTestKDBX(t, dir, "race.kdbx", "racepassword", entries)
+
+	ss, err := security.NewSecureString("racepassword")
+	if err != nil {
+		t.Fatalf("failed to create secure string: %v", err)
+	}
+	defer ss.Destroy()
+	cred := PasswordCredential(ss)
+
+	pool := NewDatabasePool(make(chan Event, 100))
+	defer pool.Close()
+
+	uuid, err := pool.Open(dbPath, cred)
+	if err != nil {
+		t.Fatalf("pool.Open failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = pool.Lock(uuid)
+			_ = pool.LockAll()
+			_, _ = pool.Get(uuid)
+		}()
+	}
+	wg.Wait()
+}
+
+// TestLockWipesDatabaseContent verifies that Lock zeros sensitive decrypted
+// content and drops the database reference.
+func TestLockWipesDatabaseContent(t *testing.T) {
+	dir := t.TempDir()
+
+	entries := []gokeepasslib.Entry{
+		{
+			UUID: gokeepasslib.NewUUID(),
+			Values: []gokeepasslib.ValueData{
+				{Key: "Title", Value: gokeepasslib.V{Content: "WipeTest"}},
+				{Key: "UserName", Value: gokeepasslib.V{Content: "wipeuser"}},
+				{Key: "Password", Value: gokeepasslib.V{Content: "wipe-secret", Protected: wrappers.BoolWrapper{Bool: true}}},
+			},
+		},
+	}
+	dbPath := createTestKDBX(t, dir, "wipe.kdbx", "wipepassword", entries)
+
+	ss, err := security.NewSecureString("wipepassword")
+	if err != nil {
+		t.Fatalf("failed to create secure string: %v", err)
+	}
+	defer ss.Destroy()
+	cred := PasswordCredential(ss)
+
+	pool := NewDatabasePool(nil)
+	defer pool.Close()
+
+	uuid, err := pool.Open(dbPath, cred)
+	if err != nil {
+		t.Fatalf("pool.Open failed: %v", err)
+	}
+
+	odb, err := pool.Get(uuid)
+	if err != nil {
+		t.Fatalf("pool.Get failed: %v", err)
+	}
+
+	// Capture pointers to the decrypted content before locking.
+	contentBefore := odb.Db.Content
+	passwordBefore := odb.Db.Content.Root.Groups[0].Entries[0].GetPassword()
+	if passwordBefore != "wipe-secret" {
+		t.Fatalf("expected original password before lock, got %q", passwordBefore)
+	}
+
+	if err := pool.Lock(uuid); err != nil {
+		t.Fatalf("pool.Lock failed: %v", err)
+	}
+
+	odb, err = pool.Get(uuid)
+	if err != nil {
+		t.Fatalf("pool.Get after lock failed: %v", err)
+	}
+	if !odb.Locked {
+		t.Error("database should be locked after Lock()")
+	}
+	if odb.Db != nil {
+		t.Error("odb.Db should be nil after lock")
+	}
+
+	// The captured content should have been wiped.
+	if contentBefore.Root.Groups[0].Entries[0].GetPassword() != "" {
+		t.Error("password was not wiped during lock")
+	}
+	if contentBefore.Root.Groups[0].Entries[0].GetContent("UserName") != "" {
+		t.Error("username was not wiped during lock")
 	}
 }
