@@ -86,10 +86,16 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 	}
 
 	// Generate credential ID (32 random bytes, base64url encoded).
-	credID := generateCredentialID()
+	credID, err := generateCredentialID()
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
 
 	// Generate user handle (random 64-bit, base64url encoded).
-	userHandle := generateUserHandle()
+	userHandle, err := generateUserHandle()
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
 
 	// Determine algorithm (default to ES256).
 	alg := COSEAlgES256
@@ -264,17 +270,21 @@ type AssertionResult struct {
 }
 
 // generateCredentialID generates a random 32-byte credential ID, base64url encoded.
-func generateCredentialID() string {
+func generateCredentialID() (string, error) {
 	b := make([]byte, IDBytes)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate credential ID: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // generateUserHandle generates a random 8-byte user handle, base64url encoded.
-func generateUserHandle() string {
+func generateUserHandle() (string, error) {
 	b := make([]byte, 8)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate user handle: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // buildAuthenticatorData constructs the authenticator data bytes.

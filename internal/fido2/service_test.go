@@ -27,7 +27,10 @@ func TestGenerateCredentialIDUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 
 	for i := 0; i < iterations; i++ {
-		id := generateCredentialID()
+		id, err := generateCredentialID()
+		if err != nil {
+			t.Fatalf("generateCredentialID failed: %v", err)
+		}
 		if seen[id] {
 			t.Fatalf("duplicate credential ID generated: %s", id)
 		}
@@ -51,7 +54,10 @@ func TestGenerateUserHandleUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 
 	for i := 0; i < iterations; i++ {
-		handle := generateUserHandle()
+		handle, err := generateUserHandle()
+		if err != nil {
+			t.Fatalf("generateUserHandle failed: %v", err)
+		}
 		if seen[handle] {
 			t.Fatalf("duplicate user handle generated: %s", handle)
 		}
