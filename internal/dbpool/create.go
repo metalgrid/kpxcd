@@ -7,13 +7,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
 )
 
 // CreateDatabase creates a new KDBX4 database at path with mode 0600. It never
 // overwrites an existing file.
-func CreateDatabase(path, password string) error {
+func CreateDatabase(path string, password *security.SecureString) error {
 	if err := xdg.EnsurePrivateDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("dbpool: create database directory: %w", err)
 	}
@@ -28,7 +29,9 @@ func CreateDatabase(path, password string) error {
 	defer f.Close()
 
 	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
-	db.Credentials = gokeepasslib.NewPasswordCredentials(password)
+	security.Do(func() {
+		db.Credentials = gokeepasslib.NewPasswordCredentials(string(password.Bytes()))
+	})
 	if db.Content != nil && db.Content.Root != nil && len(db.Content.Root.Groups) > 0 {
 		db.Content.Root.Groups[0].Name = "Default"
 		db.Content.Root.Groups[0].Entries = nil

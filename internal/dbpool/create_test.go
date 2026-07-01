@@ -12,7 +12,12 @@ import (
 
 func TestCreateDatabaseCreatesSecureKDBX(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kpxcd", "default.kdbx")
-	if err := CreateDatabase(path, "password"); err != nil {
+	ss, err := security.NewSecureString("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Destroy()
+	if err := CreateDatabase(path, ss); err != nil {
 		t.Fatalf("CreateDatabase failed: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -22,11 +27,6 @@ func TestCreateDatabaseCreatesSecureKDBX(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %o, want 0600", got)
 	}
-	ss, err := security.NewSecureString("password")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ss.Destroy()
 	pool := NewDatabasePool(nil)
 	defer pool.Close()
 	if _, err := pool.Open(path, PasswordCredential(ss)); err != nil {
@@ -39,7 +39,12 @@ func TestCreateDatabaseDoesNotOverwrite(t *testing.T) {
 	if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := CreateDatabase(path, "password"); err == nil {
+	ss, err := security.NewSecureString("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Destroy()
+	if err := CreateDatabase(path, ss); err == nil {
 		t.Fatal("expected existing database error")
 	}
 	data, err := os.ReadFile(path)

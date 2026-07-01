@@ -66,7 +66,12 @@ func (app *DaemonApp) unlockOrBootstrapWithPAM(db config.DatabaseConfig, token [
 			slog.Warn("pam credential DB path differs from config", "credential_path", cred.DBPath, "config_path", db.Path)
 		}
 		if !dbExists {
-			if err := dbpool.CreateDatabase(db.Path, cred.DBPassword); err != nil {
+			ss, err := security.NewSecureString(cred.DBPassword)
+			if err != nil {
+				return fmt.Errorf("wrap database password: %w", err)
+			}
+			defer ss.Destroy()
+			if err := dbpool.CreateDatabase(db.Path, ss); err != nil {
 				return fmt.Errorf("create missing default database: %w", err)
 			}
 		}
@@ -88,7 +93,12 @@ func (app *DaemonApp) unlockOrBootstrapWithPAM(db config.DatabaseConfig, token [
 	if err != nil {
 		return fmt.Errorf("generate database credential: %w", err)
 	}
-	if err := dbpool.CreateDatabase(db.Path, cred.DBPassword); err != nil {
+	ss, err := security.NewSecureString(cred.DBPassword)
+	if err != nil {
+		return fmt.Errorf("wrap database password: %w", err)
+	}
+	defer ss.Destroy()
+	if err := dbpool.CreateDatabase(db.Path, ss); err != nil {
 		return fmt.Errorf("create default database: %w", err)
 	}
 	if err := pamcred.WriteSealedIdentity(identityPath, identity, token); err != nil {
