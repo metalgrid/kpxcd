@@ -25,6 +25,20 @@ func TestDerivePAMToken(t *testing.T) {
 	}
 }
 
+func TestDerivePAMTokenV2IncludesUID(t *testing.T) {
+	first := DerivePAMTokenV2([]byte("login-password"))
+	second := DerivePAMTokenV2([]byte("login-password"))
+	if !bytes.Equal(first, second) {
+		t.Fatal("same password and UID must produce the same V2 token")
+	}
+	if bytes.Equal(first, DerivePAMToken([]byte("login-password"))) {
+		t.Fatal("V2 token must differ from legacy token")
+	}
+	if len(first) != PAMTokenLen {
+		t.Fatalf("len(DerivePAMTokenV2()) = %d, want %d", len(first), PAMTokenLen)
+	}
+}
+
 func TestDerivePAMTokenDistinctInputs(t *testing.T) {
 	first := DerivePAMToken([]byte("login-password"))
 	second := DerivePAMToken([]byte("login-password-2"))

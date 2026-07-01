@@ -52,12 +52,30 @@ func NewRandomDBCredential(dbPath string) (DBCredential, error) {
 	}, nil
 }
 
-// DerivePAMToken derives a kpxcd-specific PAM token from the user's
-// login password using HKDF-SHA256. The returned token is never the raw
-// password; leaking it does not compromise the Unix password.
+// DerivePAMToken derives the legacy kpxcd-specific PAM token from the user's
+// login password using HKDF-SHA256. This is the original derivation used for
+// all PAM-sealed identities. It is kept unchanged so existing sealed identities
+// continue to unlock after a drop-in upgrade.
 func DerivePAMToken(password []byte) []byte {
 	token := make([]byte, PAMTokenLen)
 	r := hkdf.New(sha256.New, password, []byte(PAMTokenSalt), nil)
+	if _, err := io.ReadFull(r, token); err != nil {
+		// hkdf.Reader never errors on reads <= Expand output length.
+		panic(fmt.Sprintf("pamcred: hkdf read failed: %v", err))
+	}
+	return token
+}
+
+// DerivePAMTokenV2 derives a stronger per-user PAM token from the user's login
+// password. The salt includes the effective UID so the same password produces
+// different tokens for different users and tokens are not portable across
+// accounts. This derivation is intended for fresh installations or for an
+// explicit migration; it is not used by default because existing sealed
+// identities use DerivePAMToken.
+func DerivePAMTokenV2(password []byte) []byte {
+	token := make([]byte, PAMTokenLen)
+	salt := fmt.Sprintf("%s:%d", PAMTokenSalt, os.Getuid())
+	r := hkdf.New(sha256.New, password, []byte(salt), nil)
 	if _, err := io.ReadFull(r, token); err != nil {
 		// hkdf.Reader never errors on reads <= Expand output length.
 		panic(fmt.Sprintf("pamcred: hkdf read failed: %v", err))
