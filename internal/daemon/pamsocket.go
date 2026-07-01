@@ -24,17 +24,16 @@ import (
 // The socket may be provided by systemd socket activation (kpxcd.socket)
 // or created directly by the daemon if systemd is not managing it.
 type PAMSocketServer struct {
-	app      *DaemonApp
-	listener net.Listener
-	mu       sync.Mutex
-	done     chan struct{}
+	app       *DaemonApp
+	listener  net.Listener
+	mu        sync.Mutex
+	closeOnce sync.Once
 }
 
 // NewPAMSocketServer creates a new PAM socket server for the given app.
 func NewPAMSocketServer(app *DaemonApp) *PAMSocketServer {
 	return &PAMSocketServer{
-		app:  app,
-		done: make(chan struct{}),
+		app: app,
 	}
 }
 
@@ -98,16 +97,18 @@ func (s *PAMSocketServer) systemdOrDirectListener() (net.Listener, error) {
 
 // serve accepts connections and dispatches each to a goroutine.
 func (s *PAMSocketServer) serve() {
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return
+	}
+
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			select {
-			case <-s.done:
-				return
-			default:
-				slog.Warn("PAM socket accept error", "error", err)
-				continue
-			}
+			// Listener was closed by Close(); exit the serve loop.
+			return
 		}
 
 		go s.handleConn(conn)
@@ -146,9 +147,11 @@ func (s *PAMSocketServer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	close(s.done)
-	if s.listener != nil {
-		return s.listener.Close()
-	}
-	return nil
+	var err error
+	s.closeOnce.Do(func() {
+		if s.listener != nil {
+			err = s.listener.Close()
+		}
+	})
+	return err
 }
