@@ -641,12 +641,23 @@ func (ss *SecretService) SetAlias(alias string, collectionPath dbus.ObjectPath) 
 	return nil
 }
 
-// getCollectionByPath looks up a collection by its DBus path.
+// getCollectionByPath looks up a collection by its DBus path. It also resolves
+// alias paths (e.g. /org/freedesktop/secrets/aliases/default) to the underlying
+// collection, because libsecret clients commonly call Unlock/Lock on the alias.
 func (ss *SecretService) getCollectionByPath(path dbus.ObjectPath) (*Collection, bool) {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
-	coll, ok := ss.collections[path]
-	return coll, ok
+	if coll, ok := ss.collections[path]; ok {
+		return coll, true
+	}
+	for alias, target := range ss.aliases {
+		if ss.aliasPath(alias) == path {
+			if coll, ok := ss.collections[target]; ok {
+				return coll, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // getItemByPath looks up an item by its DBus path.
