@@ -25,6 +25,9 @@ install: build
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.service
 	install -Dm644 contrib/systemd/kpxcd.socket \
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.socket
+	# Patch the service file so ExecStart matches the installation prefix.
+	sed -i 's|/usr/local/bin|$(PREFIX)/bin|' \
+		$(DESTDIR)/usr/lib/systemd/user/kpxcd.service
 	install -Dm600 contrib/kpxcd.toml.example \
 		$(DESTDIR)/etc/kpxcd/kpxcd.toml.example
 	install -Dm644 contrib/polkit/org.keepassxc.daemon.policy \
