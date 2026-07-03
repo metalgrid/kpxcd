@@ -10,10 +10,12 @@
 /kpxcctl
 
 # Arch Linux packaging artifacts
-*.pkg.tar.zst
-*.pkg.tar.xz
+*.pkg.tar.*
 /pkg/
 /src/
+contrib/packaging/arch/kpxcd/
+contrib/packaging/arch/pkg/
+contrib/packaging/arch/src/
 PKGBUILD
 
 # Test artifacts
