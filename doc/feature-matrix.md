@@ -109,7 +109,7 @@
 | Feature | Status | Notes |
 |---|---|---|
 | Makefile | ✅ | `make build install test check pam` |
-| Arch Linux package recipe | 🚧 | Keep package build artifacts out of the source tree; publish PKGBUILD separately or under `contrib/packaging/` |
+| Arch Linux package recipe | ✅ | PKGBUILD lives in `contrib/packaging/arch/`; generated makepkg artifacts stay ignored |
 | Vendored dependencies | ✅ | Full `vendor/` for offline/reproducible builds |
 | Go 1.26 + `GOEXPERIMENT=runtimesecret` | ✅ | Required for secret scope support |
 | Rust PAM module | ✅ | Built with Cargo, installed as `pam_kpxcd.so` |
