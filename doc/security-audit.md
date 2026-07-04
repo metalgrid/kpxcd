@@ -1,80 +1,70 @@
 # kpxcd — Security Audit
 
-**Date:** 2026-05-18  
-**Scope:** `runtime/secret.Do()` and `mlock` coverage  
-**Status:** Initial audit — critical gaps identified
+**Date:** 2026-05-18
+**Scope:** `runtime/secret.Do()` and `mlock` coverage
+**Status:** Living audit — some immediate mitigations landed, important gaps remain
 
 ## Summary
 
-The current `kpxcd` code has partial `runtime/secret.Do()` coverage and very limited `mlock` coverage. `security.Do()` is used for some database credential setup, protected-entry unlock, database lock clearing, and SSH signing, but many sensitive flows occur on the regular Go heap outside `security.Do()`: KeePass decode/decryption, master password string copies, Secret Service password retrieval, FIDO2 passkey generation/assertion, SSH key extraction/parsing/storage, and session encryption keys. `mlock` is only applied to `security.SecureString` backing buffers; decrypted databases, gokeepasslib credentials, SSH signers/private keys, FIDO2 private keys, Secret Service passwords, and session keys all live in normal heap memory.
+The current `kpxcd` code has partial `runtime/secret.Do()` coverage and best-effort process-wide `mlockall()`. `security.Do()` is used for database credential setup/decode, protected-entry unlock, database lock clearing, Secret Service retrieval, and SSH signing. Many values still pass through ordinary Go strings/heap objects: gokeepasslib database content, SSH signers/private keys, FIDO2 private keys, Secret Service session keys, and compatibility-layer plaintext buffers. If `mlockall()` fails because `LimitMEMLOCK` is too low, the daemon logs a warning and continues.
 
 ## Sensitive Data Flow Table
 
 | Sensitive data | File:lines | `runtime/secret.Do()` | `mlock` | Gap |
 |---|---|---|---|---|
-| DBus unlock password | `dbusapi/dbusapi.go:99-113` | No | Partially | Original DBus string remains heap |
-| systemd credential password | `daemon/daemon.go:218-230` | No | Partially | `os.ReadFile` buffer heap copy |
-| Master password → gokeepasslib | `dbpool/pool.go:181-182,315-330` | Partially | No | `SecureString.Bytes()` returns heap copy |
-| KeePass KDF/decryption | `dbpool/pool.go:185-187` | No | No | `Decode(db)` outside `Do()` |
-| Decrypted DB content | `dbpool/pool.go:185-217` | No | No | `db.Content` is ordinary heap |
-| Protected entry unlock | `dbpool/pool.go:190-196` | **Yes** | No | Unprotected values remain in heap |
-| DB lock clearing | `dbpool/pool.go:242-244` | **Yes** | No | Only nils Content; no recursive zeroing |
-| SSH key in KeePass attribute | `sshagent/keeagent.go:111-114` | No | No | Heap string → []byte conversion |
-| SSH key attachment bytes | `sshagent/keeagent.go:191-224` | No | No | Uses binary.Content heap directly |
-| SSH key parsing | `sshagent/key.go:104-126` | No | No | `ssh.Signer` persists in heap |
-| SSH signing via agent | `sshagent/server.go:214-225` | **Yes** | No | Signing in `Do()`, key storage not protected |
-| FIDO2 passkey generation | `fido2/service.go:97-145` | No | No | Private key structs, DER, PEM all heap |
-| FIDO2 assertion | `fido2/service.go:160-194,361-378` | No | No | Signing not in `Do()` |
-| FIDO2 private key storage | `fido2/service.go:55,142` | No | No | `PrivateKeyPEM string` on heap |
-| Secret Service password | `secretservice/item.go:105-144` | No | No | `GetPassword()` string on heap |
-| Secret Service session key | `secretservice/session.go:37-44` | No | No | AES key on heap |
-| Secret Service plaintext buffer | `secretservice/session.go:64-103` | No | No | Plaintext, padded copy, ciphertext heap |
+| DBus unlock password | `dbusapi/dbusapi.go` | Partially | Process-wide if `mlockall` succeeds | Original D-Bus string remains heap |
+| systemd credential password | `daemon/daemon.go` | Partially | Process-wide if `mlockall` succeeds | `os.ReadFile` buffer heap copy |
+| Master password → gokeepasslib | `dbpool/pool.go` | Partially | Process-wide if `mlockall` succeeds | `SecureString.Bytes()` returns heap copy |
+| KeePass KDF/decryption | `dbpool/pool.go` | **Yes** | Process-wide if `mlockall` succeeds | Decrypted content remains ordinary Go heap |
+| Decrypted DB content | `dbpool/pool.go` | N/A | Process-wide if `mlockall` succeeds | `db.Content` is ordinary heap |
+| Protected entry unlock | `dbpool/pool.go` | **Yes** | Process-wide if `mlockall` succeeds | Unprotected values remain in heap |
+| DB lock clearing | `dbpool/wipe.go` | **Yes** | Process-wide if `mlockall` succeeds | Best-effort recursive wipe |
+| SSH key attachment bytes | `sshagent/keeagent.go` | No | Process-wide if `mlockall` succeeds | Uses binary content heap directly |
+| SSH key parsing/storage | `sshagent/key.go`, `sshagent/manager.go` | No | Process-wide if `mlockall` succeeds | `ssh.Signer` persists in heap |
+| SSH signing via agent | `sshagent/server.go` | **Yes** | Process-wide if `mlockall` succeeds | Signing in `Do()`, key storage not protected |
+| FIDO2 passkey generation | `fido2/service.go` | **Yes** | Process-wide if `mlockall` succeeds | PEM/private key strings still heap |
+| FIDO2 assertion | `fido2/service.go` | No | Process-wide if `mlockall` succeeds | Signing incomplete |
+| Secret Service password | `secretservice/item.go` | **Yes** | Process-wide if `mlockall` succeeds | Secret Service API still creates plaintext copies |
+| Secret Service session key | `secretservice/session.go` | No | Process-wide if `mlockall` succeeds | AES key slice not individually wiped on close |
 
 ## Critical Gaps
 
-1. **Database decryption outside `security.Do()`** — `dbpool/pool.go:185-187`  
-   The actual KDF and decryption happen in `gokeepasslib.NewDecoder(f).Decode(db)` outside `security.Do()`. Master key derivation and database decryption are the most sensitive operations.
+1. **Decrypted database content is ordinary Go heap** — `dbpool/pool.go`
+   `gokeepasslib.Database.Content` is an ordinary Go heap object. `mlockall()` prevents swap only when it succeeds; the daemon currently continues if it fails.
 
-2. **Decrypted database content not mlock'd** — `dbpool/pool.go:185-217`  
-   `gokeepasslib.Database.Content` is an ordinary Go heap object. All passwords, notes, and custom data live in unprotected memory.
-
-3. **SSH private keys held in heap** — `sshagent/key.go:104-126`, `sshagent/manager.go:36-37`  
+2. **SSH private keys held in heap** — `sshagent/key.go:104-126`, `sshagent/manager.go:36-37`
    Parsed `ssh.Signer` objects persist in heap memory for the entire time a key is loaded.
 
-4. **Secret Service passwords in heap** — `secretservice/item.go:105-144`  
-   Password retrieval and encryption happen outside `security.Do()` without mlock.
+3. **Secret Service plaintext copies still exist** — `secretservice/item.go`, `secretservice/session.go`
+   Retrieval is wrapped in `security.Do()`, but compatibility with the Secret Service API still creates plaintext byte/string copies.
 
-5. **FIDO2 private keys in heap** — `fido2/service.go:97-145,160-194`  
-   Both generation and assertion paths lack `security.Do()` and mlock protection.
+4. **FIDO2 private keys in heap** — `fido2/service.go:97-145,160-194`
+   Creation uses `security.Do()`, but persistent storage and assertion signing are incomplete and private key PEM strings live on the heap.
 
 ## Recommended Fixes
 
 ### Immediate (v0.1)
 
-1. **Call `security.MlockAll()` at daemon startup** — `daemon/daemon.go`  
-   This prevents all current and future heap pages from being swapped. It's a blunt instrument but immediately addresses the mlock gap for all sensitive data including gokeepasslib internals.
+1. **Make `mlockall()` operational by default** — add `LimitMEMLOCK=infinity` (or a measured high limit) to the systemd unit.
 
-2. **Wrap database decryption in `security.Do()`** — `dbpool/pool.go`  
-   Move `buildCredentials()` and `Decode(db)` into a single `security.Do()` closure.
+2. **Reduce string copies of secrets** — add byte-slice/callback APIs where dependencies allow it, and wipe owned plaintext buffers.
 
-3. **Wrap Secret Service password retrieval in `security.Do()`** — `secretservice/item.go`  
-   Wrap `GetPassword()` and encryption in `security.Do()`, wipe plaintext after.
+3. **Keep Secret Service confirmation fail-closed** — when `require_confirmation = true`, unavailable Polkit or unknown caller metadata must deny access.
 
-4. **Wrap FIDO2 key generation and assertion in `security.Do()`** — `fido2/service.go`  
-   Both `CreatePasskey()` and `AssertPasskey()` should run their crypto inside `security.Do()`.
+4. **Finish FIDO2 before recommending it** — persistent storage and assertion signing are incomplete.
 
 ### Medium-term (v0.2)
 
-5. **Add `security.WithBytes()` helper** — `security/security.go`  
+5. **Add `security.WithBytes()` helper** — `security/security.go`
    Callback-style accessor that allocates via `Alloc()`, defers `Wipe()`, and runs inside `Do()`.
 
-6. **Store SSH keys encrypted at rest** — `sshagent/key.go`  
+6. **Store SSH keys encrypted at rest** — `sshagent/key.go`
    Retain encrypted key bytes in mlock'd memory; parse into `ssh.Signer` only during `Sign()` inside `security.Do()`.
 
-7. **Wipe database content on lock** — `dbpool/pool.go`  
+7. **Wipe database content on lock** — `dbpool/pool.go`
    Recursively zero password strings and protected entry values before setting `Content = nil`.
 
-8. **Session key storage** — `secretservice/session.go`  
+8. **Session key storage** — `secretservice/session.go`
    Store AES session keys in `security.Alloc()` memory; wipe on `Close()`.
 
 ## Resolved Issues

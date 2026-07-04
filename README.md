@@ -2,7 +2,7 @@
 
 A headless Linux daemon that keeps KeePass databases unlocked and available through standard system interfaces — Secret Service, SSH agent, and D-Bus — for the duration of a user session.
 
-Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional YubiKey PCSC support).
+Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is a small Rust module.
 
 > **Status:** pre-1.0, Linux-only, security-sensitive software. Review the
 > threat model and run it in a test user session before trusting it with
@@ -11,9 +11,9 @@ Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional Yu
 ## What It Does
 
 - **Unlocks databases at session start** and holds them in memory
-- **Secret Service** — exposes and persists secrets for any `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`)
+- **Secret Service** — exposes and persists secrets for any same-user `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`), matching the GNOME Keyring/libsecret trust model
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — experimental credential creation plumbing (storage and assertions are still in progress)
+- **FIDO2 passkeys** — disabled experimental plumbing; storage and assertions are still in progress
 
 ## Planned / In Progress
 
@@ -28,6 +28,7 @@ Written in Go. Single static binary. No Qt. No Botan. No CGO (except optional Yu
 - Auto-type
 - Windows or macOS support
 - Network access (no phone-home, no icon downloading)
+- Screen-lock auto-lock yet (`lock_on_screenlock` is parsed, not wired)
 
 ## Quick Start
 
@@ -55,7 +56,7 @@ kpxcctl unlock /path/to/database.kdbx
 kpxcctl list
 kpxcctl get "example.com"
 ssh-add -l  # should show keys from your database
-secret-tool lookup kpxcd:dbname Default  # retrieve a password
+secret-tool lookup kpxcd:dbname Default  # retrieve a password from an exposed, unlocked DB
 ```
 
 ## Documentation

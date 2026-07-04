@@ -165,29 +165,12 @@ kpxcd/
 
 ## Secure Memory Discipline
 
-All paths that touch decrypted database content or derived keys follow this pattern:
+`kpxcd` uses a pragmatic, best-effort memory discipline:
 
-```go
-func (p *DatabasePool) Unlock(path string, cred Credential) error {
-    return security.Do(func() {
-        compositeKey := deriveCompositeKey(cred)
-        db := gokeepasslib.Open(path, compositeKey)
-        // compositeKey and db content are on mlock'd pages,
-        // inside runtime/secret.Do scope. Registers and stack
-        // will be zeroed before Do returns.
-        p.mu.Lock()
-        p.databases[db.UUID] = db
-        p.mu.Unlock()
-    })
-}
-```
-
-Rules:
-
-1. **Master keys are always derived inside `runtime/secret.Do()`.**
-2. **All `[]byte` holding decrypted data is `mlock`'d before writing.** The `security` package provides `security.Alloc(n int) []byte` that calls `unix.Mlock` and `security.Wipe(b []byte)` that zeros and unlocks.
-3. **Entry passwords are only materialized inside `runtime/secret.Do()` when returning via DBus.** Secret Service uses the encrypted session protocol, so the plaintext password is never held outside a secret scope.
-4. **SSH private keys are only held inside `runtime/secret.Do()` during signing operations.** The SSH agent server keeps public key fingerprints and encrypted private key blobs in memory; the private key is decrypted into a secret scope only during the signing operation.
+1. **The daemon calls `security.MlockAll()` at startup.** If the system memlock limit is too low, it logs a warning and continues.
+2. **Sensitive operations use `runtime/secret.Do()` where practical.** Database credential setup/decode, Secret Service retrieval, and SSH signing enter a secret scope.
+3. **Some plaintext still exists in ordinary Go heap objects.** gokeepasslib database content, SSH signer objects, Secret Service session keys, and compatibility buffers are not individually mlock'd.
+4. **SSH private keys are currently parsed and kept as signer objects while loaded.** Signing runs inside `security.Do()`, but key storage itself is future hardening.
 
 ## Concurrency Model
 

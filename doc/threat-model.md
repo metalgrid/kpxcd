@@ -18,7 +18,7 @@ The threat model assumes:
 |-------|----------|-------------|
 | Master password | Process memory, `runtime/secret` scope | **Critical** — decrypts everything |
 | Derived composite key | Process memory, `runtime/secret` scope | **Critical** — equivalent to the master password |
-| Decrypted database content | Process memory, `mlock`'d | **High** — all passwords, keys, notes |
+| Decrypted database content | Process memory, protected by best-effort `mlockall` | **High** — all passwords, keys, notes |
 | SSH private keys | Process memory, `runtime/secret` scope | **High** — can authenticate as the user |
 | Passkey private keys | Process memory, `runtime/secret` scope | **High** — can authenticate to web services |
 | TOTP seeds | Process memory, `mlock`'d | **Medium** — time-limited but reusable |
@@ -33,16 +33,20 @@ The threat model assumes:
 **Capabilities:** Can connect to D-Bus session bus, can connect to `kpxcd/ssh.sock`.
 
 **Threats:**
-- **Password retrieval via Secret Service**: Any process in the session can call `org.freedesktop.secrets` and retrieve passwords.
-  - **Mitigation:** Polkit `auth_self` for `org.keepassxc.daemon.get-entry.secret`. The user must confirm via an authentication dialog.
-  - **Residual risk:** If `require_confirmation = false` in config, any process in the session can retrieve passwords without confirmation.
+- **Password retrieval via Secret Service**: Any process in the session can call `org.freedesktop.secrets` and retrieve exposed, unlocked passwords.
+  - **Mitigation:** This intentionally matches GNOME Keyring/libsecret. If `require_confirmation = true`, Polkit `auth_self` is required for secret reads and failures deny access.
+  - **Residual risk:** The default `require_confirmation = false` lets same-user session processes read exposed, unlocked secrets without confirmation.
+
+- **PAM first-run bootstrap race**: Before the default database and sealed credential exist, the first valid-length token sent to the user-owned PAM socket can create the bootstrap state.
+  - **Mitigation:** Socket lives under `$XDG_RUNTIME_DIR` with user-only permissions; this is a same-UID first-run race only.
+  - **Residual risk:** Do initial bootstrap in a trusted login session before running untrusted same-user processes.
 
 - **SSH key use**: Any process can request key listing and signing via the SSH agent socket.
   - **Mitigation:** Unix file permissions (`0600`) on the socket. Only the owning user can connect.
   - **Residual risk:** Any process running as the same user can connect. This is the same trust model as `ssh-agent`.
 
-- **FIDO2 assertion**: Any process can call `AssertPasskey` via D-Bus.
-  - **Mitigation:** Polkit `yes` by default (passkeys are meant for authentication; requiring confirmation every time defeats the purpose).
+- **FIDO2 assertion**: Reserved D-Bus methods exist, but currently return not implemented.
+  - **Mitigation:** Keep passkey API disabled until storage and signing are complete.
 
 - **Memory scanning**: A process with the same UID can read `/proc/$pid/mem`.
   - **Mitigation:** Linux `kernel.yama.ptrace_scope ≥ 1` (default on most distributions) prevents `ptrace` from non-child processes.
@@ -54,12 +58,12 @@ The threat model assumes:
 
 **Threats:**
 - **Swap scanning**: If decrypted content is swapped to disk, another user with physical access could read it.
-  - **Mitigation:** `mlock` on all pages containing decrypted data. `runtime/secret` scopes ensure registers and stack are scrubbed.
+  - **Mitigation:** `kpxcd` calls `mlockall` at startup and uses `runtime/secret` scopes in sensitive paths.
   - **Residual risk:** If `mlock` fails (`RLIMIT_MEMLOCK` too low), `kpxcd` logs a warning but continues. The operator must ensure sufficient `memlock` limits.
 
 - **File access**: If the `.kdbx` file or keyfile has overly permissive permissions.
-  - **Mitigation:** `kpxcd` checks that database files and keyfiles are not world-readable at startup and warns if they are.
-  - **Residual risk:** The operator may ignore the warning.
+  - **Mitigation:** New `kpxcd` state is created with private permissions.
+  - **Residual risk:** Existing `.kdbx` files and keyfiles may still have permissive permissions; enforcing/warning on open is future hardening.
 
 ### 3. Root Compromise
 
@@ -97,12 +101,12 @@ The threat model assumes:
 
 **Threats:**
 - **Bulk password extraction**: A malicious client calls `SearchEntries` then `GetEntry` for every result.
-  - **Mitigation:** Each `GetEntry` with `password` field requires Polkit `auth_self`. The user will see repeated authentication dialogs.
-  - **Residual risk:** If the user dismisses the dialog without reading it, or if `require_confirmation = false`, extraction is possible.
+  - **Mitigation:** `GetEntry` does not return passwords. Secret Service reads can require Polkit when `require_confirmation = true`.
+  - **Residual risk:** The default Secret Service mode follows GNOME Keyring: same-user apps can retrieve exposed, unlocked secrets.
 
 - **SSH key abuse**: A malicious client connects to the SSH socket and signs arbitrary challenges.
-  - **Mitigation:** File permissions on the socket. If `confirm_on_use = true`, `ssh-add -c` style confirmation is required for each sign operation.
-  - **Residual risk:** Default is `confirm_on_use = false`, same trust model as `ssh-agent`.
+  - **Mitigation:** File permissions on the socket.
+  - **Residual risk:** `confirm_on_use` and `lifetime` are parsed/stored but not enforced by the built-in agent yet; same-user apps can request signatures while keys are loaded.
 
 ## Attack Surface Summary
 

@@ -9,7 +9,7 @@
 | Lock individual databases | ✅ | Via DBus / `kpxcctl lock <uuid>` |
 | Lock all databases | ✅ | `kpxcctl lock all` |
 | Idle timeout auto-lock | ✅ | Configurable `idle_timeout` |
-| Screen lock integration | ✅ | `lock_on_screenlock = true` |
+| Screen lock integration | ❌ | `lock_on_screenlock` is parsed but not wired yet |
 | File watcher (external edits) | ✅ | 30s polling, detects KeePassXC GUI changes |
 | Atomic save with conflict detection | ✅ | Fingerprint-based optimistic locking |
 | Adopt existing database as PAM default | ✅ | `kpxcctl adopt-default --replace <path>` |
@@ -22,9 +22,9 @@
 | `kpxcctl unlock` (PAM credential) | ✅ | Derives HKDF token from login password, unseals age identity locally |
 | `kpxcctl unlock <path>` (password) | ✅ | Plain password prompt, works with any KDBX |
 | systemd credential | ✅ | `LoadCredential=` in service unit |
-| Secret Service | 🚧 | Stub exists, not yet implemented |
+| Secret Service | ✅ | PAM can bootstrap the default DB; Secret Service is a served API, not an unlock source |
 | Keyfile | ✅ | Configured per-database |
-| YubiKey challenge-response | ✅ | Via PCSC slot number |
+| YubiKey challenge-response | 🚧 | Plumbing exists, but config validation does not enable it yet |
 | None (no password) | ✅ | Insecure but supported |
 
 ## PAM Auto-Unlock Architecture
@@ -42,11 +42,11 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| Collection management | ✅ | Create/delete/list collections |
+| Collection listing | ✅ | Unlocked databases are exposed as collections; collection create/delete is not supported |
 | Item search by attributes | ✅ | Chrome, VS Code, `secret-tool` compatible |
 | Encrypted session transport | ✅ | AES-CBC with DH key exchange per session |
 | Item write-back | ✅ | Apps can create/update secrets |
-| Polkit authorization gate | ✅ | Optional confirmation prompt before serving secrets |
+| Polkit authorization gate | ✅ | Optional confirmation prompt before serving secrets; fails closed when enabled |
 | Desktop notification on access | ✅ | "Chrome accessed a secret" |
 | Access logging | ✅ | Caller PID, exe, app name |
 
@@ -56,20 +56,20 @@
 |---|---|---|
 | Agent mode (kpxcd is the agent) | ✅ | Unix socket at `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
 | Client/proxy mode | ✅ | Push keys into existing agent (e.g. ssh-agent, gnome-keyring) |
-| Key extraction from KeePass | ✅ | KeeAgent XML metadata, attachment heuristics |
+| Key extraction from KeePass | ✅ | KeeAgent XML metadata, plus permissive attachment heuristics |
 | RSA, Ed25519, ECDSA keys | ✅ | Standard OpenSSH key types |
 | Sign inside `security.Do()` | ✅ | Private key material in secret scope |
 | Remove keys on database lock | ✅ | Configurable `remove_on_lock` |
-| Confirm before use | ✅ | Configurable `confirm_on_use` |
-| Key lifetime | ✅ | Configurable `lifetime` (seconds) |
-| Auto-add on database unlock | ✅ | Configurable `ssh_auto_add` per database |
+| Confirm before use | ❌ | `confirm_on_use` is parsed/stored but not enforced by the built-in agent |
+| Key lifetime | ❌ | `lifetime` is parsed/stored but not enforced by the built-in agent |
+| Auto-add on database unlock | 🚧 | Works globally, but currently ignores per-database `ssh_auto_add` |
 | `kpxcctl setup-ssh` | ✅ | Writes user-level systemd/env config for `SSH_AUTH_SOCK` based on `ssh_mode` |
 
 ## FIDO2 / Passkeys
 
 | Feature | Status | Notes |
 |---|---|---|
-| Passkey creation | 🚧 | Creates credential material; database storage integration is not complete |
+| Passkey creation | ❌ | D-Bus API is disabled until storage and assertions are complete |
 | Passkey assertion | ❌ | Assertion signing is not yet fully implemented |
 | Configurable AAGUID | ✅ | Defaults to KeePassXC's AAGUID |
 | ES256 / EdDSA algorithms | ✅ | `-7`, `-8` |
@@ -80,13 +80,13 @@
 | Method | Status | Notes |
 |---|---|---|
 | `ListDatabases` | ✅ | Returns UUID, name, path, locked state |
-| `UnlockDatabase` | ✅ | Password, keyfile, YubiKey credentials |
+| `UnlockDatabase` | ✅ | Password and keyfile credentials; YubiKey config path is not enabled yet |
 | `LockDatabase` | ✅ | By UUID |
 | `LockAll` | ✅ | |
-| `GetEntry` | ✅ | By UUID + entry path |
+| `GetEntry` | ✅ | By UUID + entry path; returns safe metadata only |
 | `SearchEntries` | ✅ | By UUID + query |
-| `CreatePasskey` | 🚧 | Creates credential material; persistent storage still incomplete |
-| `AssertPasskey` | ❌ | Signing/extraction not yet fully implemented |
+| `CreatePasskey` | ❌ | D-Bus method returns not implemented |
+| `AssertPasskey` | ❌ | D-Bus method returns not implemented |
 | `GetTotp` | ❌ | Returns "not yet implemented" |
 | `GeneratePassword` / `GeneratePassphrase` | ❌ | Return "not yet implemented" |
 
@@ -94,7 +94,7 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| `mlockall` (prevent swap) | ✅ | Warns gracefully if unavailable |
+| `mlockall` (prevent swap) | 🚧 | Called at startup, but warns and continues if unavailable |
 | `runtime/secret.Do()` | ✅ | Zeroes registers/stack after secret scopes |
 | `security.SecureString` | ✅ | mlock'd backing buffer, wiped on destroy |
 | `security.Alloc()` / `Wipe()` | ✅ | mlock'd byte slices with explicit zeroing |
@@ -123,7 +123,7 @@
 | PAM password change rewrap | ❌ | Changing login password breaks sealed identity |
 | TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
 | Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
-| FIDO2 passkey storage and assertion signing | ❌ | Creation plumbing exists, but storage/extraction and signing are incomplete |
+| FIDO2/passkey API | ❌ | Disabled until storage/extraction and signing are complete |
 | Secret Service credential source | ❌ | Removed — circular dependency with kpxcd's own Secret Service server |
 | `kpxcctl ssh list/add/remove` | ✅ | Wired to AgentServer IdentityManager |
 | `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |

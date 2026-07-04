@@ -4,7 +4,7 @@
 
 `kpxcd` is a headless user-session daemon that keeps one or more KeePass databases unlocked and available through standard Linux interprocess interfaces. It is written in Go, produces a single static binary, and runs as a systemd user service.
 
-It exists because the KeePassXC GUI is the wrong tool for unattended or programmatic password access. Users who need SSH keys, passwords, or passkeys available throughout a login session — without keeping a GUI application running — need a daemon.
+It exists because the KeePassXC GUI is the wrong tool for unattended or programmatic password access. Users who need SSH keys and passwords available throughout a login session — without keeping a GUI application running — need a daemon.
 
 ## Goal
 
@@ -20,10 +20,10 @@ It exists because the KeePassXC GUI is the wrong tool for unattended or programm
 | Lock databases on demand or timeout | DBus, CLI | `org.keepassxc.Daemon.LockDatabase` / `kpxcctl lock` |
 | Expose and persist passwords as freedesktop Secret Service | DBus | `org.freedesktop.secrets` — Secret Service clients can retrieve, create, and update items |
 | Provide SSH keys to `ssh-agent` | Unix socket | SSH agent protocol server on `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
-| Create FIDO2 / WebAuthn passkey material | DBus, CLI | Experimental; database storage and assertions are still in progress |
+| FIDO2 / WebAuthn passkeys | DBus, CLI | Disabled; storage and assertions are still in progress |
 | Search entries by URL, title, username | DBus, Secret Service | Attribute-based search |
 | Auto-unlock databases at session start | systemd/PAM | Configured via `config.toml`; default DB can unlock from PAM login token |
-| Re-lock on screen lock or inactivity | DBus, systemd | Listen to `org.freedesktop.ScreenSaver` and idle timers |
+| Re-lock on inactivity | DBus, systemd | Idle timer works; screen-lock listener is not implemented yet |
 
 ## What It Does Not Do
 
@@ -35,10 +35,10 @@ These are explicit non-goals. They belong to other tools.
 | **Provide a GUI** | The purpose is headless operation. | KeePassXC |
 | **Browser extension integration** | Browser integration requires a different IPC model and native messaging host. | KeePassXC browser proxy |
 | **Auto-type** | Requires X11/Wayland window management. | KeePassXC |
-| **KeeShare / database synchronization** | Synchronization is a write operation. `kpxcd` does not modify databases. | KeePassXC |
+| **KeeShare / database synchronization** | `kpxcd` only performs narrow Secret Service write-back; database merge/sync belongs elsewhere. | KeePassXC |
 | **Windows or macOS support** | Operating system interfaces are fundamentally different. OS-specific secret managers already exist on those platforms. | Windows Credential Manager, macOS Keychain |
 | **Full KeePass entry authoring** | `kpxcd` only writes entries created/updated through Secret Service compatibility paths. Advanced fields, attachments, history editing, and database management remain out of scope. | `keepassxc-cli add` |
-| **Hardware FIDO2 token management** | `kpxcd` stores and uses software passkeys from the database. It does not provision or manage physical security keys. | `fido2-token`, `ykman` |
+| **Hardware FIDO2 token management** | `kpxcd` does not currently provide passkey operations and does not provision physical security keys. | `fido2-token`, `ykman` |
 | **Network access** | `kpxcd` does not phone home, download icons, or check for updates. It opens local files and listens on local sockets only. | — |
 
 ## Scope Boundaries
@@ -47,13 +47,13 @@ These are explicit non-goals. They belong to other tools.
 
 - Reading KDBX 3.1 and KDBX 4.0 databases (all supported ciphers: AES-256, ChaCha20, Twofish)
 - Key derivation: AES-KDF (KDBX 3.1), Argon2d, Argon2id (KDBX 4.0)
-- Composite keys: password, keyfile, YubiKey challenge-response (via PCSC)
+- Composite keys: password and keyfile; YubiKey challenge-response plumbing exists but is not enabled by config validation yet
 - SSH agent protocol (OpenSSH agent protocol, Unix socket)
 - Freedesktop Secret Service D-Bus specification v0.2
-- WebAuthn / FIDO2 software authenticator plumbing (credential creation exists; database storage and assertion signing are incomplete)
+- WebAuthn / FIDO2 software authenticator plumbing is present but disabled until storage and assertion signing are complete
 - systemd user service integration
 - Polkit authorization for sensitive operations
-- Secure memory handling (`runtime/secret`, `mlock`)
+- Secure memory handling (`runtime/secret`, best-effort `mlockall`)
 
 ### Out of Scope
 
@@ -71,9 +71,9 @@ These are explicit non-goals. They belong to other tools.
 ### Threats Addressed
 
 1. **Offline database theft** — The database file on disk is encrypted. `kpxcd` does not weaken KDBX encryption.
-2. **Memory inspection by unprivileged processes** — Master keys and decrypted content are held in `mlock`ed pages and processed inside `runtime/secret.Do()` blocks. Unprivileged processes cannot read `/proc/$pid/mem` (Linux default `kernel.yama.ptrace_scope ≥ 1`).
-3. **Swap leakage** — All pages containing key material are `mlock`ed, preventing write to swap partitions.
-4. **DBus abuse by other session processes** — Sensitive operations (explicit password retrieval, key removal, database lock/unlock) require Polkit authorization.
+2. **Memory inspection by unprivileged processes** — Sensitive operations use `runtime/secret.Do()` where practical. Unprivileged processes cannot normally read `/proc/$pid/mem` (Linux default `kernel.yama.ptrace_scope ≥ 1`).
+3. **Swap leakage** — `kpxcd` calls `mlockall`; if the system memlock limit prevents it, the daemon logs a warning and continues.
+4. **Secret Service access by other session processes** — Secret Service intentionally follows the GNOME Keyring/libsecret model: same-user apps can access exposed, unlocked secrets. Set `require_confirmation = true` to require Polkit confirmation for secret reads.
 
 ### Threats Not Addressed
 
@@ -89,11 +89,11 @@ These are explicit non-goals. They belong to other tools.
 | Source | Security | Use Case |
 |--------|----------|----------|
 | systemd credential (`LoadCredential=`) | Medium — readable by the user's systemd instance | Auto-unlock at login |
-| libsecret / Secret Service | Medium — requires another secret service to already be running | Auto-unlock if gnome-keyring or kwallet is available |
 | Keyfile on disk | Low — plaintext file, but can be on encrypted `/home` | Auto-unlock with encrypted home |
 | Interactive prompt via `kpxcctl unlock` | High — password never touches disk | Manual unlock |
-| YubiKey challenge-response | High — requires physical token | High-security setups |
 | Polkit-authorized DBus call | High — user must authenticate | Remote unlock |
+
+YubiKey challenge-response plumbing exists but is not enabled by current config validation.
 
 ## Relationship to KeePassXC
 
@@ -108,13 +108,14 @@ These are explicit non-goals. They belong to other tools.
 - Replace KeePassXC
 - Share a process space with KeePassXC
 - Need KeePassXC to be installed
-- Write to KeePassXC's config or databases
+- Write to KeePassXC's config
+- Perform general-purpose KeePass database editing beyond Secret Service compatibility write-back
 
 ## Dependencies
 
 ### Runtime
 
-- Linux kernel ≥ 5.4 (for `mlock2` and `runtime/secret` support)
+- Linux kernel ≥ 5.4
 - Go ≥ 1.26 (for `runtime/secret`, built with `GOEXPERIMENT=runtimesecret`)
 - systemd ≥ 245 (for user service and `LoadCredential`)
 - D-Bus session bus
@@ -124,19 +125,18 @@ These are explicit non-goals. They belong to other tools.
 
 | Library | Purpose | CGO? |
 |---------|---------|------|
-| `github.com/tobischo/gokeepasslib` | KDBX read | No |
+| `github.com/tobischo/gokeepasslib` | KDBX read/write | No |
 | `github.com/godbus/dbus/v5` | D-Bus service | No |
 | `golang.org/x/crypto` | SSH agent protocol, Argon2, ChaCha20, Salsa20, SSH key parsing | No |
 | `golang.org/x/sys/unix` | `mlock`, `Munlock` | No |
 | `github.com/fxamacker/cbor` | CBOR for FIDO2 passkeys | No |
 | `github.com/pquerna/otp` | TOTP generation | No |
 | `runtime/secret` (stdlib) | Secure memory erase | No (Go 1.26+) |
-| `github.com/ebfe/scard` | YubiKey PCSC (optional) | Yes (CGO to `libpcsclite`) |
 
 ### Optional
 
-- `libpcsclite` — for YubiKey challenge-response unlock (requires CGO)
-- `libfido2` — for hardware FIDO2 token support (requires CGO; out of scope for v1)
+- Rust toolchain + PAM headers — for `contrib/pam/kpxcd-pam`
+- `libfido2` — for future hardware FIDO2 token support (out of scope for v1)
 
 ## Configuration
 
