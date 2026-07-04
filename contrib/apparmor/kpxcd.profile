@@ -32,8 +32,8 @@
 #      - Allow session bus communication for:
 #        * org.keepassxc.Daemon (own name, serve methods)
 #        * org.freedesktop.secrets (own name, Secret Service interface)
-#        * org.freedesktop.PolicyKit1 (check authorizations)
-#      - Deny system bus access (not needed).
+#      - Allow system bus communication with org.freedesktop.PolicyKit1
+#        for confirmation checks when require_confirmation = true.
 #
 #   5. Process tracing:
 #      - Deny ptrace to prevent memory inspection by same-UID processes.
@@ -41,7 +41,7 @@
 
 #include <tunables/global>
 
-profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
+profile kpxcd /usr/{local/,}bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
   # ===========================================================================
   # Include base rules
   # ===========================================================================
@@ -118,6 +118,7 @@ profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
   # Create Unix domain sockets in the runtime directory.
   owner /run/user/*/kpxcd/ssh.sock     rw,
   owner /run/user/*/kpxcd/control.sock rw,
+  owner /run/user/*/kpxcd/pam.sock     rw,
 
   # Also handle the XDG_RUNTIME_DIR variable path pattern.
   owner @{RUNTIME_DIR}/kpxcd/          rw,
@@ -164,7 +165,7 @@ profile kpxcd @{HOME}/bin/kpxcd flags=(attach_disconnected,mediate_deleted) {
 
   # org.freedesktop.PolicyKit1 — authorization checks.
   dbus (send, receive)
-      bus=session
+      bus=system
       name=org.freedesktop.PolicyKit1
       interface=org.freedesktop.PolicyKit1.Authority
       path=/org/freedesktop/PolicyKit1/Authority

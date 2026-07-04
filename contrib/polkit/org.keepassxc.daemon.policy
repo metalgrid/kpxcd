@@ -27,8 +27,8 @@
   </action>
 
   <action id="org.keepassxc.daemon.get-entry.secret">
-    <description>Retrieve a password from KeePassXC</description>
-    <message>Authentication is required to retrieve a password from KeePassXC</message>
+    <description>Retrieve a Secret Service secret from kpxcd</description>
+    <message>Authentication is required to retrieve a Secret Service secret from kpxcd</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>
@@ -37,8 +37,8 @@
   </action>
 
   <action id="org.keepassxc.daemon.get-totp">
-    <description>Retrieve a TOTP code from KeePassXC</description>
-    <message>Authentication is required to retrieve a TOTP code from KeePassXC</message>
+    <description>Reserved TOTP retrieval action for kpxcd</description>
+    <message>Authentication is required to retrieve a TOTP code from kpxcd</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>
@@ -67,8 +67,8 @@
   </action>
 
   <action id="org.keepassxc.daemon.passkey.create">
-    <description>Create a passkey in KeePassXC</description>
-    <message>Authentication is required to create a passkey in KeePassXC</message>
+    <description>Reserved passkey creation action for kpxcd</description>
+    <message>Authentication is required to create a passkey in kpxcd</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>
@@ -77,8 +77,8 @@
   </action>
 
   <action id="org.keepassxc.daemon.passkey.assert">
-    <description>Authenticate with a passkey from KeePassXC</description>
-    <message>Authentication is required to authenticate with a passkey from KeePassXC</message>
+    <description>Reserved passkey assertion action for kpxcd</description>
+    <message>Authentication is required to authenticate with a passkey from kpxcd</message>
     <defaults>
       <allow_any>yes</allow_any>
       <allow_inactive>yes</allow_inactive>

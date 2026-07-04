@@ -1,7 +1,6 @@
 [Unit]
 Description=KeePassXC Headless Daemon
 Documentation=man:kpxcd(8)
-After=network.target
 Wants=kpxcd.socket
 After=kpxcd.socket
 
@@ -17,10 +16,26 @@ RestartSec=5
 
 # Security hardening
 NoNewPrivileges=true
-ProtectSystem=strict
-PrivateTmp=true
-RestrictNamespaces=true
+UMask=0077
+LimitMEMLOCK=infinity
+IPAddressDeny=any
+CapabilityBoundingSet=
+LockPersonality=true
 MemoryDenyWriteExecute=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=default.target
