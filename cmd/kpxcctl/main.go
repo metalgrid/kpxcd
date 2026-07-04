@@ -75,7 +75,7 @@ Commands:
   unlock [path]               Unlock the default or a specific database
   lock [uuid|name]           Lock a database (or all)
   list                       List unlocked databases
-  get <uuid> <entry-path>    Get entry fields (password, username, TOTP)
+  get <uuid> <entry-path>    Get safe entry fields (title, username, URL)
   ssh list [uuid]            List SSH keys loaded in the agent
   ssh add <uuid> <entry>     Add an SSH key from a database entry to the agent
   ssh remove <fingerprint>   Remove an SSH key from the agent
@@ -85,13 +85,12 @@ Commands:
                              Generate a new SSH key and store it in the database
   ssh import <uuid> <entry> <file> [--passphrase] [--delete-after]
                              Import an existing SSH private key into the database
-  ssh export <fingerprint> <file>
-                             Export a loaded SSH private key to a file
+  ssh export <fingerprint> <file>  (disabled: private-key export is not supported)
   ssh test-sign <fingerprint>
                              Test-sign a challenge with a loaded key
   ssh diag                   Show SSH agent diagnostics
-  passkey create <uuid> <rpID> <username>  Create a new passkey
-  passkey assert <rpID> <credID>            Assert a passkey
+  passkey create <uuid> <rpID> <username>  Disabled: passkey API is not implemented
+  passkey assert <rpID> <credID>            Disabled: passkey API is not implemented
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
   setup-ssh                  Configure SSH_AUTH_SOCK for the current user
   ping                       Check if daemon is alive
@@ -419,7 +418,6 @@ func cmdGet(args []string) {
 	fmt.Printf("Title:    %s\n", getVariantString(entry["title"]))
 	fmt.Printf("Username: %s\n", getVariantString(entry["username"]))
 	fmt.Printf("URL:      %s\n", getVariantString(entry["url"]))
-	fmt.Printf("Notes:    %s\n", getVariantString(entry["notes"]))
 }
 
 // cmdSSH handles SSH key subcommands.
@@ -575,27 +573,8 @@ func cmdSSH(args []string) {
 		fmt.Printf("SSH key imported into entry %q\n", entryPath)
 
 	case "export":
-		if len(subArgs) < 2 {
-			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: missing fingerprint or output file")
-			os.Exit(1)
-		}
-		fingerprint := subArgs[0]
-		outFile := subArgs[1]
-		result := obj.Call(iface+".SshExportKey", 0, fingerprint)
-		if result.Err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: failed to export SSH key: %v\n", result.Err)
-			os.Exit(1)
-		}
-		var keyData []byte
-		if err := result.Store(&keyData); err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(outFile, keyData, 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: failed to write key file: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("SSH key exported to %s\n", outFile)
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: private-key export is disabled")
+		os.Exit(1)
 
 	case "scan":
 		uuid := ""
@@ -716,72 +695,12 @@ func cmdPasskey(args []string) {
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
-	subArgs := args[1:]
-
-	obj, conn, err := connectDBus()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	switch args[0] {
+	case "create", "assert":
+		fmt.Fprintln(os.Stderr, "kpxcctl passkey: disabled; passkey API is not implemented")
 		os.Exit(1)
-	}
-	defer conn.Close()
-
-	switch subcmd {
-	case "create":
-		if len(subArgs) < 3 {
-			fmt.Fprintln(os.Stderr, "kpxcctl passkey create: missing uuid, rpID, or username")
-			os.Exit(1)
-		}
-		uuid := subArgs[0]
-		rpID := subArgs[1]
-		userName := subArgs[2]
-		userDisplayName := userName
-
-		result := obj.Call(iface+".CreatePasskey", 0, uuid, rpID, rpID, userName, userDisplayName)
-		if result.Err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: failed to create passkey: %v\n", result.Err)
-			os.Exit(1)
-		}
-
-		var pkResult map[string]dbus.Variant
-		if err := result.Store(&pkResult); err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Created passkey:\n")
-		fmt.Printf("  Credential ID: %s\n", getVariantString(pkResult["credential_id"]))
-		fmt.Printf("  Entry path:    %s\n", getVariantString(pkResult["entry_path"]))
-
-	case "assert":
-		if len(subArgs) < 2 {
-			fmt.Fprintln(os.Stderr, "kpxcctl passkey assert: missing rpID or credentialID")
-			os.Exit(1)
-		}
-		rpID := subArgs[0]
-		credentialID := subArgs[1]
-		challenge := "placeholder-challenge"
-		origin := "https://" + rpID
-
-		result := obj.Call(iface+".AssertPasskey", 0, rpID, credentialID, challenge, origin)
-		if result.Err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: failed to assert passkey: %v\n", result.Err)
-			os.Exit(1)
-		}
-
-		var assertResult map[string]dbus.Variant
-		if err := result.Store(&assertResult); err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Assertion result:\n")
-		fmt.Printf("  Authenticator data: %s\n", getVariantString(assertResult["authenticator_data"]))
-		fmt.Printf("  Signature:          %s\n", getVariantString(assertResult["signature"]))
-		fmt.Printf("  User handle:         %s\n", getVariantString(assertResult["user_handle"]))
-
 	default:
-		fmt.Fprintf(os.Stderr, "kpxcctl passkey: unknown subcommand: %s\n", subcmd)
+		fmt.Fprintf(os.Stderr, "kpxcctl passkey: unknown subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
 }

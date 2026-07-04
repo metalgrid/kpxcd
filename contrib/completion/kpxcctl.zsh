@@ -10,7 +10,7 @@ _kpxcctl() {
         'list:List unlocked databases'
         'get:Get entry fields'
         'ssh:Manage SSH keys'
-        'passkey:Manage passkeys'
+        'passkey:Reserved passkey commands'
         'ping:Check if daemon is alive'
         'help:Show help message'
     )
@@ -24,8 +24,8 @@ _kpxcctl() {
 
     local -a _passkey_subcmds
     _passkey_subcmds=(
-        'create:Create a new passkey'
-        'assert:Assert a passkey'
+        'create:Disabled: passkey API is not implemented'
+        'assert:Disabled: passkey API is not implemented'
     )
 
     _arguments -C \

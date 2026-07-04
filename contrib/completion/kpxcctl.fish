@@ -6,7 +6,7 @@ complete -c kpxcctl -n "__fish_use_subcommand" -a lock -d "Lock a database"
 complete -c kpxcctl -n "__fish_use_subcommand" -a list -d "List unlocked databases"
 complete -c kpxcctl -n "__fish_use_subcommand" -a get -d "Get entry fields"
 complete -c kpxcctl -n "__fish_use_subcommand" -a ssh -d "Manage SSH keys"
-complete -c kpxcctl -n "__fish_use_subcommand" -a passkey -d "Manage passkeys"
+complete -c kpxcctl -n "__fish_use_subcommand" -a passkey -d "Reserved passkey commands"
 complete -c kpxcctl -n "__fish_use_subcommand" -a ping -d "Check if daemon is alive"
 complete -c kpxcctl -n "__fish_use_subcommand" -a help -d "Show help message"
 
@@ -34,8 +34,8 @@ complete -c kpxcctl -n "__fish_seen_subcommand_from ssh; and __fish_seen_subcomm
 complete -c kpxcctl -n "__fish_seen_subcommand_from ssh; and __fish_seen_subcommand_from remove" -d "SSH key fingerprint"
 
 # passkey subcommands
-complete -c kpxcctl -n "__fish_seen_subcommand_from passkey; and not __fish_seen_subcommand_from create assert" -a create -d "Create a new passkey"
-complete -c kpxcctl -n "__fish_seen_subcommand_from passkey; and not __fish_seen_subcommand_from create assert" -a assert -d "Assert a passkey"
+complete -c kpxcctl -n "__fish_seen_subcommand_from passkey; and not __fish_seen_subcommand_from create assert" -a create -d "Disabled: passkey API is not implemented"
+complete -c kpxcctl -n "__fish_seen_subcommand_from passkey; and not __fish_seen_subcommand_from create assert" -a assert -d "Disabled: passkey API is not implemented"
 
 # passkey create: expects <uuid> <rpID> <username>
 complete -c kpxcctl -n "__fish_seen_subcommand_from passkey; and __fish_seen_subcommand_from create; and count (commandline -opc) -le 4" -a "(kpxcctl list 2>/dev/null | string match -r '^[0-9a-f-]{36}' || true)" -d "Database UUID"

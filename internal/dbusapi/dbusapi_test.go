@@ -248,3 +248,27 @@ func TestSearchEntriesEmptyPool(t *testing.T) {
 		t.Errorf("expected 0 results, got %d", len(results))
 	}
 }
+
+func TestSearchEntriesRejectsEmptyQuery(t *testing.T) {
+	cfg := config.DefaultConfig()
+	pool := dbpool.NewDatabasePool(nil)
+	handler := NewDaemonDBus(cfg, pool, nil, nil)
+
+	if _, err := handler.SearchEntries("", "", " "); err == nil {
+		t.Fatal("expected empty search query to fail")
+	}
+}
+
+func TestFido2DBusMethodsAreDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	pool := dbpool.NewDatabasePool(nil)
+	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+	handler := NewDaemonDBus(cfg, pool, f2, nil)
+
+	if _, err := handler.CreatePasskey("", "db", "example.com", "Example", "user", "User", []int{-7}); err == nil {
+		t.Fatal("expected CreatePasskey to be disabled")
+	}
+	if _, err := handler.AssertPasskey("", "example.com", "cred", "challenge", "https://example.com"); err == nil {
+		t.Fatal("expected AssertPasskey to be disabled")
+	}
+}

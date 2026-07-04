@@ -4,7 +4,6 @@
 package dbusapi
 
 import (
-	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -256,7 +255,6 @@ func (d *DaemonDBus) GetEntry(sender dbus.Sender, uuid string, entryPath string)
 		"title":    dbus.MakeVariant(entry.GetTitle()),
 		"username": dbus.MakeVariant(entry.GetContent("UserName")),
 		"url":      dbus.MakeVariant(entry.GetContent("URL")),
-		"notes":    dbus.MakeVariant(entry.GetContent("Notes")),
 		"uuid":     dbus.MakeVariant(string(entry.UUID[:])),
 	}
 
@@ -267,6 +265,9 @@ func (d *DaemonDBus) GetEntry(sender dbus.Sender, uuid string, entryPath string)
 func (d *DaemonDBus) SearchEntries(sender dbus.Sender, uuid string, query string) ([]map[string]dbus.Variant, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, dbus.MakeFailedError(fmt.Errorf("search query must not be empty"))
 	}
 	var dbs []*dbpool.OpenDatabase
 	if uuid != "" {
@@ -678,30 +679,13 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	return true, nil
 }
 
-// SshExportKey exports a loaded SSH private key by fingerprint.
-// Returns the PEM-encoded private key bytes.
+// SshExportKey is intentionally disabled: kpxcd exposes SSH keys for signing,
+// not private-key extraction.
 func (d *DaemonDBus) SshExportKey(sender dbus.Sender, fingerprint string) ([]byte, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	if d.sshAgent == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
-	}
-
-	lk := d.sshAgent.Manager().FindIdentityByFingerprint(fingerprint)
-	if lk == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("key not found: %s", fingerprint))
-	}
-	if lk.Key.PrivateKey == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("key has no exportable private material"))
-	}
-
-	pemBlock, err := ssh.MarshalPrivateKey(lk.Key.PrivateKey, lk.Key.Comment)
-	if err != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("failed to marshal key: %w", err))
-	}
-	slog.Info("DBus: SSH private key exported", "fingerprint", fingerprint, "sender", string(sender))
-	return pem.EncodeToMemory(pemBlock), nil
+	return nil, dbus.MakeFailedError(fmt.Errorf("SSH private-key export is disabled"))
 }
 
 // SshTestSign signs test data with a loaded SSH key and returns the signature.
@@ -746,46 +730,20 @@ func (d *DaemonDBus) SshRemoveKey(sender dbus.Sender, fingerprint string) (bool,
 	return true, nil
 }
 
-// CreatePasskey creates a new FIDO2 credential.
+// CreatePasskey is reserved for the future passkey API.
 func (d *DaemonDBus) CreatePasskey(sender dbus.Sender, uuid string, rpID string, rpName string, userName string, userDisplayName string, algorithms []int) (map[string]dbus.Variant, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	if d.fido2 == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2 service is disabled"))
-	}
-
-	entry, err := d.fido2.CreatePasskey(uuid, rpID, rpName, userName, userDisplayName, algorithms)
-	if err != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("failed to create passkey: %w", err))
-	}
-
-	return map[string]dbus.Variant{
-		"credential_id": dbus.MakeVariant(entry.CredentialID),
-		"public_key":    dbus.MakeVariant(fmt.Sprintf("%x", entry.PublicKeyCOSE)),
-		"entry_path":    dbus.MakeVariant(entry.Subject),
-	}, nil
+	return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2/passkey API is not implemented"))
 }
 
-// AssertPasskey performs a FIDO2 assertion.
+// AssertPasskey is reserved for the future passkey API.
 func (d *DaemonDBus) AssertPasskey(sender dbus.Sender, rpID string, credentialID string, challenge string, origin string) (map[string]dbus.Variant, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	if d.fido2 == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2 service is disabled"))
-	}
-
-	result, err := d.fido2.AssertPasskey(rpID, credentialID, challenge, origin)
-	if err != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("failed to assert passkey: %w", err))
-	}
-
-	return map[string]dbus.Variant{
-		"authenticator_data": dbus.MakeVariant(result.AuthenticatorData),
-		"signature":          dbus.MakeVariant(result.Signature),
-		"user_handle":        dbus.MakeVariant(result.UserHandle),
-	}, nil
+	return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2/passkey API is not implemented"))
 }
 
 // findEntryByPath searches for an entry by slash-separated path.
