@@ -21,8 +21,8 @@ If the default config file does not exist, `kpxcd` creates it from its embedded 
 # Lock all databases after this many seconds of inactivity (0 = disabled)
 idle_timeout = 900
 
-# Lock databases when the screensaver activates
-lock_on_screenlock = true
+# Parsed but not wired yet: screen-lock auto-lock is not implemented.
+lock_on_screenlock = false
 
 # Log level: "error", "warn", "info", "debug"
 log_level = "info"
@@ -60,14 +60,14 @@ unlock_credential = "pam"
 # Keyfile path (only used if unlock_credential = "keyfile")
 keyfile = ""
 
-# YubiKey slot for challenge-response (0 = disabled)
+# Reserved for YubiKey challenge-response plumbing; config validation does not enable it yet.
 yubikey_slot = 0
 
 # Which group to expose via Secret Service (empty = all groups)
 secret_service_expose_group = ""
 
-# Whether to auto-add SSH keys from this database to the agent
-ssh_auto_add = true
+# Parsed but not enforced yet; SSH key auto-add is currently controlled globally.
+ssh_auto_add = false
 
 [secret_service]
 # Whether to expose the Secret Service interface on D-Bus
@@ -76,7 +76,8 @@ enabled = true
 # Show a desktop notification when a secret is retrieved
 notify_on_access = true
 
-# Require Polkit confirmation before returning a secret
+# Require Polkit confirmation before returning a secret.
+# When true, missing caller metadata or unavailable Polkit denies access.
 require_confirmation = false
 
 # Confirmation timeout in seconds (0 = no timeout, must click)
@@ -99,8 +100,8 @@ lifetime = 0
 security_key_provider = "internal"
 
 [fido2]
-# Whether to enable the FIDO2 / passkey DBus interface
-enabled = true
+# Reserved. Current D-Bus/CLI passkey methods return not implemented even if true.
+enabled = false
 
 # AAGUID to report in attestation objects
 # (KeePassXC uses a fixed AAGUID for software authenticator)
@@ -113,7 +114,7 @@ aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
 # -8  = EdDSA (Ed25519)
 algorithms = [-7, -8]
 
-# Require user verification for passkey operations
+# Reserved user verification preference for future passkey operations.
 user_verification = "preferred"  # "required" | "preferred" | "discouraged"
 ```
 
@@ -124,9 +125,9 @@ user_verification = "preferred"  # "required" | "preferred" | "discouraged"
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `idle_timeout` | int | `0` | Seconds of inactivity before locking all databases. `0` disables. |
-| `lock_on_screenlock` | bool | `true` | Lock databases when the screensaver activates. |
+| `lock_on_screenlock` | bool | `false` | Parsed but not wired yet; screen-lock auto-lock is not implemented. |
 | `log_level` | string | `"info"` | Minimum log severity. |
-| `log_to_journald` | bool | `false` | Log to systemd journal instead of stderr. |
+| `log_to_journald` | bool | `true` | Log to systemd journal instead of stderr. |
 | `ssh_socket_path` | string | `"kpxcd/ssh.sock"` | Path relative to `$XDG_RUNTIME_DIR` for the SSH agent socket. |
 | `ssh_mode` | string | `"agent"` | `"agent"` = act as SSH agent; `"proxy"`/`"client"` = push keys into existing `$SSH_AUTH_SOCK`. |
 
@@ -156,17 +157,19 @@ This is a TOML array of tables — repeat the `[[database]]` header for each dat
 | `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `pam`, `systemd-credential`, `keyfile`, `prompt`, `none`. |
 | `systemd_credential_name` | string | `""` | Name of the systemd credential holding the password. Only used when `unlock_credential = "systemd-credential"`. |
 | `keyfile` | string | `""` | Path to a keyfile. Used when `unlock_credential = "keyfile"` or as a secondary factor. |
-| `yubikey_slot` | int | `0` | YubiKey challenge-response slot. `0` = disabled, `1` or `2` = slot number. |
+| `yubikey_slot` | int | `0` | Reserved for YubiKey challenge-response; current config validation does not enable `unlock_credential = "yubikey"`. |
 | `secret_service_expose_group` | string | `""` | UUID or name of a group to restrict Secret Service exposure to. Empty = expose all. |
-| `ssh_auto_add` | bool | `true` | Automatically add SSH keys from entries with KeeAgent settings when the database is unlocked. |
+| `ssh_auto_add` | bool | `false` | Parsed but not enforced yet; SSH key auto-add currently ignores this per-database switch. |
 
 ### `[secret_service]`
+
+Secret Service mode follows the GNOME Keyring/libsecret trust model: any same-user application in the unlocked login session can search exposed items and retrieve their secrets unless `require_confirmation = true`. Attributes are lookup metadata, not secret material; do not store secrets in fields you expect to expose as attributes.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Expose `org.freedesktop.secrets` on the session bus. |
 | `notify_on_access` | bool | `true` | Show a desktop notification when a secret is retrieved. |
-| `require_confirmation` | bool | `false` | Require Polkit confirmation before returning any secret. |
+| `require_confirmation` | bool | `false` | Require Polkit confirmation before returning any secret. If true, confirmation failures deny access. |
 | `confirmation_timeout` | int | `30` | Seconds before confirmation dialog times out and is denied. `0` = no timeout. |
 
 ### `[ssh_agent]`
@@ -175,15 +178,15 @@ This is a TOML array of tables — repeat the `[[database]]` header for each dat
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Listen on the SSH agent socket. |
 | `remove_on_lock` | bool | `true` | Remove identities from the agent when their database is locked. |
-| `confirm_on_use` | bool | `false` | Require user confirmation before each SSH authentication. |
-| `lifetime` | int | `0` | Maximum lifetime for added identities in seconds. `0` = unlimited. |
+| `confirm_on_use` | bool | `false` | Parsed/stored but not enforced by kpxcd's built-in SSH agent yet. |
+| `lifetime` | int | `0` | Parsed/stored but not enforced by kpxcd's built-in SSH agent yet. `0` = unlimited. |
 | `security_key_provider` | string | `"internal"` | Security key provider for `sk-ssh-*` key types. `"internal"` = use built-in Go SSH implementation. |
 
 ### `[fido2]`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable FIDO2 / passkey DBus methods. |
+| `enabled` | bool | `false` | Reserved; current D-Bus/CLI passkey methods return not implemented even if true. |
 | `aaguid` | string | KeePassXC AAGUID | AAGUID reported in attestation objects. |
 | `algorithms` | int[] | `[-7, -8]` | COSE algorithm IDs supported by the software authenticator. |
 | `user_verification` | string | `"preferred"` | User verification requirement. |
@@ -242,7 +245,7 @@ which contains the random password for the default KDBX database. The default da
 $XDG_DATA_HOME/kpxcd/default.kdbx
 ```
 
-On first login, if the derived token is received and neither the default DB nor sealed credential exist, `kpxcd` creates all of them with private permissions. If the DB already exists but the sealed credential is missing, `kpxcd` refuses to modify it.
+On first login, if the derived token is received and neither the default DB nor sealed credential exist, `kpxcd` creates all of them with private permissions. This preserves the convenient first-login bootstrap flow, but the first valid token received on the user-owned socket wins; avoid running untrusted same-UID processes before initial bootstrap. If the DB already exists but the sealed credential is missing, `kpxcd` refuses to modify it.
 
 Enable the socket unit:
 

@@ -46,12 +46,12 @@ Unlock a database by path.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | `s` | Absolute path to the `.kdbx` file |
-| `credential_type` | `s` | One of: `"password"`, `"keyfile"`, `"password+keyfile"`, `"yubikey"`, `"systemd-credential"`, `"none"` |
-| `credential` | `v` | Varies by type: password → `s`, keyfile → `s` (path), password+keyfile → `(ss)`, yubikey → `i` (slot), systemd-credential → `s` (name) |
+| `credential_type` | `s` | Currently implemented: `"password"`, `"keyfile"`, `"none"`; config auto-unlock also supports `"systemd-credential"` and `"pam"` paths. |
+| `credential` | `v` | Varies by implemented type: password → `s`, keyfile → `s` (path), none → ignored |
 
 Returns `true` on success. Raises `org.keepassxc.Daemon.Error.Locked` if already unlocked, `org.keepassxc.Daemon.Error.InvalidKey` if the credential is wrong.
 
-**Polkit action:** `org.keepassxc.daemon.unlock`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `LockDatabase(uuid: s) → b`
 
@@ -59,15 +59,15 @@ Lock a database by UUID. Clears decrypted data from memory (inside `runtime/secr
 
 Returns `true` on success. Raises `org.keepassxc.Daemon.Error.NotFound` if the UUID is unknown.
 
-**Polkit action:** `org.keepassxc.daemon.lock`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `LockAll() → b`
 
-Lock all unlocked databases. Called on screen lock, session end, or user request.
+Lock all unlocked databases. Called by user request or idle timeout; screen-lock integration is not wired yet.
 
 Returns `true` on success.
 
-**Polkit action:** `org.keepassxc.daemon.lock`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `GetEntry(uuid: s, entry_path: s) → a{sv}`
 
@@ -77,39 +77,31 @@ Retrieve entry fields by database UUID and entry path (slash-separated group pat
 {
   "title": "s",
   "username": "s",
-  "password": "s",     // Requires Polkit authorization
   "url": "s",
-  "notes": "s",
-  "totp": "s",          // Current TOTP code, if configured
-  "attributes": "a{ss}", // Custom attributes
-  "tags": "as",
-  "uuid": "s",
-  "icon": "i"
+  "uuid": "s"
 }
 ```
 
-**Polkit action:** `org.keepassxc.daemon.get-entry.secret` (for the `password` field)
+**Authorization:** same-UID D-Bus caller check. No password or notes are returned.
 
 #### `SearchEntries(uuid: s, query: s) → aa{sv}`
 
-Search entries in a database by title, URL, or username. Returns a list of partial entry dictionaries (no secret fields unless authorized).
+Search entries in a database by title, URL, or username. Returns a list of partial entry dictionaries with no secret fields.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `uuid` | `s` | Database UUID, or `""` to search all databases |
 | `query` | `s` | Search term (matched against title, URL, username) |
 
-Returns entries without the `password` field. Use `GetEntry` to retrieve secrets.
+Returns entries without secret fields. Empty queries are rejected to avoid accidental full-vault enumeration.
 
 #### `GetTotp(uuid: s, entry_path: s) → s`
 
-Get the current TOTP code for an entry. Returns the 6-8 digit code and remaining seconds validity.
+Reserved for retrieving a TOTP code. The current daemon returns a D-Bus failure.
 
-> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+Reserved future return shape: `"123456:28"` (code `:` seconds remaining).
 
-Returns `"123456:28"` (code `:` seconds remaining).
-
-**Polkit action:** `org.keepassxc.daemon.get-totp`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `GeneratePassword(length: i, charset: s) → s`
 
@@ -122,7 +114,7 @@ Generate a random password.
 | `length` | `i` | Password length (8-128) |
 | `charset` | `s` | Character set: `"ascii"`, `"alphanumeric"`, `"digits"`, `"hex"`, or custom characters |
 
-**Polkit action:** None (no secret access)
+**Authorization:** same-UID D-Bus caller check.
 
 #### `GeneratePassphrase(word_count: i, separator: s) → s`
 
@@ -135,15 +127,13 @@ Generate a diceware passphrase.
 | `word_count` | `i` | Number of words (4-20) |
 | `separator` | `s` | Word separator (default: `"-"`) |
 
-**Polkit action:** None
+**Authorization:** same-UID D-Bus caller check.
 
 ### SSH Agent Methods
 
 #### `SshListKeys(uuid: s) → aa{sv}`
 
-List SSH key entries in a database.
-
-> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+List SSH keys loaded in the built-in agent. If `uuid` is non-empty, only loaded keys from that database are returned.
 
 ```json
 [
@@ -159,9 +149,7 @@ List SSH key entries in a database.
 
 #### `SshAddKey(uuid: s, entry_path: s, lifetime: i, confirm: b) → b`
 
-Add an SSH key from an entry to the agent.
-
-> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+Add an SSH key from an entry to the agent. `lifetime` and `confirm` are accepted for OpenSSH-agent compatibility, but the built-in agent does not enforce them yet.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -170,21 +158,25 @@ Add an SSH key from an entry to the agent.
 | `lifetime` | `i` | Key lifetime in seconds (0 = unlimited) |
 | `confirm` | `b` | Require confirmation before each use |
 
-**Polkit action:** `org.keepassxc.daemon.ssh.add`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `SshRemoveKey(fingerprint: s) → b`
 
 Remove an SSH key from the agent by its fingerprint.
 
-> Implementation status: not yet implemented; current daemon returns a D-Bus failure.
+**Authorization:** same-UID D-Bus caller check.
 
-**Polkit action:** `org.keepassxc.daemon.ssh.remove`
+#### `SshExportKey(fingerprint: s) → ay`
+
+Disabled. The daemon returns a failure; kpxcd exposes loaded SSH keys for signing, not private-key extraction.
+
+**Authorization:** same-UID D-Bus caller check.
 
 ### FIDO2 / Passkey Methods
 
 #### `CreatePasskey(uuid: s, rp_id: s, rp_name: s, user_name: s, user_display_name: s, algorithms: ai) → a{sv}`
 
-Create a new FIDO2 credential (passkey).
+Not implemented. The D-Bus method currently returns a failure.
 
 > Implementation status: experimental; credential material can be created, but database storage is not complete.
 
@@ -197,7 +189,7 @@ Create a new FIDO2 credential (passkey).
 | `user_display_name` | `s` | User display name |
 | `algorithms` | `ai` | Preferred COSE algorithm IDs (e.g., `[-7, -8]`) |
 
-Returns:
+Reserved future response shape:
 
 ```json
 {
@@ -207,11 +199,11 @@ Returns:
 }
 ```
 
-**Polkit action:** `org.keepassxc.daemon.passkey.create`
+**Authorization:** same-UID D-Bus caller check.
 
 #### `AssertPasskey(rp_id: s, credential_id: s, challenge: s, origin: s) → a{sv}`
 
-Assert (authenticate with) a FIDO2 credential.
+Not implemented. The D-Bus method currently returns a failure.
 
 > Implementation status: not yet fully implemented; storage/extraction and signing are incomplete.
 
@@ -222,7 +214,7 @@ Assert (authenticate with) a FIDO2 credential.
 | `challenge` | `s` | Base64url-encoded challenge from the relying party |
 | `origin` | `s` | Origin URL |
 
-Returns:
+Reserved future response shape:
 
 ```json
 {
@@ -232,7 +224,7 @@ Returns:
 }
 ```
 
-**Polkit action:** `org.keepassxc.daemon.passkey.assert`
+**Authorization:** same-UID D-Bus caller check.
 
 ### Signals
 
@@ -242,7 +234,7 @@ Emitted when a database is successfully unlocked.
 
 #### `DatabaseLocked(uuid: s)`
 
-Emitted when a database is locked (manually, by timeout, or by screen lock).
+Emitted when a database is locked manually or by idle timeout. Screen-lock integration is not wired yet.
 
 #### `DaemonReady()`
 
@@ -262,21 +254,21 @@ Emitted when the daemon is shutting down.
 | `org.keepassxc.Daemon.Error.AlreadyUnlocked` | Database is already unlocked |
 | `org.keepassxc.Daemon.Error.IO` | File I/O error |
 | `org.keepassxc.Daemon.Error.Corrupt` | Database file is corrupt |
-| `org.keepassxc.Daemon.Error.PermissionDenied` | Polkit authorization failed |
+| `org.keepassxc.Daemon.Error.PermissionDenied` | Authorization failed |
 
 ## Polkit Actions
 
-`kpxcd` installs a Polkit policy file at `/usr/share/polkit-1/actions/org.keepassxc.daemon.policy`.
+`kpxcd` installs a Polkit policy file at `/usr/share/polkit-1/actions/org.keepassxc.daemon.policy`. The custom `org.keepassxc.Daemon` methods currently use a same-UID D-Bus caller check; the Secret Service `require_confirmation=true` path uses `org.keepassxc.daemon.get-entry.secret`. Other actions are reserved for future custom-D-Bus confirmation.
 
 | Action ID | Default | Description |
 |-----------|---------|-------------|
 | `org.keepassxc.daemon.unlock` | `auth_self` | Unlock a database |
 | `org.keepassxc.daemon.lock` | `yes` | Lock a database |
-| `org.keepassxc.daemon.get-entry.secret` | `auth_self` | Retrieve a password |
-| `org.keepassxc.daemon.get-totp` | `auth_self` | Retrieve a TOTP code |
+| `org.keepassxc.daemon.get-entry.secret` | `auth_self` | Secret Service read confirmation when `require_confirmation = true` |
+| `org.keepassxc.daemon.get-totp` | `auth_self` | Reserved for future TOTP retrieval |
 | `org.keepassxc.daemon.ssh.add` | `yes` | Add an SSH key |
 | `org.keepassxc.daemon.ssh.remove` | `auth_self` | Remove an SSH key |
-| `org.keepassxc.daemon.passkey.create` | `auth_self` | Create a passkey |
-| `org.keepassxc.daemon.passkey.assert` | `yes` | Authenticate with a passkey |
+| `org.keepassxc.daemon.passkey.create` | `auth_self` | Reserved; D-Bus method currently returns not implemented |
+| `org.keepassxc.daemon.passkey.assert` | `yes` | Reserved; D-Bus method currently returns not implemented |
 
 `yes` = allowed by default. `auth_self` = requires the user to authenticate with their own password.

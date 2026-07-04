@@ -52,8 +52,8 @@ Integer. Seconds of inactivity before locking all databases.
 (disabled) is the default.
 .TP
 .B lock_on_screenlock
-Boolean. Lock databases when the screensaver activates.
-Default: \fBtrue\fR.
+Boolean. Parsed but not wired yet; screen-lock auto-lock is not implemented.
+Default: \fBfalse\fR.
 .TP
 .B log_level
 String. Minimum log severity: \fB"error"\fR, \fB"warn"\fR, \fB"info"\fR,
@@ -61,7 +61,7 @@ or \fB"debug"\fR. Default: \fB"info"\fR.
 .TP
 .B log_to_journald
 Boolean. Log to systemd journal instead of stderr. Useful when running as a
-systemd service. Default: \fBfalse\fR.
+systemd service. Default: \fBtrue\fR.
 .TP
 .B ssh_socket_path
 String. Path relative to \fB$XDG_RUNTIME_DIR\fR for the SSH agent socket.
@@ -102,8 +102,8 @@ String. How to obtain the password for auto-unlock. One of:
 .RS
 .TP
 .B "pam"
-Unwrap kpxcd's age-sealed credential using a PAM login token from
-\fI$XDG_RUNTIME_DIR/kpxcd/pam-token\fR.
+Unwrap kpxcd's age-sealed credential using a PAM-derived token sent over
+\fI$XDG_RUNTIME_DIR/kpxcd/pam.sock\fR.
 .TP
 .B "systemd-credential"
 Read from a systemd \fBLoadCredential=\fR file descriptor.
@@ -130,19 +130,21 @@ as a secondary factor alongside a password. Supports KeePass XML keyfiles
 (v1, v2) and raw binary files. Default: empty string.
 .TP
 .B yubikey_slot
-Integer. YubiKey challenge-response slot: \fB0\fR (disabled), \fB1\fR, or
-\fB2\fR. Default: \fB0\fR.
+Integer. Reserved for YubiKey challenge-response; current config validation
+does not enable \fBunlock_credential = "yubikey"\fR. Default: \fB0\fR.
 .TP
 .B secret_service_expose_group
 String. UUID or name of a group to restrict Secret Service exposure to.
 Empty string exposes all groups. Default: empty string.
 .TP
 .B ssh_auto_add
-Boolean. Automatically add SSH keys from entries with KeeAgent settings when
-the database is unlocked. Default: \fBtrue\fR.
+Boolean. Parsed but not enforced yet; SSH key auto-add currently ignores this
+per-database switch. Default: \fBfalse\fR.
 
 .SH "[secret_service]" SECTION
-Controls the \fBorg.freedesktop.secrets\fR D-Bus interface.
+Controls the \fBorg.freedesktop.secrets\fR D-Bus interface. This follows the
+GNOME Keyring/libsecret trust model: same-user applications in an unlocked
+login session can access exposed secrets unless confirmation is enabled.
 
 .TP
 .B enabled
@@ -154,8 +156,8 @@ Boolean. Show a desktop notification when a secret is retrieved.
 Default: \fBtrue\fR.
 .TP
 .B require_confirmation
-Boolean. Require Polkit confirmation before returning any secret.
-Default: \fBfalse\fR.
+Boolean. Require Polkit confirmation before returning any secret. When true,
+missing caller metadata or unavailable Polkit denies access. Default: \fBfalse\fR.
 .TP
 .B confirmation_timeout
 Integer. Seconds before the Polkit confirmation dialog times out and is
@@ -174,12 +176,11 @@ Boolean. Remove identities from the agent when their database is locked.
 Default: \fBtrue\fR.
 .TP
 .B confirm_on_use
-Boolean. Require user confirmation before each SSH authentication
-(\fBssh-add -c\fR behavior). Default: \fBfalse\fR.
+Boolean. Parsed/stored but not enforced by kpxcd's built-in SSH agent yet.
+Default: \fBfalse\fR.
 .TP
 .B lifetime
-Integer. Maximum lifetime for added identities in seconds.
-\fB0\fR means unlimited (key persists until removed or database is locked).
+Integer. Parsed/stored but not enforced by kpxcd's built-in SSH agent yet.
 Default: \fB0\fR.
 .TP
 .B security_key_provider
@@ -188,12 +189,12 @@ String. Security key provider for \fBsk-ssh-*\fR key types.
 Default: \fB"internal"\fR.
 
 .SH "[fido2]" SECTION
-Controls the FIDO2 / passkey D-Bus interface.
+Reserved FIDO2 / passkey settings. The D-Bus methods currently return not implemented.
 
 .TP
 .B enabled
-Boolean. Enable FIDO2 credential creation and assertion methods.
-Default: \fBtrue\fR.
+Boolean. Reserved; even when set true, current D-Bus methods return not implemented.
+Default: \fBfalse\fR.
 .TP
 .B aaguid
 String. AAGUID (Authenticator Attestation GUID) reported in attestation
@@ -219,7 +220,7 @@ EdDSA (Ed25519)
 Default: \fB[\-7, \-8]\fR.
 .TP
 .B user_verification
-String. User verification requirement for passkey operations. One of:
+String. Reserved user verification preference for future passkey operations. One of:
 .RS
 .TP
 .B "required"
@@ -246,7 +247,7 @@ path = "/home/user/Passwords.kdbx"
 .nf
 [daemon]
 idle_timeout = 900
-lock_on_screenlock = true
+lock_on_screenlock = false
 
 [[database]]
 path = "/home/user/Passwords.kdbx"
@@ -254,7 +255,8 @@ name = "Personal"
 auto_unlock = true
 unlock_credential = "systemd-credential"
 systemd_credential_name = "kpxcd-personal"
-ssh_auto_add = true
+# Parsed but not enforced yet.
+ssh_auto_add = false
 
 [secret_service]
 enabled = true
@@ -266,7 +268,7 @@ notify_on_access = true
 .nf
 [daemon]
 idle_timeout = 900
-lock_on_screenlock = true
+lock_on_screenlock = false
 log_level = "info"
 log_to_journald = true
 ssh_socket_path = "kpxcd/ssh.sock"
@@ -278,7 +280,8 @@ name = "Personal"
 auto_unlock = true
 unlock_credential = "systemd-credential"
 systemd_credential_name = "kpxcd-personal"
-ssh_auto_add = true
+# Parsed but not enforced yet.
+ssh_auto_add = false
 
 [secret_service]
 enabled = true
@@ -294,7 +297,7 @@ lifetime = 0
 security_key_provider = "internal"
 
 [fido2]
-enabled = true
+enabled = false
 aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
 algorithms = [-7, -8]
 user_verification = "preferred"

@@ -12,7 +12,7 @@ kpxcd \- KeePassXC headless daemon for Linux
 .B kpxcd
 is a headless user-session daemon that keeps one or more KeePass databases unlocked
 and available through standard Linux interprocess interfaces. It is designed for
-unattended or programmatic access to passwords, SSH keys, and passkeys throughout
+unattended or programmatic access to passwords and SSH keys throughout
 a login session, without requiring the KeePassXC GUI to be running.
 
 Upon startup, \fBkpxcd\fR reads its configuration from
@@ -56,7 +56,7 @@ Print a short help message and exit.
 .RS
 .TP
 .B [daemon]
-Global settings: idle timeout, screen-lock behavior, log level, SSH mode.
+Global settings: idle timeout, parsed-but-unwired screen-lock option, log level, SSH mode.
 .TP
 .B [[database]]
 One or more database entries: path, auto-unlock behavior, credential source,
@@ -67,10 +67,10 @@ Secret Service D-Bus settings: enable/disable, notifications, Polkit
 confirmation.
 .TP
 .B [ssh_agent]
-SSH agent settings: enable/disable, key lifetime, confirm-on-use.
+SSH agent settings: enable/disable and parsed-but-unenforced lifetime/confirm-on-use.
 .TP
 .B [fido2]
-FIDO2 / passkey settings: AAGUID, supported algorithms, user verification.
+Reserved FIDO2 / passkey settings; the API currently returns not implemented.
 .RE
 
 .SH FILES

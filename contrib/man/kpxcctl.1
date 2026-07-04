@@ -12,7 +12,7 @@ kpxcctl \- command-line client for the KeePassXC daemon
 .B kpxcctl
 is the command-line interface to \fBkpxcd\fR(8), the KeePassXC headless daemon.
 It communicates with the daemon over the D-Bus session bus to manage databases,
-retrieve entries, and perform SSH and passkey operations.
+retrieve entries, perform SSH operations, and show reserved passkey commands.
 
 All operations require that \fBkpxcd\fR is running and reachable on the D-Bus
 session bus.
@@ -57,9 +57,8 @@ Retrieve fields for a specific entry.
 .fi
 
 The entry path is a slash-separated path from the root group, e.g.,
-\fI/General/example.com\fR. Displays title, username, password, URL, and
-current TOTP code (if configured). Password retrieval may require Polkit
-authorization.
+\fI/General/example.com\fR. Displays safe metadata fields: title, username,
+and URL. It does not return passwords, notes, or TOTP codes.
 
 .SS ssh
 Manage SSH keys stored in KeePass databases and served by the agent.
@@ -99,8 +98,7 @@ With \fB\-\-delete-after\fR, the source file is removed after successful import.
 
 .TP
 .B kpxcctl ssh export <fingerprint> <file>
-Export a loaded SSH private key to a file with mode 0600.
-Warning: this writes unencrypted private key material to disk.
+Disabled. kpxcd does not export loaded SSH private key material over D-Bus.
 
 .TP
 .B kpxcctl ssh test-sign <fingerprint>
@@ -111,17 +109,15 @@ Sign a test challenge with the specified loaded key to verify it works.
 Print SSH agent diagnostics: mode, socket path, and loaded key summary.
 
 .SS passkey
-Manage FIDO2 / WebAuthn passkeys.
+Reserved FIDO2 / WebAuthn passkey commands. The daemon currently returns not implemented.
 
 .TP
 .B kpxcctl passkey create <uuid> <rpID> <username>
-Create a new passkey credential in the specified database. The relying
-party ID (e.g., \fIgithub.com\fR) and username are required.
+Disabled. The passkey API currently returns not implemented.
 
 .TP
 .B kpxcctl passkey assert <rpID> <credentialID>
-Authenticate with an existing passkey. The relying party ID and the
-base64url-encoded credential ID are required.
+Disabled. The passkey API currently returns not implemented.
 
 .SS ping
 Check whether the daemon is running and responsive.

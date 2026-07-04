@@ -18,8 +18,8 @@
 # Set to 0 to disable auto-lock on idle.
 idle_timeout = 900
 
-# Lock databases when the screen locks.
-lock_on_screenlock = true
+# Parsed but not wired yet: screen-lock auto-lock is not implemented.
+lock_on_screenlock = false
 
 # Log level: "error", "warn", "info", "debug"
 log_level = "info"
@@ -54,7 +54,7 @@ auto_unlock = true
 #   "none"               — database has no password (dangerous)
 unlock_credential = "pam"
 
-# Automatically add SSH keys that have KeeAgent settings.
+# Parsed but not enforced yet; SSH key auto-add is currently controlled globally.
 ssh_auto_add = false
 
 # ──────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ ssh_auto_add = false
 #name = "Work"
 #auto_unlock = false
 #unlock_credential = "prompt"
-#ssh_auto_add = true
+#ssh_auto_add = false
 
 # ──────────────────────────────────────────────────────────────
 # Database: keyfile-only vault (no password)
@@ -83,8 +83,9 @@ ssh_auto_add = false
 # ──────────────────────────────────────────────────────────────
 # Secret Service (org.freedesktop.secrets)
 #
-# When enabled, any application that uses the Secret Service API
-# can retrieve passwords from your KeePass databases. This includes:
+# When enabled, kpxcd follows the GNOME Keyring/libsecret trust model:
+# any same-user application in the unlocked login session can retrieve
+# exposed secrets unless require_confirmation=true. This includes:
 #   - git-credential-libsecret
 #   - Python keyring
 #   - nm-applet (WiFi passwords)
@@ -100,8 +101,8 @@ notify_on_access = true
 
 # Require Polkit confirmation before returning a password.
 # Setting this to true means every password retrieval requires
-# you to click "Authorize" in a dialog. This is more secure but
-# more annoying.  Most users prefer false and rely on the notification.
+# you to click "Authorize" in a dialog. If Polkit is unavailable or
+# caller metadata cannot be resolved, access is denied.
 require_confirmation = false
 
 # Seconds before the confirmation dialog auto-dismisses (0 = no timeout).
@@ -123,14 +124,10 @@ enabled = true
 # This ensures keys don't linger after you lock the vault.
 remove_on_lock = true
 
-# Require confirmation dialog before each SSH authentication.
-# This is like `ssh-add -c` for every key.  Most users prefer
-# false for convenience, but true provides defense-in-depth.
+# Parsed/stored but not enforced by kpxcd's built-in SSH agent yet.
 confirm_on_use = false
 
-# Maximum lifetime for keys added to the agent, in seconds.
-# 0 means keys persist until the database is locked or the daemon stops.
-# Set to 3600 (1 hour) or 28800 (8 hours) for time-limited access.
+# Parsed/stored but not enforced by kpxcd's built-in SSH agent yet.
 lifetime = 0
 
 # Security key provider for sk-ssh-ed25519@openssh.com keys.
@@ -140,11 +137,9 @@ security_key_provider = "internal"
 # ──────────────────────────────────────────────────────────────
 # FIDO2 / Passkeys
 #
-# When enabled, kpxcd can create and assert WebAuthn FIDO2
-# credentials (passkeys) stored in your KeePass entries.
-# Access via:
-#   kpxcctl passkey create <uuid> <rp-id> <username>
-#   kpxcctl passkey assert <rp-id> <credential-id>
+# Experimental: credential creation plumbing exists, but database
+# storage and assertion signing are incomplete.
+# The D-Bus/CLI passkey methods currently return not implemented.
 # ──────────────────────────────────────────────────────────────
 
 [fido2]
@@ -161,7 +156,7 @@ aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
 #   -37 = PS256  (RSA-PSS with SHA-256)       — legacy RSA
 algorithms = [-7, -8]
 
-# User verification requirement for passkey operations.
+# Reserved user verification preference for future passkey operations.
 #   "required"    — always require user verification (PIN, biometric)
 #   "preferred"   — request verification but allow without
 #   "discouraged"  — never request verification
