@@ -147,9 +147,9 @@ func DefaultConfig() *Config {
 	return &Config{
 		Daemon: DaemonConfig{
 			IdleTimeout:      0,
-			LockOnScreenlock: true,
+			LockOnScreenlock: false,
 			LogLevel:         "info",
-			LogToJournald:    false,
+			LogToJournald:    true,
 			SSHSocketPath:    "kpxcd/ssh.sock",
 			SSHMode:          "agent",
 		},

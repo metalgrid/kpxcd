@@ -6,7 +6,7 @@
 
 [daemon]
 idle_timeout = 0
-lock_on_screenlock = true
+lock_on_screenlock = false
 log_level = "info"
 log_to_journald = true
 ssh_socket_path = "kpxcd/ssh.sock"
