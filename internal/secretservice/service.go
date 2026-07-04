@@ -11,6 +11,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
@@ -20,9 +21,10 @@ import (
 // SecretService implements the org.freedesktop.Secret.Service D-Bus API.
 // It exposes unlocked KeePass databases as collections and their entries as items.
 type SecretService struct {
-	conn   *dbus.Conn
-	pool   *dbpool.DatabasePool
-	config config.SecretServiceConfig
+	conn            *dbus.Conn
+	pool            *dbpool.DatabasePool
+	config          config.SecretServiceConfig
+	databaseConfigs []config.DatabaseConfig
 
 	// mu protects collections, items, sessions, and aliases.
 	mu sync.RWMutex
@@ -64,10 +66,36 @@ func (ss *SecretService) UpdateConfig(cfg config.SecretServiceConfig) {
 	ss.config = cfg
 }
 
+// UpdateDatabaseConfigs applies per-database Secret Service exposure settings.
+func (ss *SecretService) UpdateDatabaseConfigs(dbs []config.DatabaseConfig) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.databaseConfigs = append([]config.DatabaseConfig(nil), dbs...)
+}
+
 func (ss *SecretService) configSnapshot() config.SecretServiceConfig {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 	return ss.config
+}
+
+func (ss *SecretService) exposeGroupForDB(db *dbpool.OpenDatabase) string {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	for _, cfg := range ss.databaseConfigs {
+		if cfg.Path == db.Path || cfg.Name == db.Name {
+			return cfg.SecretServiceExposeGroup
+		}
+	}
+	return ""
+}
+
+func (ss *SecretService) collectEntriesForDB(db *dbpool.OpenDatabase) []gokeepasslib.Entry {
+	if db.Db == nil || db.Db.Content == nil || db.Db.Content.Root == nil {
+		return nil
+	}
+	recycleBinUUID := dbpool.RecycleBinUUIDForDB(db.Db)
+	return collectEntriesVisible(db.Db.Content.Root.Groups, recycleBinUUID, ss.exposeGroupForDB(db))
 }
 
 // Export registers the Secret Service on the session bus.
@@ -301,7 +329,7 @@ func (ss *SecretService) removeCollectionLocked(path dbus.ObjectPath) {
 // exportItemsForCollection exports all items for a collection.
 func (ss *SecretService) exportItemsForCollection(coll *Collection) {
 	coll.db.RLock()
-	entries := collectEntriesSafe(coll.db)
+	entries := ss.collectEntriesForDB(coll.db)
 	coll.db.RUnlock()
 
 	for _, entry := range entries {
@@ -341,7 +369,7 @@ func (ss *SecretService) itemsForCollection(collPath dbus.ObjectPath) []*Item {
 		return items
 	}
 
-	entries := collectEntriesSafe(coll.db)
+	entries := ss.collectEntriesForDB(coll.db)
 	for _, entry := range entries {
 		item := newItem(ss.conn, coll, entry)
 		items = append(items, item)
@@ -476,8 +504,7 @@ func (ss *SecretService) SearchItems(attributes map[string]string) ([]dbus.Objec
 			continue
 		}
 
-		recycleBinUUID := dbpool.RecycleBinUUIDForDB(coll.db.Db)
-		entries := collectEntries(coll.db.Db.Content.Root.Groups, recycleBinUUID)
+		entries := ss.collectEntriesForDB(coll.db)
 		for _, entry := range entries {
 			if MatchAttributes(entry, coll.db, attributes) {
 				itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
@@ -663,16 +690,19 @@ func (ss *SecretService) getCollectionByPath(path dbus.ObjectPath) (*Collection,
 // getItemByPath looks up an item by its DBus path.
 func (ss *SecretService) getItemByPath(path dbus.ObjectPath) (*Item, bool) {
 	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-
+	collections := make([]*Collection, 0, len(ss.collections))
 	for _, coll := range ss.collections {
+		collections = append(collections, coll)
+	}
+	ss.mu.RUnlock()
+
+	for _, coll := range collections {
 		coll.db.RLock()
 		if coll.db.Locked || coll.db.Db == nil || coll.db.Db.Content == nil {
 			coll.db.RUnlock()
 			continue
 		}
-		recycleBinUUID := dbpool.RecycleBinUUIDForDB(coll.db.Db)
-		entries := collectEntries(coll.db.Db.Content.Root.Groups, recycleBinUUID)
+		entries := ss.collectEntriesForDB(coll.db)
 		for _, entry := range entries {
 			itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
 			if dbus.ObjectPath(itemPath) == path {

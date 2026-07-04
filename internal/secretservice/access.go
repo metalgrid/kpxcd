@@ -88,14 +88,11 @@ func (ss *SecretService) authorizeSecretAccess(caller CallerInfo, item *Item) er
 		return nil
 	}
 	if caller.PID == 0 {
-		// A missing sender/PID usually means a test or a local dev session where
-		// D-Bus couldn't resolve metadata. Do not poison clients like Chrome by
-		// denying reads solely because the confirmation backend is unavailable.
-		slog.Warn("secretservice: confirmation requested but caller process is unknown; allowing access",
+		slog.Warn("secretservice: confirmation requested but caller process is unknown; denying access",
 			"sender", caller.Sender,
 			"collection", item.coll.db.Name,
 			"item", item.Label())
-		return nil
+		return fmt.Errorf("confirmation required but caller process is unknown")
 	}
 
 	slog.Debug("secretservice: requesting polkit confirmation",
@@ -108,17 +105,13 @@ func (ss *SecretService) authorizeSecretAccess(caller CallerInfo, item *Item) er
 
 	if err := checkPolkitAuthorization(caller, actionGetEntrySecret); err != nil {
 		if errors.Is(err, errPolkitUnavailable) {
-			// Development/builddir runs often don't install the .policy file or run
-			// under systemd. In that case, keep Secret Service clients functional and
-			// rely on notify_on_access + logs for visibility.
-			slog.Warn("secretservice: confirmation unavailable; allowing secret access",
+			slog.Warn("secretservice: confirmation unavailable; denying secret access",
 				"sender", caller.Sender,
 				"pid", caller.PID,
 				"app", caller.AppName(),
 				"collection", item.coll.db.Name,
 				"item", item.Label(),
 				"error", err)
-			return nil
 		}
 		return err
 	}

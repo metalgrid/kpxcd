@@ -73,10 +73,13 @@ func (i *Item) refresh() *gokeepasslib.Entry {
 	if i.db.Db == nil || i.db.Db.Content == nil || i.db.Db.Content.Root == nil {
 		return nil
 	}
-	if entry := findEntryPtrByUUID(i.db.Db.Content.Root.Groups, i.entryUUID); entry != nil {
-		i.entry = *entry
-		return &i.entry
+	for _, entry := range i.coll.svc.collectEntriesForDB(i.db) {
+		if entryUUIDString(entry) == i.entryUUID {
+			i.entry = entry
+			return &i.entry
+		}
 	}
+	i.entry = gokeepasslib.Entry{}
 	return nil
 }
 

@@ -3,6 +3,7 @@
 package secretservice
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -107,8 +108,7 @@ func (c *Collection) SearchItems(attributes map[string]string) ([]dbus.ObjectPat
 	}
 
 	var results []dbus.ObjectPath
-	recycleBinUUID := dbpool.RecycleBinUUIDForDB(c.db.Db)
-	allEntries := collectEntries(c.db.Db.Content.Root.Groups, recycleBinUUID)
+	allEntries := c.svc.collectEntriesForDB(c.db)
 	for _, entry := range allEntries {
 		if MatchAttributes(entry, c.db, strAttrs) {
 			itemPath := CollectionPrefix + sanitizeCollectionName(c.db.Name) + "/" + entryUUIDString(entry)
@@ -146,8 +146,10 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 	var replaced bool
 
 	if err := c.db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		exposeGroup := c.svc.exposeGroupForDB(c.db)
+		recycleBinUUID := dbpool.RecycleBinUUIDForDB(db)
 		if replace && len(attrs) > 0 {
-			if entry := findMatchingEntryPtr(db.Content.Root.Groups, c.db.Name, c.db.UUID, attrs); entry != nil {
+			if entry := findMatchingVisibleEntryPtr(db.Content.Root.Groups, c.db.Name, c.db.UUID, attrs, recycleBinUUID, exposeGroup, false); entry != nil {
 				appendHistory(entry, db)
 				applyEntryFields(entry, label, attrs, string(plaintext))
 				updateModificationTime(entry)
@@ -159,7 +161,15 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 		}
 
 		entry := newSecretServiceEntry(label, attrs, plaintext)
-		group := findOrCreateSecretServiceGroup(db)
+		var group *gokeepasslib.Group
+		if exposeGroup != "" {
+			group = findGroupPtrByExposure(db.Content.Root.Groups, recycleBinUUID, exposeGroup)
+			if group == nil {
+				return fmt.Errorf("secretservice: exposed group %q not found", exposeGroup)
+			}
+		} else {
+			group = findOrCreateSecretServiceGroup(db)
+		}
 		group.Entries = append(group.Entries, entry)
 		created = entry
 		itemPath = itemPathForEntry(c.db.Name, entry)
@@ -194,8 +204,7 @@ func (c *Collection) items() []*Item {
 		return nil
 	}
 
-	recycleBinUUID := dbpool.RecycleBinUUIDForDB(c.db.Db)
-	entries := collectEntries(c.db.Db.Content.Root.Groups, recycleBinUUID)
+	entries := c.svc.collectEntriesForDB(c.db)
 	items := make([]*Item, 0, len(entries))
 	for _, entry := range entries {
 		item := newItem(c.conn, c, entry)

@@ -12,6 +12,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/tobischo/gokeepasslib/v3"
 
+	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/security"
 )
@@ -98,6 +99,34 @@ func TestCreateItemPersistsToKDBX(t *testing.T) {
 	}
 	if got := found.GetContent("application"); got != "chrome" {
 		t.Fatalf("application attr = %q, want chrome", got)
+	}
+}
+
+func TestCreateItemUsesExposedGroup(t *testing.T) {
+	path, coll, odb, sessionPath := setupCollection(t)
+	coll.svc.UpdateDatabaseConfigs([]config.DatabaseConfig{{Path: odb.Path, SecretServiceExposeGroup: "Allowed"}})
+	if err := odb.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		db.Content.Root.Groups[0].Groups = append(db.Content.Root.Groups[0].Groups, gokeepasslib.Group{Name: "Allowed"})
+		return nil
+	}); err != nil {
+		t.Fatalf("add exposed group: %v", err)
+	}
+
+	props := map[string]dbus.Variant{
+		InterfaceItem + ".Label":      dbus.MakeVariant("Scoped Item"),
+		InterfaceItem + ".Attributes": dbus.MakeVariant(map[string]string{"application": "test"}),
+	}
+	if _, _, err := coll.CreateItem(props, DBusSecret{Session: sessionPath, Value: []byte("secret")}, false); err != nil {
+		t.Fatalf("CreateItem failed: %v", err)
+	}
+
+	_, reopened := openWritableTestDB(t, path, "password")
+	groups := reopened.Db.Content.Root.Groups[0].Groups
+	if len(groups) != 1 || groups[0].Name != "Allowed" || len(groups[0].Entries) != 1 {
+		t.Fatalf("item was not written to exposed group: %#v", groups)
+	}
+	if groups[0].Entries[0].GetTitle() != "Scoped Item" {
+		t.Fatalf("title = %q, want Scoped Item", groups[0].Entries[0].GetTitle())
 	}
 }
 

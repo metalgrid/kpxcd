@@ -10,6 +10,7 @@ import (
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 
+	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
@@ -192,9 +193,8 @@ func TestEntryAttributes(t *testing.T) {
 	if attrs[AttrURL] != "https://bank.example.com" {
 		t.Errorf("URL = %q, want %q", attrs[AttrURL], "https://bank.example.com")
 	}
-	// Notes should be first line only.
-	if attrs[AttrNotes] != "Primary savings account" {
-		t.Errorf("notes = %q, want %q", attrs[AttrNotes], "Primary savings account")
+	if _, ok := attrs[AttrNotes]; ok {
+		t.Error("notes must not be exposed as Secret Service attributes")
 	}
 	if attrs[AttrDBNamePrefix] != "Personal.kdbx" {
 		t.Errorf("dbname = %q, want %q", attrs[AttrDBNamePrefix], "Personal.kdbx")
@@ -202,8 +202,8 @@ func TestEntryAttributes(t *testing.T) {
 	if attrs[AttrDBUUIDPrefix] != "test-db-uuid-1234" {
 		t.Errorf("dbuuid = %q, want %q", attrs[AttrDBUUIDPrefix], "test-db-uuid-1234")
 	}
-	if attrs["CustomField"] != "custom_value" {
-		t.Errorf("custom field = %q, want %q", attrs["CustomField"], "custom_value")
+	if _, ok := attrs["CustomField"]; ok {
+		t.Error("custom KeePass fields must not be exposed as Secret Service attributes")
 	}
 }
 
@@ -356,6 +356,54 @@ func TestCollectEntries(t *testing.T) {
 }
 
 // TestEntryUUIDString verifies UUID string conversion.
+func TestCollectEntriesVisibleFiltersGroup(t *testing.T) {
+	groups := []gokeepasslib.Group{
+		{
+			Name: "Root",
+			Entries: []gokeepasslib.Entry{
+				{Values: []gokeepasslib.ValueData{{Key: "Title", Value: gokeepasslib.V{Content: "Hidden"}}}},
+			},
+			Groups: []gokeepasslib.Group{
+				{
+					Name: "Browser",
+					Entries: []gokeepasslib.Entry{
+						{Values: []gokeepasslib.ValueData{{Key: "Title", Value: gokeepasslib.V{Content: "Visible"}}}},
+					},
+					Groups: []gokeepasslib.Group{
+						{
+							Name: "Nested",
+							Entries: []gokeepasslib.Entry{
+								{Values: []gokeepasslib.ValueData{{Key: "Title", Value: gokeepasslib.V{Content: "Nested visible"}}}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	entries := collectEntriesVisible(groups, gokeepasslib.UUID{}, "Browser")
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 visible entries, got %d", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.GetTitle() == "Hidden" {
+			t.Fatal("entry outside exposed group was returned")
+		}
+	}
+}
+
+func TestAuthorizeSecretAccessFailsClosedWithoutCallerPID(t *testing.T) {
+	svc := NewSecretService(nil)
+	svc.UpdateConfig(config.SecretServiceConfig{RequireConfirmation: true})
+	db := &dbpool.OpenDatabase{Name: "test"}
+	item := &Item{coll: &Collection{db: db}, db: db}
+
+	if err := svc.authorizeSecretAccess(CallerInfo{}, item); err == nil {
+		t.Fatal("expected confirmation to fail closed without caller PID")
+	}
+}
+
 func TestEntryUUIDString(t *testing.T) {
 	uuidBytes := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
 	uuid := gokeepasslib.UUID{}

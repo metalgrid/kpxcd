@@ -3,6 +3,7 @@
 package secretservice
 
 import (
+	"encoding/hex"
 	"strings"
 
 	"github.com/tobischo/gokeepasslib/v3"
@@ -35,35 +36,6 @@ func EntryAttributes(odb *dbpool.OpenDatabase, entry gokeepasslib.Entry) map[str
 	attrs[AttrTitle] = entry.GetTitle()
 	attrs[AttrUserName] = entry.GetContent("UserName")
 	attrs[AttrURL] = entry.GetContent("URL")
-
-	// Notes: first line only (per spec convention).
-	notes := entry.GetContent("Notes")
-	if idx := strings.Index(notes, "\n"); idx >= 0 {
-		notes = notes[:idx]
-	}
-	if notes != "" {
-		attrs[AttrNotes] = notes
-	}
-
-	// Custom attributes — returned with raw key names (no prefix), matching KeePassXC.
-	// This is critical: libsecret/VSCode searches for attributes like "application"
-	// directly, not "custom:application".
-	standardKeys := map[string]bool{
-		"Title":    true,
-		"UserName": true,
-		"URL":      true,
-		"Notes":    true,
-		"Password": true,
-	}
-	for _, v := range entry.Values {
-		if standardKeys[v.Key] {
-			continue
-		}
-		if strings.HasPrefix(v.Key, "KPH:") {
-			continue
-		}
-		attrs[v.Key] = v.Value.Content
-	}
 
 	return attrs
 }
@@ -158,14 +130,30 @@ func SearchEntries(pool *dbpool.DatabasePool, attributes map[string]string) []Se
 // collectEntries recursively collects all entries from a list of groups,
 // excluding the recycle bin.
 func collectEntries(groups []gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID) []gokeepasslib.Entry {
+	return collectEntriesVisible(groups, recycleBinUUID, "")
+}
+
+func collectEntriesVisible(groups []gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID, exposeGroup string) []gokeepasslib.Entry {
 	var entries []gokeepasslib.Entry
+	wanted := strings.TrimSpace(exposeGroup)
+	collectEntriesVisibleInto(groups, recycleBinUUID, wanted, wanted == "", &entries)
+	return entries
+}
+
+func collectEntriesVisibleInto(groups []gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID, exposeGroup string, visible bool, entries *[]gokeepasslib.Entry) {
 	for i := range groups {
 		g := &groups[i]
 		if dbpool.IsRecycled(g, recycleBinUUID) {
 			continue
 		}
-		entries = append(entries, g.Entries...)
-		entries = append(entries, collectEntries(g.Groups, recycleBinUUID)...)
+		groupVisible := visible || strings.EqualFold(g.Name, exposeGroup) || strings.EqualFold(groupUUIDString(g), exposeGroup)
+		if groupVisible {
+			*entries = append(*entries, g.Entries...)
+		}
+		collectEntriesVisibleInto(g.Groups, recycleBinUUID, exposeGroup, groupVisible, entries)
 	}
-	return entries
+}
+
+func groupUUIDString(group *gokeepasslib.Group) string {
+	return hex.EncodeToString(group.UUID[:])
 }

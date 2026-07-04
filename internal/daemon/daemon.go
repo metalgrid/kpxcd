@@ -122,12 +122,9 @@ func Run(configPath string, cliLevel slog.Level) error {
 		// Non-fatal: other services can still run.
 	}
 
-	// Create FIDO2 service.
+	// FIDO2/passkey API is intentionally disabled until storage and assertions are complete.
 	if cfg.Fido2.Enabled {
-		app.fido2Svc = fido2.NewFido2Service(&cfg.Fido2, app.pool)
-		slog.Info("FIDO2 service initialized",
-			"aaguid", cfg.Fido2.AAGUID,
-			"algorithms", cfg.Fido2.Algorithms)
+		slog.Warn("FIDO2/passkey API is not implemented; ignoring fido2.enabled=true")
 	}
 
 	// Register signal handler.
@@ -178,6 +175,7 @@ func (app *DaemonApp) startDBus() error {
 	// Export org.freedesktop.secrets if enabled.
 	if app.cfg.SecretService.Enabled {
 		app.secSvc = secretservice.NewSecretService(app.pool, &app.cfg.SecretService)
+		app.secSvc.UpdateDatabaseConfigs(app.cfg.Databases)
 		if err := app.secSvc.Export(conn); err != nil {
 			slog.Warn("Secret Service not exported (another provider may be running)", "error", err)
 			app.secSvc = nil
@@ -438,6 +436,7 @@ func (app *DaemonApp) reloadConfig() error {
 	app.cfg = cfg
 	if app.secSvc != nil {
 		app.secSvc.UpdateConfig(cfg.SecretService)
+		app.secSvc.UpdateDatabaseConfigs(cfg.Databases)
 	}
 
 	// Re-apply log level.

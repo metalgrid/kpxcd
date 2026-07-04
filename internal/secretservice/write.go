@@ -10,6 +10,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/tobischo/gokeepasslib/v3"
+
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 )
 
@@ -178,15 +180,47 @@ func historySize(h *gokeepasslib.History) int64 {
 }
 
 func findMatchingEntryPtr(groups []gokeepasslib.Group, dbName, dbUUID string, attrs map[string]string) *gokeepasslib.Entry {
+	return findMatchingVisibleEntryPtr(groups, dbName, dbUUID, attrs, gokeepasslib.UUID{}, "", false)
+}
+
+func findMatchingVisibleEntryPtr(groups []gokeepasslib.Group, dbName, dbUUID string, attrs map[string]string, recycleBinUUID gokeepasslib.UUID, exposeGroup string, visible bool) *gokeepasslib.Entry {
 	odb := &mockOpenDatabase{Name: dbName, UUID: dbUUID}
+	wanted := strings.TrimSpace(exposeGroup)
 	for gi := range groups {
-		for ei := range groups[gi].Entries {
-			if matchAttributesForWrite(groups[gi].Entries[ei], odb, attrs) {
-				return &groups[gi].Entries[ei]
+		group := &groups[gi]
+		if dbpool.IsRecycled(group, recycleBinUUID) {
+			continue
+		}
+		groupVisible := visible || wanted == "" || strings.EqualFold(group.Name, wanted) || strings.EqualFold(groupUUIDString(group), wanted)
+		if groupVisible {
+			for ei := range group.Entries {
+				if matchAttributesForWrite(group.Entries[ei], odb, attrs) {
+					return &group.Entries[ei]
+				}
 			}
 		}
-		if entry := findMatchingEntryPtr(groups[gi].Groups, dbName, dbUUID, attrs); entry != nil {
+		if entry := findMatchingVisibleEntryPtr(group.Groups, dbName, dbUUID, attrs, recycleBinUUID, wanted, groupVisible); entry != nil {
 			return entry
+		}
+	}
+	return nil
+}
+
+func findGroupPtrByExposure(groups []gokeepasslib.Group, recycleBinUUID gokeepasslib.UUID, exposeGroup string) *gokeepasslib.Group {
+	wanted := strings.TrimSpace(exposeGroup)
+	if wanted == "" {
+		return nil
+	}
+	for gi := range groups {
+		group := &groups[gi]
+		if dbpool.IsRecycled(group, recycleBinUUID) {
+			continue
+		}
+		if strings.EqualFold(group.Name, wanted) || strings.EqualFold(groupUUIDString(group), wanted) {
+			return group
+		}
+		if found := findGroupPtrByExposure(group.Groups, recycleBinUUID, wanted); found != nil {
+			return found
 		}
 	}
 	return nil
