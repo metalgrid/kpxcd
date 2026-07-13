@@ -74,8 +74,8 @@ dbus-run-session -- bash -c '
   fi
 
   echo "==> Testing store + lookup..."
-  printf "mysecret" | secret-tool store --label="Test Item" application myapp key myvalue
-  RESULT=$(secret-tool lookup application myapp key myvalue)
+  printf "mysecret" | secret-tool store --label="Test Item" application myapp username test-user key myvalue
+  RESULT=$(secret-tool lookup application myapp username test-user key myvalue)
   if [ "$RESULT" != "mysecret" ]; then
     echo "FAIL: lookup returned ${RESULT:-<empty>}"
     exit 1
@@ -83,8 +83,8 @@ dbus-run-session -- bash -c '
   echo "OK: create + lookup"
 
   echo "==> Testing update (replace)..."
-  printf "newsecret" | secret-tool store --label="Test Item Updated" application myapp key myvalue
-  RESULT=$(secret-tool lookup application myapp key myvalue)
+  printf "newsecret" | secret-tool store --label="Test Item Updated" application myapp username test-user key myvalue
+  RESULT=$(secret-tool lookup application myapp username test-user key myvalue)
   if [ "$RESULT" != "newsecret" ]; then
     echo "FAIL: update returned ${RESULT:-<empty>}"
     exit 1
@@ -92,8 +92,8 @@ dbus-run-session -- bash -c '
   echo "OK: update"
 
   echo "==> Testing delete..."
-  secret-tool clear application myapp key myvalue
-  RESULT=$(secret-tool lookup application myapp key myvalue || true)
+  secret-tool clear application myapp username test-user key myvalue
+  RESULT=$(secret-tool lookup application myapp username test-user key myvalue || true)
   if [ -n "$RESULT" ]; then
     echo "FAIL: clear did not remove secret (${RESULT})"
     exit 1
