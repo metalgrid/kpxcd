@@ -102,6 +102,55 @@ func TestCreateItemPersistsToKDBX(t *testing.T) {
 	}
 }
 
+func TestCreateItemPreservesClientLookupAttributes(t *testing.T) {
+	path, coll, _, sessionPath := setupCollection(t)
+	lookupAttrs := map[string]string{
+		"service":     "tabularis",
+		"username":    "7393e7fe-4d62-453d-8606-6de6fc6c42d0:db",
+		"target":      "default",
+		"application": "rust-keyring",
+	}
+	props := map[string]dbus.Variant{
+		InterfaceItem + ".Label":      dbus.MakeVariant("Tabularis database password"),
+		InterfaceItem + ".Attributes": dbus.MakeVariant(lookupAttrs),
+	}
+	if _, _, err := coll.CreateItem(props, DBusSecret{Session: sessionPath, Value: []byte("secret")}, false); err != nil {
+		t.Fatalf("CreateItem failed: %v", err)
+	}
+
+	pool, reopened := openWritableTestDB(t, path, "password")
+	entries := reopened.RootEntries()
+	var found *gokeepasslib.Entry
+	for i := range entries {
+		if entries[i].GetTitle() == "Tabularis database password" {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("created item not found after reopen")
+	}
+	if got := found.GetContent("username"); got != lookupAttrs["username"] {
+		t.Fatalf("lowercase username = %q, want %q", got, lookupAttrs["username"])
+	}
+	if got := found.GetContent("UserName"); got != "" {
+		t.Fatalf("client username was rewritten into UserName: %q", got)
+	}
+
+	reopenedCollection := newCollection(nil, NewSecretService(pool), reopened)
+	matches, dbusErr := reopenedCollection.SearchItems(map[string]string{
+		"service":  lookupAttrs["service"],
+		"username": lookupAttrs["username"],
+		"target":   lookupAttrs["target"],
+	})
+	if dbusErr != nil {
+		t.Fatalf("SearchItems failed: %v", dbusErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("SearchItems returned %d matches after reopen, want 1", len(matches))
+	}
+}
+
 func TestCreateItemUsesExposedGroup(t *testing.T) {
 	path, coll, odb, sessionPath := setupCollection(t)
 	coll.svc.UpdateDatabaseConfigs([]config.DatabaseConfig{{Path: odb.Path, SecretServiceExposeGroup: "Allowed"}})

@@ -256,19 +256,25 @@ func entryHasAttribute(entry gokeepasslib.Entry, key, value string) bool {
 	switch key {
 	case AttrTitle:
 		return strings.EqualFold(entry.GetTitle(), value)
-	case AttrUserName, "username":
+	case AttrUserName:
 		return strings.EqualFold(entry.GetContent("UserName"), value)
-	case AttrURL, "url":
+	case "username":
+		if matched, found := matchExactEntryAttribute(entry, key, value); found {
+			return matched
+		}
+		return strings.EqualFold(entry.GetContent("UserName"), value)
+	case AttrURL:
+		return strings.EqualFold(entry.GetContent("URL"), value)
+	case "url":
+		if matched, found := matchExactEntryAttribute(entry, key, value); found {
+			return matched
+		}
 		return strings.EqualFold(entry.GetContent("URL"), value)
 	case AttrNotes:
 		return strings.EqualFold(entry.GetContent("Notes"), value)
 	}
-	for _, v := range entry.Values {
-		if v.Key == key && strings.EqualFold(v.Value.Content, value) {
-			return true
-		}
-	}
-	return false
+	matched, _ := matchExactEntryAttribute(entry, key, value)
+	return matched
 }
 
 func findOrCreateSecretServiceGroup(db *gokeepasslib.Database) *gokeepasslib.Group {
@@ -322,9 +328,9 @@ func applyEntryFields(entry *gokeepasslib.Entry, label string, attrs map[string]
 		case AttrTitle:
 			// Label owns KeePass Title; keep Secret Service title searches working.
 			setEntryValue(entry, "Title", label, false)
-		case AttrUserName, "username":
+		case AttrUserName:
 			setEntryValue(entry, "UserName", value, false)
-		case AttrURL, "url":
+		case AttrURL:
 			setEntryValue(entry, "URL", value, false)
 		case AttrNotes:
 			setEntryValue(entry, "Notes", value, false)
@@ -345,9 +351,9 @@ func applyEntryAttributes(entry *gokeepasslib.Entry, attrs map[string]string) {
 			continue
 		case AttrTitle:
 			setEntryValue(entry, "Title", value, false)
-		case AttrUserName, "username":
+		case AttrUserName:
 			setEntryValue(entry, "UserName", value, false)
-		case AttrURL, "url":
+		case AttrURL:
 			setEntryValue(entry, "URL", value, false)
 		case AttrNotes:
 			setEntryValue(entry, "Notes", value, false)
