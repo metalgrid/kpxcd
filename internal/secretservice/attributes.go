@@ -59,9 +59,21 @@ func matchAttribute(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, key, val
 			strings.Contains(strings.ToLower(entry.GetTitle()), strings.ToLower(value))
 	case AttrUserName:
 		return strings.EqualFold(entry.GetContent("UserName"), value)
+	case "username":
+		if matched, found := matchExactEntryAttribute(entry, key, value); found {
+			return matched
+		}
+		// Compatibility for entries written by older kpxcd versions, which
+		// incorrectly canonicalized the client attribute into UserName.
+		return strings.EqualFold(entry.GetContent("UserName"), value)
 	case AttrURL:
 		return strings.EqualFold(entry.GetContent("URL"), value) ||
 			strings.Contains(strings.ToLower(entry.GetContent("URL")), strings.ToLower(value))
+	case "url":
+		if matched, found := matchExactEntryAttribute(entry, key, value); found {
+			return matched
+		}
+		return strings.EqualFold(entry.GetContent("URL"), value)
 	case AttrNotes:
 		return strings.Contains(strings.ToLower(entry.GetContent("Notes")), strings.ToLower(value))
 	case AttrDBNamePrefix:
@@ -80,13 +92,18 @@ func matchAttribute(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, key, val
 			return false
 		}
 		// Unknown attribute: check all custom fields.
-		for _, v := range entry.Values {
-			if v.Key == key && strings.EqualFold(v.Value.Content, value) {
-				return true
-			}
-		}
-		return false
+		matched, _ := matchExactEntryAttribute(entry, key, value)
+		return matched
 	}
+}
+
+func matchExactEntryAttribute(entry gokeepasslib.Entry, key, value string) (matched, found bool) {
+	for _, v := range entry.Values {
+		if v.Key == key {
+			return strings.EqualFold(v.Value.Content, value), true
+		}
+	}
+	return false, false
 }
 
 // SearchResult holds a matching entry with its database context.

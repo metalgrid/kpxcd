@@ -237,8 +237,18 @@ func TestMatchAttributes(t *testing.T) {
 			wantMatch:  true,
 		},
 		{
+			name:       "legacy lowercase username falls back to UserName",
+			attributes: map[string]string{"username": "dev@example.com"},
+			wantMatch:  true,
+		},
+		{
 			name:       "match by URL",
 			attributes: map[string]string{AttrURL: "https://github.com/user/repo"},
+			wantMatch:  true,
+		},
+		{
+			name:       "legacy lowercase url falls back to URL",
+			attributes: map[string]string{"url": "https://github.com/user/repo"},
 			wantMatch:  true,
 		},
 		{
@@ -290,6 +300,23 @@ func TestMatchAttributes(t *testing.T) {
 				t.Errorf("MatchAttributes() = %v, want %v", got, tc.wantMatch)
 			}
 		})
+	}
+}
+
+func TestMatchAttributesPrefersExactClientAttribute(t *testing.T) {
+	entry := gokeepasslib.Entry{
+		Values: []gokeepasslib.ValueData{
+			{Key: "UserName", Value: gokeepasslib.V{Content: "legacy-value"}},
+			{Key: "username", Value: gokeepasslib.V{Content: "exact-value"}},
+		},
+	}
+	odb := newTestOpenDatabase("Test.kdbx", "test-uuid", false)
+
+	if !MatchAttributes(entry, odb, map[string]string{"username": "exact-value"}) {
+		t.Fatal("exact lowercase client attribute did not match")
+	}
+	if MatchAttributes(entry, odb, map[string]string{"username": "legacy-value"}) {
+		t.Fatal("legacy fallback overrode an existing exact client attribute")
 	}
 }
 
