@@ -155,6 +155,12 @@ Default: \fBtrue\fR.
 Boolean. Show a desktop notification when a secret is retrieved.
 Default: \fBtrue\fR.
 .TP
+.B notify_cache_ttl
+Integer. Seconds to suppress repeat access notifications from the same
+app. The first access notifies; further accesses within the window are
+silent and refresh the timer. \fB0\fR notifies on every access.
+Default: \fB300\fR.
+.TP
 .B require_confirmation
 Boolean. Require Polkit confirmation before returning any secret. When true,
 missing caller metadata or unavailable Polkit denies access. Default: \fBfalse\fR.
@@ -286,6 +292,7 @@ ssh_auto_add = false
 [secret_service]
 enabled = true
 notify_on_access = true
+notify_cache_ttl = 300
 require_confirmation = true
 confirmation_timeout = 30
 

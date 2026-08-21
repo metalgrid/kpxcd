@@ -99,6 +99,11 @@ enabled = true
 # This provides visibility into which applications are accessing your vault.
 notify_on_access = true
 
+# Seconds to suppress repeat access notifications from the same app.
+# The first access notifies; further accesses within this window are
+# silent and refresh the timer. 0 = notify on every access.
+notify_cache_ttl = 300
+
 # Require Polkit confirmation before returning a password.
 # Setting this to true means every password retrieval requires
 # you to click "Authorize" in a dialog. If Polkit is unavailable or

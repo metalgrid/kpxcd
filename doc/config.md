@@ -76,6 +76,11 @@ enabled = true
 # Show a desktop notification when a secret is retrieved
 notify_on_access = true
 
+# Seconds to suppress repeat access notifications from the same app.
+# The first access notifies; further accesses within this window are
+# silent and refresh the timer. 0 = notify on every access.
+notify_cache_ttl = 300
+
 # Require Polkit confirmation before returning a secret.
 # When true, missing caller metadata or unavailable Polkit denies access.
 require_confirmation = false
@@ -169,6 +174,7 @@ Secret Service mode follows the GNOME Keyring/libsecret trust model: any same-us
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Expose `org.freedesktop.secrets` on the session bus. |
 | `notify_on_access` | bool | `true` | Show a desktop notification when a secret is retrieved. |
+| `notify_cache_ttl` | int | `300` | Seconds to suppress repeat access notifications from the same app. The first access notifies; further accesses within the window are silent and refresh the timer. `0` = notify on every access. Apps are identified by executable path (or command line / D-Bus sender when unavailable). |
 | `require_confirmation` | bool | `false` | Require Polkit confirmation before returning any secret. If true, confirmation failures deny access. |
 | `confirmation_timeout` | int | `30` | Seconds before confirmation dialog times out and is denied. `0` = no timeout. |
 
