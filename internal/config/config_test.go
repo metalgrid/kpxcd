@@ -97,6 +97,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.SecretService.Enabled {
 		t.Error("default secret_service.enabled should be true")
 	}
+	if cfg.SecretService.NotifyCacheTTL != 300 {
+		t.Errorf("default secret_service.notify_cache_ttl = %d, want 300", cfg.SecretService.NotifyCacheTTL)
+	}
 	if !cfg.SSHAgent.Enabled {
 		t.Error("default ssh_agent.enabled should be true")
 	}

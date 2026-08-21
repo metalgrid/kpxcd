@@ -23,6 +23,7 @@ ssh_auto_add = false
 [secret_service]
 enabled = true
 notify_on_access = true
+notify_cache_ttl = 300
 require_confirmation = false
 confirmation_timeout = 30
 

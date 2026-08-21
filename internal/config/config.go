@@ -47,6 +47,7 @@ type DatabaseConfig struct {
 type SecretServiceConfig struct {
 	Enabled             bool `toml:"enabled"`
 	NotifyOnAccess      bool `toml:"notify_on_access"`
+	NotifyCacheTTL      int  `toml:"notify_cache_ttl"`
 	RequireConfirmation bool `toml:"require_confirmation"`
 	ConfirmationTimeout int  `toml:"confirmation_timeout"`
 }
@@ -156,6 +157,7 @@ func DefaultConfig() *Config {
 		SecretService: SecretServiceConfig{
 			Enabled:             true,
 			NotifyOnAccess:      true,
+			NotifyCacheTTL:      300,
 			RequireConfirmation: false,
 			ConfirmationTimeout: 30,
 		},
