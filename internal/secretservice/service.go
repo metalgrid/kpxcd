@@ -39,6 +39,10 @@ type SecretService struct {
 	// aliases maps alias names to collection paths.
 	aliases map[string]dbus.ObjectPath
 
+	// notifyCache suppresses repeat secret-access notifications per app.
+	// The zero value is ready to use.
+	notifyCache notifyCache
+
 	// nextID for generating unique session/prompt paths.
 	nextID uint64
 }

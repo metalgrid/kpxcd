@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -43,6 +44,24 @@ func (c CallerInfo) AppName() string {
 		return c.Sender
 	}
 	return "unknown process"
+}
+
+// notifyCacheKey returns a stable identity for the calling app, used to key
+// the notification suppression cache. It prefers the executable path, then
+// the command line, then the unique D-Bus sender name.
+func (c CallerInfo) notifyCacheKey() string {
+	if c.Exe != "" {
+		return "exe:" + c.Exe
+	}
+	if c.Command != "" {
+		if fields := strings.Fields(c.Command); len(fields) > 0 {
+			return "cmd:" + fields[0]
+		}
+	}
+	if c.Sender != "" {
+		return "sender:" + c.Sender
+	}
+	return "unknown"
 }
 
 // callerInfo resolves a D-Bus sender to process metadata for logging,
@@ -220,10 +239,20 @@ func (ss *SecretService) logSecretAccess(caller CallerInfo, item *Item, via stri
 	)
 }
 
-// notifySecretAccess sends a desktop notification about a successful secret read.
+// notifySecretAccess sends a desktop notification about a successful secret
+// read. Repeat notifications from the same app are suppressed for the
+// configured notify_cache_ttl; the TTL refreshes on each suppressed access.
 func (ss *SecretService) notifySecretAccess(caller CallerInfo, item *Item) {
 	cfg := ss.configSnapshot()
 	if !cfg.NotifyOnAccess || ss.conn == nil {
+		return
+	}
+
+	if !ss.notifyCache.allow(caller.notifyCacheKey(), time.Duration(cfg.NotifyCacheTTL)*time.Second) {
+		slog.Debug("secretservice: suppressed repeat access notification",
+			"app", caller.AppName(),
+			"item", item.Label(),
+			"ttl_seconds", cfg.NotifyCacheTTL)
 		return
 	}
 
