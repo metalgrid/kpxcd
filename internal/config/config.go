@@ -8,6 +8,7 @@ package config
 import (
 	"embed"
 	"errors"
+	"log/slog"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -250,6 +251,14 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("config: database[%d] (%s): invalid unlock_credential %q, "+
 				"must be one of: systemd-credential, keyfile, pam, prompt, none",
 				i, db.Name, db.UnlockCredential))
+		}
+
+		// An explicit "none" with no keyfile means the database is stored
+		// unencrypted-at-rest relative to its secret; allow it, but say so.
+		if db.UnlockCredential == "none" && db.Keyfile == "" {
+			slog.Warn("config: database has no unlock credential and no keyfile; "+
+				"it will be stored in plain sight of anyone who can read the database file",
+				"database", db.Name)
 		}
 
 		// Validate systemd credential name when required.
