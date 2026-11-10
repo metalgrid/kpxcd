@@ -56,11 +56,11 @@ func (app *DaemonApp) unlockOrBootstrapWithPAM(db config.DatabaseConfig, token [
 	if identityExists && credentialExists {
 		identity, err := pamcred.ReadSealedIdentity(identityPath, token)
 		if err != nil {
-			return fmt.Errorf("unwrap age identity: %w", err)
+			return fmt.Errorf("daemon: unwrap age identity: %w", err)
 		}
 		cred, err = pamcred.ReadSealedCredential(credentialPath, identity)
 		if err != nil {
-			return fmt.Errorf("decrypt database credential: %w", err)
+			return fmt.Errorf("daemon: decrypt database credential: %w", err)
 		}
 		if cred.DBPath != db.Path {
 			slog.Warn("pam credential DB path differs from config", "credential_path", cred.DBPath, "config_path", db.Path)
@@ -68,44 +68,44 @@ func (app *DaemonApp) unlockOrBootstrapWithPAM(db config.DatabaseConfig, token [
 		if !dbExists {
 			ss, err := security.NewSecureString(cred.DBPassword)
 			if err != nil {
-				return fmt.Errorf("wrap database password: %w", err)
+				return fmt.Errorf("daemon: wrap database password: %w", err)
 			}
 			defer ss.Destroy()
 			if err := dbpool.CreateDatabase(db.Path, ss); err != nil {
-				return fmt.Errorf("create missing default database: %w", err)
+				return fmt.Errorf("daemon: create missing default database: %w", err)
 			}
 		}
 		return app.openWithPassword(db, cred.DBPassword)
 	}
 
 	if dbExists {
-		return fmt.Errorf("default database exists but sealed PAM identity/credential is missing; refusing to modify existing database")
+		return fmt.Errorf("daemon: default database exists but sealed PAM identity/credential is missing; refusing to modify existing database")
 	}
 	if identityExists != credentialExists {
-		return fmt.Errorf("incomplete PAM credential state: identity_exists=%t credential_exists=%t", identityExists, credentialExists)
+		return fmt.Errorf("daemon: incomplete PAM credential state: identity_exists=%t credential_exists=%t", identityExists, credentialExists)
 	}
 
 	identity, err := pamcred.GenerateIdentity()
 	if err != nil {
-		return fmt.Errorf("generate age identity: %w", err)
+		return fmt.Errorf("daemon: generate age identity: %w", err)
 	}
 	cred, err = pamcred.NewRandomDBCredential(db.Path)
 	if err != nil {
-		return fmt.Errorf("generate database credential: %w", err)
+		return fmt.Errorf("daemon: generate database credential: %w", err)
 	}
 	ss, err := security.NewSecureString(cred.DBPassword)
 	if err != nil {
-		return fmt.Errorf("wrap database password: %w", err)
+		return fmt.Errorf("daemon: wrap database password: %w", err)
 	}
 	defer ss.Destroy()
 	if err := dbpool.CreateDatabase(db.Path, ss); err != nil {
-		return fmt.Errorf("create default database: %w", err)
+		return fmt.Errorf("daemon: create default database: %w", err)
 	}
 	if err := pamcred.WriteSealedIdentity(identityPath, identity, token); err != nil {
-		return fmt.Errorf("write sealed age identity: %w", err)
+		return fmt.Errorf("daemon: write sealed age identity: %w", err)
 	}
 	if err := pamcred.WriteSealedCredential(credentialPath, cred, identity.Recipient()); err != nil {
-		return fmt.Errorf("write sealed database credential: %w", err)
+		return fmt.Errorf("daemon: write sealed database credential: %w", err)
 	}
 	slog.Info("created default kpxcd database and PAM-sealed credential", "path", db.Path)
 	return app.openWithPassword(db, cred.DBPassword)

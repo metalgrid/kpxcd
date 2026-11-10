@@ -161,14 +161,14 @@ func Run(configPath string, cliLevel slog.Level) error {
 func (app *DaemonApp) startDBus() error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return fmt.Errorf("connect to session bus: %w", err)
+		return fmt.Errorf("daemon: connect to session bus: %w", err)
 	}
 	app.dbusConn = conn
 
 	// Export org.keepassxc.Daemon interface.
 	app.dbusAPI = dbusapi.NewDaemonDBusWithConn(app.cfg, app.pool, app.fido2Svc, app.sshAgent, conn)
 	if err := app.dbusAPI.Export(); err != nil {
-		return fmt.Errorf("export daemon DBus API: %w", err)
+		return fmt.Errorf("daemon: export daemon DBus API: %w", err)
 	}
 	slog.Info("DBus: org.keepassxc.Daemon exported")
 
@@ -220,7 +220,7 @@ func (app *DaemonApp) startSSHAgentServer() error {
 	app.sshAgent = sshagent.NewAgentServer(&app.cfg.SSHAgent, app.pool, socketPath)
 
 	if err := app.sshAgent.Listen(); err != nil {
-		return fmt.Errorf("SSH agent listen: %w", err)
+		return fmt.Errorf("daemon: ssh agent listen: %w", err)
 	}
 
 	// Serve connections in the background.
@@ -240,7 +240,7 @@ func (app *DaemonApp) startSSHAgentServer() error {
 func (app *DaemonApp) startSSHAgentClient() error {
 	client, err := sshagent.NewAgentClient(&app.cfg.SSHAgent)
 	if err != nil {
-		return fmt.Errorf("SSH agent client: %w", err)
+		return fmt.Errorf("daemon: ssh agent client: %w", err)
 	}
 	app.sshClient = client
 	slog.Info("SSH agent client connected", "socket", os.Getenv("SSH_AUTH_SOCK"))
@@ -460,27 +460,27 @@ func resolveCredential(db config.DatabaseConfig) (dbpool.Credential, error) {
 
 	case "keyfile":
 		if db.Keyfile == "" {
-			return dbpool.Credential{}, fmt.Errorf("keyfile path not configured")
+			return dbpool.Credential{}, fmt.Errorf("daemon: keyfile path not configured")
 		}
 		return dbpool.KeyfileCredential(db.Keyfile), nil
 
 	case "yubikey":
 		if db.YubikeySlot <= 0 {
-			return dbpool.Credential{}, fmt.Errorf("yubikey slot not configured")
+			return dbpool.Credential{}, fmt.Errorf("daemon: yubikey slot not configured")
 		}
 		return dbpool.YubiKeyCredential(db.YubikeySlot), nil
 
 	case "systemd-credential":
 		if db.SystemdCredentialName == "" {
-			return dbpool.Credential{}, fmt.Errorf("systemd_credential_name not configured")
+			return dbpool.Credential{}, fmt.Errorf("daemon: systemd_credential_name not configured")
 		}
 		credDir := os.Getenv("CREDENTIALS_DIRECTORY")
 		if credDir == "" {
-			return dbpool.Credential{}, fmt.Errorf("CREDENTIALS_DIRECTORY not set (not running under systemd with LoadCredential=?)")
+			return dbpool.Credential{}, fmt.Errorf("daemon: CREDENTIALS_DIRECTORY not set (not running under systemd with LoadCredential=?)")
 		}
 		data, err := os.ReadFile(filepath.Join(credDir, db.SystemdCredentialName))
 		if err != nil {
-			return dbpool.Credential{}, fmt.Errorf("read systemd credential %s: %w", db.SystemdCredentialName, err)
+			return dbpool.Credential{}, fmt.Errorf("daemon: read systemd credential %s: %w", db.SystemdCredentialName, err)
 		}
 		ss, err := security.NewSecureString(string(data))
 		security.Wipe(data)
@@ -490,13 +490,13 @@ func resolveCredential(db config.DatabaseConfig) (dbpool.Credential, error) {
 		return dbpool.PasswordCredential(ss), nil
 
 	case "pam":
-		return dbpool.Credential{}, fmt.Errorf("pam credential source is handled by daemon auto-unlock")
+		return dbpool.Credential{}, fmt.Errorf("daemon: pam credential source is handled by daemon auto-unlock")
 
 	case "prompt", "":
-		return dbpool.Credential{}, fmt.Errorf("requires manual unlock via kpxcctl")
+		return dbpool.Credential{}, fmt.Errorf("daemon: requires manual unlock via kpxcctl")
 
 	default:
-		return dbpool.Credential{}, fmt.Errorf("unknown credential type: %s", db.UnlockCredential)
+		return dbpool.Credential{}, fmt.Errorf("daemon: unknown credential type: %s", db.UnlockCredential)
 	}
 }
 
@@ -512,6 +512,6 @@ func parseLogLevel(level string) (slog.Level, error) {
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return slog.LevelInfo, fmt.Errorf("unknown log level %q, using info", level)
+		return slog.LevelInfo, fmt.Errorf("daemon: unknown log level %q, using info", level)
 	}
 }

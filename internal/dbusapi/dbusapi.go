@@ -104,20 +104,20 @@ func (d *DaemonDBus) authorize(sender dbus.Sender) error {
 		return nil
 	}
 	if d.conn == nil {
-		return fmt.Errorf("no D-Bus connection available")
+		return fmt.Errorf("dbusapi: no D-Bus connection available")
 	}
 
 	bus := d.conn.Object("org.freedesktop.DBus", dbus.ObjectPath("/org/freedesktop/DBus"))
 	var uid uint32
 	if err := bus.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender)).Store(&uid); err != nil {
-		return fmt.Errorf("failed to resolve caller user: %w", err)
+		return fmt.Errorf("dbusapi: failed to resolve caller user: %w", err)
 	}
 	if uid != uint32(os.Getuid()) {
 		slog.Warn("DBus API access denied: caller UID mismatch",
 			"caller_uid", uid,
 			"daemon_uid", os.Getuid(),
 			"sender", string(sender))
-		return fmt.Errorf("caller UID %d does not match daemon UID %d", uid, os.Getuid())
+		return fmt.Errorf("dbusapi: caller UID %d does not match daemon UID %d", uid, os.Getuid())
 	}
 	return nil
 }
@@ -171,11 +171,11 @@ func (d *DaemonDBus) UnlockDatabase(sender dbus.Sender, path string, credentialT
 	case "password":
 		pw, ok := credential.Value().(string)
 		if !ok {
-			return false, dbus.MakeFailedError(fmt.Errorf("invalid password credential"))
+			return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: invalid password credential"))
 		}
 		ss, err := security.NewSecureString(pw)
 		if err != nil {
-			return false, dbus.MakeFailedError(fmt.Errorf("failed to create secure string: %w", err))
+			return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to create secure string: %w", err))
 		}
 		defer ss.Destroy()
 		cred = dbpool.PasswordCredential(ss)
@@ -183,7 +183,7 @@ func (d *DaemonDBus) UnlockDatabase(sender dbus.Sender, path string, credentialT
 	case "keyfile":
 		keyPath, ok := credential.Value().(string)
 		if !ok {
-			return false, dbus.MakeFailedError(fmt.Errorf("invalid keyfile credential"))
+			return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: invalid keyfile credential"))
 		}
 		cred = dbpool.KeyfileCredential(keyPath)
 
@@ -191,12 +191,12 @@ func (d *DaemonDBus) UnlockDatabase(sender dbus.Sender, path string, credentialT
 		cred = dbpool.Credential{Kind: dbpool.CredentialNone}
 
 	default:
-		return false, dbus.MakeFailedError(fmt.Errorf("unsupported credential type: %s", credentialType))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: unsupported credential type: %s", credentialType))
 	}
 
 	uuid, err := d.pool.Open(path, cred)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to unlock database: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to unlock database: %w", err))
 	}
 
 	slog.Info("DBus: database unlocked", "uuid", uuid, "path", path, "sender", string(sender))
@@ -209,7 +209,7 @@ func (d *DaemonDBus) LockDatabase(sender dbus.Sender, uuid string) (bool, *dbus.
 		return false, dbus.MakeFailedError(err)
 	}
 	if err := d.pool.Lock(uuid); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to lock database: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to lock database: %w", err))
 	}
 	slog.Info("DBus: database locked", "uuid", uuid, "sender", string(sender))
 	return true, nil
@@ -221,7 +221,7 @@ func (d *DaemonDBus) LockAll(sender dbus.Sender) (bool, *dbus.Error) {
 		return false, dbus.MakeFailedError(err)
 	}
 	if err := d.pool.LockAll(); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to lock databases: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to lock databases: %w", err))
 	}
 	slog.Info("DBus: all databases locked", "sender", string(sender))
 	return true, nil
@@ -236,19 +236,19 @@ func (d *DaemonDBus) GetEntry(sender dbus.Sender, uuid string, entryPath string)
 	}
 	db, err := d.pool.Get(uuid)
 	if err != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
 	locked := db.Locked
 	db.RUnlock()
 	if locked {
-		return nil, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
 	// Search for the entry by path.
 	entry := findEntryByPath(db, entryPath)
 	if entry == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("entry not found: %s", entryPath))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
 
 	result := map[string]dbus.Variant{
@@ -267,13 +267,13 @@ func (d *DaemonDBus) SearchEntries(sender dbus.Sender, uuid string, query string
 		return nil, dbus.MakeFailedError(err)
 	}
 	if strings.TrimSpace(query) == "" {
-		return nil, dbus.MakeFailedError(fmt.Errorf("search query must not be empty"))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: search query must not be empty"))
 	}
 	var dbs []*dbpool.OpenDatabase
 	if uuid != "" {
 		db, err := d.pool.Get(uuid)
 		if err != nil {
-			return nil, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+			return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 		}
 		dbs = []*dbpool.OpenDatabase{db}
 	} else {
@@ -312,7 +312,7 @@ func (d *DaemonDBus) GetTotp(sender dbus.Sender, uuid string, entryPath string) 
 		return "", dbus.MakeFailedError(err)
 	}
 	// TODO: Implement TOTP using github.com/pquerna/otp
-	return "", dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	return "", dbus.MakeFailedError(fmt.Errorf("dbusapi: not yet implemented"))
 }
 
 // GeneratePassword generates a random password.
@@ -321,7 +321,7 @@ func (d *DaemonDBus) GeneratePassword(sender dbus.Sender, length int, charset st
 		return "", dbus.MakeFailedError(err)
 	}
 	// TODO: Implement password generation
-	return "", dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	return "", dbus.MakeFailedError(fmt.Errorf("dbusapi: not yet implemented"))
 }
 
 // GeneratePassphrase generates a diceware passphrase.
@@ -330,7 +330,7 @@ func (d *DaemonDBus) GeneratePassphrase(sender dbus.Sender, wordCount int, separ
 		return "", dbus.MakeFailedError(err)
 	}
 	// TODO: Implement passphrase generation
-	return "", dbus.MakeFailedError(fmt.Errorf("not yet implemented"))
+	return "", dbus.MakeFailedError(fmt.Errorf("dbusapi: not yet implemented"))
 }
 
 // SshListKeys lists SSH keys loaded in the agent. If uuid is non-empty,
@@ -340,7 +340,7 @@ func (d *DaemonDBus) SshListKeys(sender dbus.Sender, uuid string) ([]map[string]
 		return nil, dbus.MakeFailedError(err)
 	}
 	if d.sshAgent == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
 	}
 
 	keys := d.sshAgent.Manager().ListIdentities()
@@ -366,38 +366,38 @@ func (d *DaemonDBus) SshAddKey(sender dbus.Sender, uuid string, entryPath string
 		return false, dbus.MakeFailedError(err)
 	}
 	if d.sshAgent == nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
 	}
 
 	db, err := d.pool.Get(uuid)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
 	locked := db.Locked
 	db.RUnlock()
 	if locked {
-		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
 	db.RLock()
 	entry := findEntryByPath(db, entryPath)
 	db.RUnlock()
 	if entry == nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("entry not found: %s", entryPath))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
 
 	key, err := sshagent.ExtractKeyFromEntry(entry, db.Db)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to extract key: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to extract key: %w", err))
 	}
 	if key == nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("entry does not contain an SSH key"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry does not contain an SSH key"))
 	}
 	key.SetDBUUID(db.UUID)
 
 	if err := d.sshAgent.Manager().AddIdentity(key, lifetime, confirm, d.config.SSHAgent.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to add key to agent: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to add key to agent: %w", err))
 	}
 	slog.Info("DBus: SSH key added", "fingerprint", key.Fingerprint(), "db", db.Name, "entry", entryPath)
 	return true, nil
@@ -413,7 +413,7 @@ func (d *DaemonDBus) SshScanDatabase(sender dbus.Sender, uuid string) ([]map[str
 	if uuid != "" {
 		db, err := d.pool.Get(uuid)
 		if err != nil {
-			return nil, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+			return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 		}
 		dbs = []*dbpool.OpenDatabase{db}
 	} else {
@@ -458,18 +458,18 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 	}
 	db, err := d.pool.Get(uuid)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
 	locked := db.Locked
 	db.RUnlock()
 	if locked {
-		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
 	key, pemBytes, err := sshagent.GenerateSSHKeyPair(keyType, int(bits))
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("key generation failed: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: key generation failed: %w", err))
 	}
 	if comment != "" {
 		key.SetComment(comment)
@@ -477,7 +477,7 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 
 	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
 		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
-			return fmt.Errorf("database has no root group")
+			return fmt.Errorf("dbusapi: database has no root group")
 		}
 
 		// Find existing entry by title or create a new one in the root group.
@@ -534,7 +534,7 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 		}
 		settingsXML, err := xml.Marshal(settings)
 		if err != nil {
-			return fmt.Errorf("marshal KeeAgent settings: %w", err)
+			return fmt.Errorf("dbusapi: marshal KeeAgent settings: %w", err)
 		}
 		cdFound := false
 		for i := range entry.CustomData {
@@ -571,7 +571,7 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 
 		return nil
 	}); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to save database: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to save database: %w", err))
 	}
 
 	slog.Info("DBus: SSH key generated", "type", keyType, "db", db.Name, "entry", entryPath, "fingerprint", key.Fingerprint())
@@ -585,23 +585,23 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	}
 	db, err := d.pool.Get(uuid)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("database not found: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
 	locked := db.Locked
 	db.RUnlock()
 	if locked {
-		return false, dbus.MakeFailedError(fmt.Errorf("database is locked"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
 	key, err := sshagent.ParsePrivateKey(keyData, passphrase)
 	if err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to parse key: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to parse key: %w", err))
 	}
 
 	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
 		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
-			return fmt.Errorf("database has no root group")
+			return fmt.Errorf("dbusapi: database has no root group")
 		}
 
 		var entry *gokeepasslib.Entry
@@ -653,7 +653,7 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 		}
 		settingsXML, err := xml.Marshal(settings)
 		if err != nil {
-			return fmt.Errorf("marshal KeeAgent settings: %w", err)
+			return fmt.Errorf("dbusapi: marshal KeeAgent settings: %w", err)
 		}
 		cdFound := false
 		for i := range entry.CustomData {
@@ -672,7 +672,7 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 
 		return nil
 	}); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to save database: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to save database: %w", err))
 	}
 
 	slog.Info("DBus: SSH key imported", "db", db.Name, "entry", entryPath, "fingerprint", key.Fingerprint())
@@ -685,7 +685,7 @@ func (d *DaemonDBus) SshExportKey(sender dbus.Sender, fingerprint string) ([]byt
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("SSH private-key export is disabled"))
+	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh private-key export is disabled"))
 }
 
 // SshTestSign signs test data with a loaded SSH key and returns the signature.
@@ -694,12 +694,12 @@ func (d *DaemonDBus) SshTestSign(sender dbus.Sender, fingerprint string, data []
 		return nil, dbus.MakeFailedError(err)
 	}
 	if d.sshAgent == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
 	}
 
 	lk := d.sshAgent.Manager().FindIdentityByFingerprint(fingerprint)
 	if lk == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("key not found: %s", fingerprint))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: key not found: %s", fingerprint))
 	}
 
 	var sig *ssh.Signature
@@ -708,7 +708,7 @@ func (d *DaemonDBus) SshTestSign(sender dbus.Sender, fingerprint string, data []
 		sig, signErr = lk.Key.Sign(data)
 	})
 	if signErr != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("sign failed: %w", signErr))
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: sign failed: %w", signErr))
 	}
 	slog.Info("DBus: SSH test sign performed", "fingerprint", fingerprint, "sender", string(sender))
 	return ssh.Marshal(sig), nil
@@ -720,11 +720,11 @@ func (d *DaemonDBus) SshRemoveKey(sender dbus.Sender, fingerprint string) (bool,
 		return false, dbus.MakeFailedError(err)
 	}
 	if d.sshAgent == nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("SSH agent is not running in agent mode"))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
 	}
 
 	if err := d.sshAgent.Manager().RemoveIdentity(fingerprint); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("failed to remove key: %w", err))
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to remove key: %w", err))
 	}
 	slog.Info("DBus: SSH key removed", "fingerprint", fingerprint)
 	return true, nil
@@ -735,7 +735,7 @@ func (d *DaemonDBus) CreatePasskey(sender dbus.Sender, uuid string, rpID string,
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2/passkey API is not implemented"))
+	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2/passkey API is not implemented"))
 }
 
 // AssertPasskey is reserved for the future passkey API.
@@ -743,7 +743,7 @@ func (d *DaemonDBus) AssertPasskey(sender dbus.Sender, rpID string, credentialID
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("FIDO2/passkey API is not implemented"))
+	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2/passkey API is not implemented"))
 }
 
 // findEntryByPath searches for an entry by slash-separated path.
