@@ -7,47 +7,38 @@ import (
 	"path/filepath"
 	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
-// TestDaemonPing tests that the daemon can start and respond to a ping.
-// This is a basic smoke test that requires no running DBus or database.
-func TestDaemonPing(t *testing.T) {
-	// This test verifies the build and basic imports work correctly.
-	// A full integration test would require a running DBus session bus.
-	t.Log("kpxcd build verified successfully")
+func TestKpxcd(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Kpxcd Suite")
 }
 
-// TestDatabasePoolOpen tests opening a KeePass database.
-func TestDatabasePoolOpen(t *testing.T) {
-	// Create a test database (this would normally be done with keepassxc-cli).
-	// For now, we just verify the pool can be constructed.
-	pool := dbpool.NewDatabasePool(nil)
-	if pool == nil {
-		t.Fatal("DatabasePool should not be nil")
-	}
+var _ = Describe("kpxcd daemon", func() {
+	It("builds and imports cleanly", func() {
+		// A full integration test would require a running DBus session bus.
+		// This spec pins that the binary's dependency graph assembles.
+		Succeed()
+	})
 
-	dbs := pool.List()
-	if len(dbs) != 0 {
-		t.Fatalf("Expected 0 databases, got %d", len(dbs))
-	}
-}
+	It("constructs an empty database pool", func() {
+		pool := dbpool.NewDatabasePool(nil)
+		Expect(pool).NotTo(BeNil())
+		Expect(pool.List()).To(BeEmpty())
+	})
 
-// TestDatabasePoolClose tests closing the pool.
-func TestDatabasePoolClose(t *testing.T) {
-	pool := dbpool.NewDatabasePool(nil)
-	err := pool.Close()
-	if err != nil {
-		t.Fatalf("Close should not error: %v", err)
-	}
-}
+	It("closes an empty pool without error", func() {
+		Expect(dbpool.NewDatabasePool(nil).Close()).To(Succeed())
+	})
 
-// TestConfigLoad tests loading configuration from a TOML file.
-func TestConfigLoad(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "kpxcd.toml")
+	It("accepts a full config file shape", func() {
+		configPath := filepath.Join(GinkgoT().TempDir(), "kpxcd.toml")
 
-	content := `
+		content := `
 [daemon]
 idle_timeout = 600
 lock_on_screenlock = true
@@ -74,17 +65,8 @@ enabled = true
 aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
 algorithms = [-7, -8]
 `
-	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := config(configPath)
-	_ = cfg
-	_ = err
-	// Config loading is tested by the config package itself.
-}
-
-// Helper stub — the real config loading is in internal/config.
-func config(path string) (interface{}, error) {
-	return nil, nil
-}
+		Expect(os.WriteFile(configPath, []byte(content), 0o600)).To(Succeed())
+		_, _ = os.Stat(configPath)
+		// Config loading semantics are tested by the config package itself.
+	})
+})

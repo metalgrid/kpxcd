@@ -5,114 +5,68 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestExpandPathTilde(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot determine home directory")
-	}
-
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"~/Passwords.kdbx", filepath.Join(home, "Passwords.kdbx")},
-		{"~", home},
-		{"~/Documents/vault.kdbx", filepath.Join(home, "Documents", "vault.kdbx")},
-	}
-
-	for _, tc := range tests {
-		got := expandPath(tc.input)
-		if got != tc.expected {
-			t.Errorf("expandPath(%q) = %q, want %q", tc.input, got, tc.expected)
+var _ = Describe("expandPath", func() {
+	It("expands a leading tilde against the user home directory", func() {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			Skip("cannot determine home directory")
 		}
-	}
-}
+		Expect(expandPath("~/Passwords.kdbx")).To(Equal(filepath.Join(home, "Passwords.kdbx")))
+		Expect(expandPath("~")).To(Equal(home))
+		Expect(expandPath("~/Documents/vault.kdbx")).To(Equal(filepath.Join(home, "Documents", "vault.kdbx")))
+	})
 
-func TestExpandPathEnvVar(t *testing.T) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		t.Skip("HOME not set")
-	}
-
-	tests := []struct {
-		input    string
-		contains string // check that result contains this substring
-	}{
-		{"$HOME/Passwords.kdbx", home},
-		{"${HOME}/Passwords.kdbx", home},
-	}
-
-	for _, tc := range tests {
-		got := expandPath(tc.input)
-		if !contains(got, tc.contains) {
-			t.Errorf("expandPath(%q) = %q, want it to contain %q", tc.input, got, tc.contains)
+	It("expands $HOME and ${HOME} against the home directory", func() {
+		home := os.Getenv("HOME")
+		if home == "" {
+			Skip("HOME not set")
 		}
-	}
-}
+		Expect(expandPath("$HOME/Passwords.kdbx")).To(ContainSubstring(home))
+		Expect(expandPath("${HOME}/Passwords.kdbx")).To(ContainSubstring(home))
+	})
 
-func TestExpandPathXdg(t *testing.T) {
-	// XDG_RUNTIME_DIR should be set on most Linux systems.
-	xdg := os.Getenv("XDG_RUNTIME_DIR")
-	if xdg == "" {
-		t.Skip("XDG_RUNTIME_DIR not set")
-	}
+	It("expands $XDG_RUNTIME_DIR", func() {
+		xdg := os.Getenv("XDG_RUNTIME_DIR")
+		if xdg == "" {
+			Skip("XDG_RUNTIME_DIR not set")
+		}
+		Expect(expandPath("$XDG_RUNTIME_DIR/kpxcd/ssh.sock")).To(ContainSubstring(xdg))
+	})
 
-	got := expandPath("$XDG_RUNTIME_DIR/kpxcd/ssh.sock")
-	if !contains(got, xdg) {
-		t.Errorf("expandPath($XDG_RUNTIME_DIR/...) = %q, want it to contain %q", got, xdg)
-	}
-}
+	It("leaves absolute paths untouched", func() {
+		Expect(expandPath("/home/user/Passwords.kdbx")).To(Equal("/home/user/Passwords.kdbx"))
+	})
 
-func TestExpandPathAbsolute(t *testing.T) {
-	got := expandPath("/home/user/Passwords.kdbx")
-	if got != "/home/user/Passwords.kdbx" {
-		t.Errorf("expandPath(/home/user/...) = %q, want /home/user/Passwords.kdbx", got)
-	}
-}
+	It("resolves relative paths under the XDG config home", func() {
+		expected := filepath.Join(xdgConfigHome(), "kpxcd", "ssh.sock")
+		Expect(expandPath("ssh.sock")).To(Equal(expected))
+	})
 
-func TestExpandPathRelative(t *testing.T) {
-	xdg := xdgConfigHome()
-	got := expandPath("ssh.sock")
-	expected := filepath.Join(xdg, "kpxcd", "ssh.sock")
-	if got != expected {
-		t.Errorf("expandPath(ssh.sock) = %q, want %q", got, expected)
-	}
-}
+	It("keeps an empty path empty", func() {
+		Expect(expandPath("")).To(Equal(""))
+	})
+})
 
-func TestExpandPathEmpty(t *testing.T) {
-	got := expandPath("")
-	if got != "" {
-		t.Errorf("expandPath(\"\") = %q, want \"\"", got)
-	}
-}
+var _ = Describe("DefaultConfig", func() {
+	It("enables the standard integrations and disables the unfinished ones", func() {
+		cfg := DefaultConfig()
+		Expect(cfg.Daemon.SSHMode).To(Equal("agent"))
+		Expect(cfg.SecretService.Enabled).To(BeTrue())
+		Expect(cfg.SecretService.NotifyCacheTTL).To(Equal(300))
+		Expect(cfg.SSHAgent.Enabled).To(BeTrue())
+		Expect(cfg.Fido2.Enabled).To(BeFalse())
+	})
+})
 
-func TestDefaultConfig(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.Daemon.SSHMode != "agent" {
-		t.Errorf("default ssh_mode = %q, want \"agent\"", cfg.Daemon.SSHMode)
-	}
-	if !cfg.SecretService.Enabled {
-		t.Error("default secret_service.enabled should be true")
-	}
-	if cfg.SecretService.NotifyCacheTTL != 300 {
-		t.Errorf("default secret_service.notify_cache_ttl = %d, want 300", cfg.SecretService.NotifyCacheTTL)
-	}
-	if !cfg.SSHAgent.Enabled {
-		t.Error("default ssh_agent.enabled should be true")
-	}
-	if cfg.Fido2.Enabled {
-		t.Error("default fido2.enabled should be false")
-	}
-}
-
-func TestLoadValidConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "kpxcd.toml")
-
-	content := `
+var _ = Describe("Load", func() {
+	It("parses a valid config file and expands paths", func() {
+		cfgPath := filepath.Join(GinkgoT().TempDir(), "kpxcd.toml")
+		content := `
 [daemon]
 idle_timeout = 600
 log_level = "debug"
@@ -133,141 +87,92 @@ enabled = true
 enabled = true
 algorithms = [-7]
 `
-	if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+		Expect(os.WriteFile(cfgPath, []byte(content), 0o600)).To(Succeed())
 
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
+		cfg, err := Load(cfgPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Daemon.IdleTimeout).To(Equal(600))
+		Expect(cfg.Daemon.LogLevel).To(Equal("debug"))
+		Expect(cfg.Databases).To(HaveLen(1))
 
-	if cfg.Daemon.IdleTimeout != 600 {
-		t.Errorf("idle_timeout = %d, want 600", cfg.Daemon.IdleTimeout)
-	}
-	if cfg.Daemon.LogLevel != "debug" {
-		t.Errorf("log_level = %q, want \"debug\"", cfg.Daemon.LogLevel)
-	}
-	if len(cfg.Databases) != 1 {
-		t.Fatalf("expected 1 database, got %d", len(cfg.Databases))
-	}
+		home, _ := os.UserHomeDir()
+		Expect(cfg.Databases[0].Path).To(Equal(filepath.Join(home, "Passwords.kdbx")))
+		Expect(cfg.Databases[0].Name).To(Equal("Personal"))
+	})
 
-	// Verify that ~ was expanded to home directory.
-	home, _ := os.UserHomeDir()
-	expected := filepath.Join(home, "Passwords.kdbx")
-	if cfg.Databases[0].Path != expected {
-		t.Errorf("database path = %q, want %q", cfg.Databases[0].Path, expected)
-	}
-	if cfg.Databases[0].Name != "Personal" {
-		t.Errorf("database name = %q, want \"Personal\"", cfg.Databases[0].Name)
-	}
-}
+	It("refuses a missing file and names it in the error", func() {
+		_, err := Load("/nonexistent/path/kpxcd.toml")
+		Expect(err).To(MatchError(ContainSubstring("/nonexistent/path")))
+	})
 
-func TestLoadMissingFile(t *testing.T) {
-	_, err := Load("/nonexistent/path/kpxcd.toml")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
-	// Should mention the file path.
-	if !contains(err.Error(), "/nonexistent/path") {
-		t.Errorf("error should mention file path: %v", err)
-	}
-}
+	It("creates the embedded default config on first run", func() {
+		dir := GinkgoT().TempDir()
+		GinkgoT().Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+		GinkgoT().Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
 
-func TestLoadInvalidCredential(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "kpxcd.toml")
+		cfg, err := Load("")
+		Expect(err).NotTo(HaveOccurred())
 
-	content := `
+		path := filepath.Join(dir, "config", "kpxcd", "config.toml")
+		info, err := os.Stat(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o600)))
+
+		Expect(cfg.Databases).To(HaveLen(1))
+		Expect(cfg.Databases[0].Default).To(BeTrue())
+		Expect(cfg.Databases[0].UnlockCredential).To(Equal("pam"))
+		Expect(cfg.Databases[0].Path).To(Equal(filepath.Join(dir, "data", "kpxcd", "default.kdbx")))
+	})
+})
+
+var _ = Describe("Validate", func() {
+	It("refuses an unknown unlock_credential", func() {
+		cfgPath := filepath.Join(GinkgoT().TempDir(), "kpxcd.toml")
+		content := `
 [[database]]
 path = "/tmp/test.kdbx"
 unlock_credential = "invalid_value"
 `
-	if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+		Expect(os.WriteFile(cfgPath, []byte(content), 0o600)).To(Succeed())
 
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatalf("Load should not fail on invalid credential: %v", err)
-	}
+		cfg, err := Load(cfgPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Validate()).To(MatchError(ContainSubstring("invalid unlock_credential")))
+	})
 
-	err = cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate should reject invalid unlock_credential")
-	}
-}
-
-func TestValidateSystemdCredentialWithoutName(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "kpxcd.toml")
-
-	content := `
+	It("refuses systemd-credential without a credential name", func() {
+		cfgPath := filepath.Join(GinkgoT().TempDir(), "kpxcd.toml")
+		content := `
 [[database]]
 path = "/tmp/test.kdbx"
 unlock_credential = "systemd-credential"
 `
-	if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+		Expect(os.WriteFile(cfgPath, []byte(content), 0o600)).To(Succeed())
 
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+		cfg, err := Load(cfgPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Validate()).To(MatchError(ContainSubstring("systemd_credential_name is required")))
+	})
 
-	err = cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate should reject systemd-credential without name")
-	}
-}
-
-// helper
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
-}
-
-func containsSubstr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+	It("refuses more than one default database", func() {
+		cfg := DefaultConfig()
+		cfg.Databases = []DatabaseConfig{
+			{Path: "/tmp/a.kdbx", Name: "A", Default: true, UnlockCredential: "prompt"},
+			{Path: "/tmp/b.kdbx", Name: "B", Default: true, UnlockCredential: "prompt"},
 		}
-	}
-	return false
-}
-func TestLoadDefaultCreatesEmbeddedConfig(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+		Expect(cfg.Validate()).To(MatchError(ContainSubstring("at most one database may be marked default")))
+	})
 
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load default failed: %v", err)
-	}
-	path := filepath.Join(dir, "config", "kpxcd", "config.toml")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("default config was not created: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("config mode = %o, want 0600", got)
-	}
-	if len(cfg.Databases) != 1 || !cfg.Databases[0].Default || cfg.Databases[0].UnlockCredential != "pam" {
-		t.Fatalf("unexpected default database config: %#v", cfg.Databases)
-	}
-	expectedDB := filepath.Join(dir, "data", "kpxcd", "default.kdbx")
-	if cfg.Databases[0].Path != expectedDB {
-		t.Fatalf("default db path = %q, want %q", cfg.Databases[0].Path, expectedDB)
-	}
-}
-
-func TestValidateRejectsMultipleDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Databases = []DatabaseConfig{
-		{Path: "/tmp/a.kdbx", Name: "A", Default: true, UnlockCredential: "prompt"},
-		{Path: "/tmp/b.kdbx", Name: "B", Default: true, UnlockCredential: "prompt"},
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected multiple default validation error")
-	}
-}
+	It("collects every problem into one error instead of stopping at the first", func() {
+		cfg := DefaultConfig()
+		cfg.Databases = []DatabaseConfig{
+			{Path: "", Name: "A", UnlockCredential: "nonsense"},
+			{Path: "/tmp/b.kdbx", Name: "B", UnlockCredential: "systemd-credential"},
+		}
+		err := cfg.Validate()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("path is required"))
+		Expect(err.Error()).To(ContainSubstring("invalid unlock_credential"))
+		Expect(err.Error()).To(ContainSubstring("systemd_credential_name is required"))
+	})
+})

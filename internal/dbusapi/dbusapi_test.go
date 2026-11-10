@@ -3,7 +3,8 @@
 package dbusapi
 
 import (
-	"testing"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/metalgrid/kpxcd/internal/config"
@@ -11,264 +12,129 @@ import (
 	"github.com/metalgrid/kpxcd/internal/fido2"
 )
 
-// TestPing verifies that the Ping method returns "pong".
-func TestPing(t *testing.T) {
+// newHandler builds a DaemonDBus over an empty pool, optionally with a
+// FIDO2 service. No bus connection is established.
+func newHandler(withFido2 bool) *DaemonDBus {
 	cfg := config.DefaultConfig()
 	pool := dbpool.NewDatabasePool(nil)
-	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
-	handler := NewDaemonDBus(cfg, pool, f2, nil)
-
-	if handler == nil {
-		t.Fatal("NewDaemonDBus returned nil")
+	var f2 *fido2.Fido2Service
+	if withFido2 {
+		f2 = fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 	}
-
-	result, err := handler.Ping()
-	if err != nil {
-		t.Fatalf("Ping returned error: %v", err)
-	}
-	if result != "pong" {
-		t.Errorf("Ping = %q, want pong", result)
-	}
+	return NewDaemonDBus(cfg, pool, f2, nil)
 }
 
-// TestPingDoesNotRequireDBusConnection verifies that Ping works
-// without an actual DBus connection.
-func TestPingDoesNotRequireDBusConnection(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
+var _ = Describe("DaemonDBus.Ping", func() {
+	It("answers pong", func() {
+		result, err := newHandler(true).Ping()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("pong"))
+	})
 
-	result, err := handler.Ping()
-	if err != nil {
-		t.Fatalf("Ping returned error: %v", err)
-	}
-	if result != "pong" {
-		t.Errorf("Ping = %q, want pong", result)
-	}
-}
+	It("works without a DBus connection", func() {
+		result, err := newHandler(false).Ping()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("pong"))
+	})
+})
 
-// TestListDatabasesOnEmptyPool verifies that ListDatabases returns an
-// empty slice when the pool has no databases.
-func TestListDatabasesOnEmptyPool(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
+var _ = Describe("DaemonDBus.ListDatabases", func() {
+	It("returns an empty list on an empty pool", func() {
+		dbs, err := newHandler(false).ListDatabases("")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dbs).NotTo(BeNil())
+		Expect(dbs).To(BeEmpty())
+	})
 
-	dbs, err := handler.ListDatabases("")
-	if err != nil {
-		t.Fatalf("ListDatabases returned error: %v", err)
-	}
-	if dbs == nil {
-		t.Fatal("ListDatabases returned nil")
-	}
-	if len(dbs) != 0 {
-		t.Errorf("expected 0 databases, got %d", len(dbs))
-	}
-}
+	It("returns values typed as []map[string]dbus.Variant", func() {
+		dbs, err := newHandler(false).ListDatabases("")
+		Expect(err).NotTo(HaveOccurred())
+		_, ok := interface{}(dbs).([]map[string]dbus.Variant)
+		Expect(ok).To(BeTrue())
+	})
+})
 
-// TestListDatabasesWithDatabases verifies that ListDatabases correctly
-// returns information about databases in the pool.
-func TestListDatabasesWithDatabases(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
+var _ = Describe("NewDaemonDBus", func() {
+	It("wires config, pool, and fido2 service", func() {
+		cfg := config.DefaultConfig()
+		pool := dbpool.NewDatabasePool(nil)
+		f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
-	// Manually insert a database into the pool for testing.
-	// We use the internal map directly via the pool's methods.
-	// Since we can't call Open without a real KDBX file, we use the pool's
-	// exported methods. Instead, we just test with an empty pool.
-	// The actual integration is tested in pool_test.go.
+		handler := NewDaemonDBus(cfg, pool, f2, nil)
+		Expect(handler).NotTo(BeNil())
+		Expect(handler.config).To(Equal(cfg))
+		Expect(handler.pool).To(Equal(pool))
+		Expect(handler.fido2).To(Equal(f2))
+		Expect(handler.conn).To(BeNil(), "conn should be nil before Export")
+	})
 
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
+	It("accepts a nil fido2 service", func() {
+		handler := newHandler(false)
+		Expect(handler).NotTo(BeNil())
+		Expect(handler.fido2).To(BeNil())
+	})
+})
 
-	dbs, err := handler.ListDatabases("")
-	if err != nil {
-		t.Fatalf("ListDatabases returned error: %v", err)
-	}
+var _ = Describe("DaemonDBus.Close", func() {
+	It("does not panic without a connection", func() {
+		newHandler(false).Close()
+	})
+})
 
-	// With an empty pool, we should get an empty list.
-	if len(dbs) != 0 {
-		t.Errorf("expected 0 databases, got %d", len(dbs))
-	}
-}
+var _ = Describe("DaemonDBus.LockAll", func() {
+	It("succeeds on an empty pool", func() {
+		ok, err := newHandler(false).LockAll("")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+	})
+})
 
-// TestListDatabasesReturnFields verifies that each database in the
-// ListDatabases result has the expected fields.
-func TestListDatabasesReturnFields(t *testing.T) {
-	cfg := config.DefaultConfig()
-	eventCh := make(chan dbpool.Event, 10)
-	pool := dbpool.NewDatabasePool(eventCh)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
+var _ = Describe("DaemonDBus.LockDatabase", func() {
+	It("refuses a nonexistent database", func() {
+		ok, err := newHandler(false).LockDatabase("", "nonexistent-uuid")
+		Expect(err).To(HaveOccurred())
+		Expect(ok).To(BeFalse())
+	})
+})
 
-	dbs, err := handler.ListDatabases("")
-	if err != nil {
-		t.Fatalf("ListDatabases returned error: %v", err)
-	}
+var _ = Describe("DaemonDBus.GetEntry", func() {
+	It("refuses a nonexistent database", func() {
+		_, err := newHandler(false).GetEntry("", "nonexistent-uuid", "some-entry")
+		Expect(err).To(HaveOccurred())
+	})
+})
 
-	// For empty pool, verify the returned type.
-	if _, ok := interface{}(dbs).([]map[string]dbus.Variant); !ok {
-		t.Errorf("ListDatabases did not return []map[string]dbus.Variant")
-	}
-}
+var _ = Describe("DaemonDBus.authorize", func() {
+	It("permits unit-test-style calls with an empty sender and no connection", func() {
+		Expect(newHandler(false).authorize("")).To(Succeed())
+	})
 
-// TestNewDaemonDBus verifies that NewDaemonDBus creates a properly
-// initialized handler.
-func TestNewDaemonDBus(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+	It("denies a real sender name with no connection to validate it", func() {
+		Expect(newHandler(false).authorize(":1.2")).To(HaveOccurred())
+	})
+})
 
-	handler := NewDaemonDBus(cfg, pool, f2, nil)
-	if handler == nil {
-		t.Fatal("NewDaemonDBus returned nil")
-	}
-	if handler.config != cfg {
-		t.Error("config not set correctly")
-	}
-	if handler.pool != pool {
-		t.Error("pool not set correctly")
-	}
-	if handler.fido2 != f2 {
-		t.Error("fido2 service not set correctly")
-	}
-	// conn should be nil until Export is called.
-	if handler.conn != nil {
-		t.Error("conn should be nil before Export")
-	}
-}
+var _ = Describe("DaemonDBus.SearchEntries", func() {
+	It("returns no results on an empty pool", func() {
+		results, err := newHandler(false).SearchEntries("", "", "test")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
 
-// TestNewDaemonDBusWithNilFido2 verifies that NewDaemonDBus works
-// when the FIDO2 service is nil.
-func TestNewDaemonDBusWithNilFido2(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
+	It("refuses an empty query", func() {
+		_, err := newHandler(false).SearchEntries("", "", " ")
+		Expect(err).To(HaveOccurred())
+	})
+})
 
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-	if handler == nil {
-		t.Fatal("NewDaemonDBus returned nil")
-	}
-	if handler.fido2 != nil {
-		t.Error("fido2 should be nil")
-	}
-}
+var _ = Describe("FIDO2 D-Bus methods", func() {
+	It("stay disabled until storage and signing are complete", func() {
+		handler := newHandler(true)
 
-// TestCloseDoesNotPanic verifies that Close on a handler without
-// an established connection does not panic.
-func TestCloseDoesNotPanic(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
+		_, err := handler.CreatePasskey("", "db", "example.com", "Example", "user", "User", []int{-7})
+		Expect(err).To(HaveOccurred())
 
-	// Should not panic.
-	handler.Close()
-}
-
-// TestLockAllOnEmptyPool verifies that LockAll returns success on an
-// empty pool.
-func TestLockAllOnEmptyPool(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	ok, err := handler.LockAll("")
-	if err != nil {
-		t.Fatalf("LockAll returned error: %v", err)
-	}
-	if !ok {
-		t.Error("LockAll should return true on success")
-	}
-}
-
-// TestLockDatabaseNotFound verifies that LockDatabase returns an error
-// for a nonexistent database.
-func TestLockDatabaseNotFound(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	ok, err := handler.LockDatabase("", "nonexistent-uuid")
-	if err == nil {
-		t.Fatal("expected error for nonexistent database, got nil")
-	}
-	if ok {
-		t.Error("LockDatabase should return false on failure")
-	}
-}
-
-// TestGetEntryDatabaseNotFound verifies that GetEntry returns an error
-// when the database is not found.
-func TestGetEntryDatabaseNotFound(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	_, err := handler.GetEntry("", "nonexistent-uuid", "some-entry")
-	if err == nil {
-		t.Fatal("expected error for nonexistent database, got nil")
-	}
-}
-
-// TestAuthorizeAllowsEmptySenderWithNoConnection verifies that the
-// authorization helper permits unit-test-style calls with no connection
-// and an empty sender.
-func TestAuthorizeAllowsEmptySenderWithNoConnection(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	if err := handler.authorize(""); err != nil {
-		t.Fatalf("authorize with empty sender and no conn should succeed, got %v", err)
-	}
-}
-
-// TestAuthorizeDeniesNonEmptySenderWithNoConnection verifies that a real
-// sender name is rejected when there is no bus connection to validate it.
-func TestAuthorizeDeniesNonEmptySenderWithNoConnection(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	if err := handler.authorize(":1.2"); err == nil {
-		t.Fatal("expected authorize to deny non-empty sender with no conn")
-	}
-}
-
-// TestSearchEntriesEmptyPool verifies that SearchEntries returns
-// an empty/nil result when searching an empty pool.
-func TestSearchEntriesEmptyPool(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	results, err := handler.SearchEntries("", "", "test")
-	if err != nil {
-		t.Fatalf("SearchEntries returned error: %v", err)
-	}
-	// results may be nil or empty slice — both are acceptable for no matches.
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
-	}
-}
-
-func TestSearchEntriesRejectsEmptyQuery(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	handler := NewDaemonDBus(cfg, pool, nil, nil)
-
-	if _, err := handler.SearchEntries("", "", " "); err == nil {
-		t.Fatal("expected empty search query to fail")
-	}
-}
-
-func TestFido2DBusMethodsAreDisabled(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pool := dbpool.NewDatabasePool(nil)
-	f2 := fido2.NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
-	handler := NewDaemonDBus(cfg, pool, f2, nil)
-
-	if _, err := handler.CreatePasskey("", "db", "example.com", "Example", "user", "User", []int{-7}); err == nil {
-		t.Fatal("expected CreatePasskey to be disabled")
-	}
-	if _, err := handler.AssertPasskey("", "example.com", "cred", "challenge", "https://example.com"); err == nil {
-		t.Fatal("expected AssertPasskey to be disabled")
-	}
-}
+		_, err = handler.AssertPasskey("", "example.com", "cred", "challenge", "https://example.com")
+		Expect(err).To(HaveOccurred())
+	})
+})
