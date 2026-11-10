@@ -8,8 +8,8 @@ package config
 import (
 	"embed"
 	"errors"
-	"log/slog"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
