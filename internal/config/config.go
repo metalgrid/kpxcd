@@ -7,6 +7,7 @@ package config
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -209,10 +210,16 @@ func createDefaultConfig(path string) error {
 
 // Validate checks that the configuration is internally consistent
 // and provides helpful error messages for common mistakes.
+// Validate checks the whole configuration and returns every problem it
+// finds, joined into one error. An unusable configuration is an error,
+// never a guess; unknown values refuse to load. Valid defaults are
+// applied for fields the user left empty.
 func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Daemon.LogLevel) == "" {
 		c.Daemon.LogLevel = "info"
 	}
+
+	var errs []error
 
 	// Validate ssh_mode.
 	switch c.Daemon.SSHMode {
@@ -221,7 +228,7 @@ func (c *Config) Validate() error {
 			c.Daemon.SSHMode = "agent"
 		}
 	default:
-		return fmt.Errorf("config: invalid ssh_mode %q, must be \"agent\", \"proxy\", or \"client\"", c.Daemon.SSHMode)
+		errs = append(errs, fmt.Errorf("config: invalid ssh_mode %q, must be \"agent\", \"proxy\", or \"client\"", c.Daemon.SSHMode))
 	}
 
 	// Validate databases.
@@ -231,7 +238,7 @@ func (c *Config) Validate() error {
 			defaultCount++
 		}
 		if db.Path == "" {
-			return fmt.Errorf("config: database[%d]: path is required", i)
+			errs = append(errs, fmt.Errorf("config: database[%d]: path is required", i))
 		}
 
 		switch db.UnlockCredential {
@@ -240,33 +247,27 @@ func (c *Config) Validate() error {
 				c.Databases[i].UnlockCredential = "prompt"
 			}
 		default:
-			return fmt.Errorf("config: database[%d] (%s): invalid unlock_credential %q, "+
+			errs = append(errs, fmt.Errorf("config: database[%d] (%s): invalid unlock_credential %q, "+
 				"must be one of: systemd-credential, keyfile, pam, prompt, none",
-				i, db.Name, db.UnlockCredential)
-		}
-
-		// Warn about suspicious path configurations.
-		if db.UnlockCredential == "none" && db.Keyfile == "" {
-			// User explicitly chose no password with no keyfile — this is insecure.
-			// We allow it but could log a warning.
+				i, db.Name, db.UnlockCredential))
 		}
 
 		// Validate systemd credential name when required.
 		if db.UnlockCredential == "systemd-credential" && db.SystemdCredentialName == "" {
-			return fmt.Errorf("config: database[%d] (%s): systemd_credential_name is required "+
-				"when unlock_credential = \"systemd-credential\"", i, db.Name)
+			errs = append(errs, fmt.Errorf("config: database[%d] (%s): systemd_credential_name is required "+
+				"when unlock_credential = \"systemd-credential\"", i, db.Name))
 		}
 
 		// Validate keyfile path when required.
 		if db.UnlockCredential == "keyfile" && db.Keyfile == "" {
-			return fmt.Errorf("config: database[%d] (%s): keyfile is required "+
-				"when unlock_credential = \"keyfile\"", i, db.Name)
+			errs = append(errs, fmt.Errorf("config: database[%d] (%s): keyfile is required "+
+				"when unlock_credential = \"keyfile\"", i, db.Name))
 		}
 	}
 
 	if defaultCount > 1 {
-		return fmt.Errorf("config: at most one database may be marked default")
+		errs = append(errs, fmt.Errorf("config: at most one database may be marked default"))
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
