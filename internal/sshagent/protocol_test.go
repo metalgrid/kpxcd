@@ -123,7 +123,12 @@ var _ = Describe("decodeMessageType", func() {
 		func(input []byte, wantType byte, wantPayload []byte) {
 			gotType, gotPayload := decodeMessageType(input)
 			Expect(gotType).To(Equal(wantType))
-			Expect(gotPayload).To(Equal(wantPayload))
+			if wantPayload == nil {
+				// A nil expectation means the payload is absent, nil or empty.
+				Expect(gotPayload).To(BeEmpty())
+			} else {
+				Expect(gotPayload).To(Equal(wantPayload))
+			}
 		},
 		Entry("normal message", []byte{0x11, 0x02, 0x03}, byte(0x11), []byte{0x02, 0x03}),
 		Entry("single byte", []byte{0x05}, byte(0x05), nil),
@@ -140,7 +145,7 @@ var _ = Describe("decodeString", func() {
 
 	It("parses an empty string", func() {
 		gotStr, gotRest := decodeString([]byte{0x00, 0x00, 0x00, 0x00})
-		Expect(gotStr).To(Equal([]byte{}))
+		Expect(gotStr).To(BeEmpty())
 		Expect(gotRest).To(BeEmpty())
 	})
 
