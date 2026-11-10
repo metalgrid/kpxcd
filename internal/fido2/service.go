@@ -365,12 +365,11 @@ const (
 )
 
 // storePasskeyInEntry stores passkey data in a KeePass entry's custom data fields.
-// Note: This only stores the data in memory — the database is read-only in kpxcd,
-// so this is for future use when the DB is written back.
+// Not wired yet: kpxcd has an atomic write path (dbpool.OpenDatabase.UpdateAndSave),
+// but passkey persistence is still to be implemented on top of it.
 func storePasskeyInEntry(_ *dbpool.OpenDatabase, _ *PasskeyEntry, _, _, _, _ string) {
-	// kpxcd is read-only — this would need to be done via the GUI or CLI.
-	// We store the passkey data in the PasskeyEntry struct and return it to the caller.
-	slog.Warn("FIDO2: passkey storage in database is not yet implemented (read-only mode)")
+	// Return the passkey data to the caller only; nothing is written to disk yet.
+	slog.Warn("fido2: passkey storage in database is not yet implemented")
 }
 
 // extractPasskeyFromEntry extracts passkey data from KeePass entry custom data.
