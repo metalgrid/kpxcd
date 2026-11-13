@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -252,9 +253,44 @@ func cmdUnlockDefault() {
 		return
 	}
 
-	// No PAM credentials — prompt for database password directly.
-	password := readSecretPrompt("Database password: ")
-	unlockViaDBus(defaultPath, password)
+	// No sealed PAM state — offer to bootstrap it: derive the token from
+	// the login password and hand it to the daemon over the PAM socket,
+	// exactly like the PAM module does at login. The daemon then creates
+	// the missing default database (or unseals + unlocks an existing one).
+	if fileExists(defaultPath) {
+		// An unsealed database file exists; the plain password path below
+		// is the right tool, and bootstrap would refuse to overwrite it.
+		password := readSecretPrompt("Database password: ")
+		unlockViaDBus(defaultPath, password)
+		return
+	}
+
+	fmt.Println("No sealed PAM state found; bootstrapping the default database.")
+	fmt.Println("The login password seals the database credential (never stored in the clear).")
+	loginPassword := readSecretPrompt("Login password: ")
+	if err := sendPAMToken([]byte(loginPassword)); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl: bootstrap failed (daemon running?): %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Default database created and unlocked. On your next login the PAM hook unlocks it automatically.")
+}
+
+// sendPAMToken sends a derived token over the PAM socket — the same
+// handshake the PAM module performs during session setup.
+func sendPAMToken(token []byte) error {
+	socketPath, err := xdg.PAMSocketPath()
+	if err != nil {
+		return err
+	}
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", socketPath, err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(token); err != nil {
+		return fmt.Errorf("send token: %w", err)
+	}
+	return nil
 }
 
 // cmdUnlockPath unlocks a specific database by path with a password prompt.
