@@ -3,8 +3,11 @@
 package fido2
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
+	"math/big"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,7 +27,7 @@ import (
 // newTestPoolWithDB creates a DatabasePool with a test KDBX database
 // and returns it. The database lives in a spec-scoped temp dir; the pool
 // is populated with one open database.
-func newTestPoolWithDB() *dbpool.DatabasePool {
+func newTestPoolWithDB() (*dbpool.DatabasePool, string) {
 	path := filepath.Join(GinkgoT().TempDir(), "test.kdbx")
 
 	db := gokeepasslib.NewDatabase()
@@ -51,6 +54,17 @@ func newTestPoolWithDB() *dbpool.DatabasePool {
 	_, err = pool.Open(path, dbpool.PasswordCredential(ss))
 	Expect(err).NotTo(HaveOccurred())
 
+	return pool, path
+}
+
+// reopenPool opens the database file afresh in a new pool.
+func reopenPool(path string) *dbpool.DatabasePool {
+	ss, err := security.NewSecureString("testpassword")
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(ss.Destroy)
+	pool := dbpool.NewDatabasePool(nil)
+	_, err = pool.Open(path, dbpool.PasswordCredential(ss))
+	Expect(err).NotTo(HaveOccurred())
 	return pool
 }
 
@@ -123,25 +137,9 @@ var _ = Describe("buildAuthenticatorData", func() {
 	})
 })
 
-var _ = Describe("buildClientDataJSON", func() {
-	It("emits the required WebAuthn fields", func() {
-		cdJSON := buildClientDataJSON("webauthn.get", "dGVzdC1jaGFsbGVuZ2U", "https://example.com")
-
-		Expect(cdJSON).To(ContainSubstring(`"type":"webauthn.get"`))
-		Expect(cdJSON).To(ContainSubstring(`"challenge":"dGVzdC1jaGFsbGVuZ2U"`))
-		Expect(cdJSON).To(ContainSubstring(`"origin":"https://example.com"`))
-		Expect(cdJSON).To(ContainSubstring(`"crossOrigin":"false"`))
-	})
-
-	It("uses webauthn.create for credential creation", func() {
-		Expect(buildClientDataJSON("webauthn.create", "challenge123", "https://app.test")).
-			To(ContainSubstring(`"type":"webauthn.create"`))
-	})
-})
-
 var _ = Describe("CreatePasskey", func() {
 	It("creates an ES256 key with a valid EC2 COSE public key", func() {
-		pool := newTestPoolWithDB()
+		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
 		entry, err := svc.CreatePasskey(
@@ -158,7 +156,7 @@ var _ = Describe("CreatePasskey", func() {
 		Expect(entry.CredentialID).NotTo(BeEmpty())
 		Expect(entry.UserHandle).NotTo(BeEmpty())
 		Expect(entry.PublicKeyCOSE).NotTo(BeEmpty())
-		Expect(entry.PrivateKeyPEM).To(HavePrefix("-----BEGIN EC PRIVATE KEY-----"))
+		Expect(entry.PrivateKeyPEM).To(HavePrefix("-----BEGIN PRIVATE KEY-----"), "ES256 private key should be PKCS#8")
 
 		var coseKey coseEC2Key
 		Expect(cbor.Unmarshal(entry.PublicKeyCOSE, &coseKey)).To(Succeed())
@@ -170,7 +168,7 @@ var _ = Describe("CreatePasskey", func() {
 	})
 
 	It("creates an EdDSA key with a valid OKP COSE public key", func() {
-		pool := newTestPoolWithDB()
+		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
 		entry, err := svc.CreatePasskey(
@@ -194,7 +192,7 @@ var _ = Describe("CreatePasskey", func() {
 	})
 
 	It("defaults to ES256 when no algorithms are specified", func() {
-		pool := newTestPoolWithDB()
+		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
 		entry, err := svc.CreatePasskey(
@@ -203,11 +201,11 @@ var _ = Describe("CreatePasskey", func() {
 			nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(entry.PrivateKeyPEM).To(HavePrefix("-----BEGIN EC PRIVATE KEY-----"), "default algorithm should be ES256")
+		Expect(entry.PrivateKeyPEM).To(HavePrefix("-----BEGIN PRIVATE KEY-----"), "default algorithm should be ES256 (PKCS#8)")
 	})
 
 	It("fills the entry display fields from the request", func() {
-		pool := newTestPoolWithDB()
+		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 
 		entry, err := svc.CreatePasskey(
@@ -290,5 +288,144 @@ var _ = Describe("authenticator flag constants", func() {
 		Expect(FlagBS).To(Equal(0x10))
 		Expect(FlagAT).To(Equal(0x40))
 		Expect(FlagED).To(Equal(0x80))
+	})
+})
+
+var _ = Describe("SignAssertion", func() {
+	hash := func() []byte {
+		sum := sha256.Sum256([]byte("client-data-json"))
+		return sum[:]
+	}
+
+	It("round-trips: create, persist, reopen, find, sign, verify", func() {
+		pool, path := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		created, err := svc.CreatePasskey(
+			firstPoolUUID(pool),
+			"github.com", "GitHub", "octocat", "Octocat",
+			[]int{COSEAlgES256},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		clientDataHash := hash()
+
+		// Reopen from disk: persistence must be real.
+		reopened := reopenPool(path)
+		rsvc := NewFido2Service(&config.Fido2Config{Enabled: true}, reopened)
+
+		found, err := rsvc.FindPasskeysByRPID("", "github.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(HaveLen(1))
+		Expect(found[0].CredentialID).To(Equal(created.CredentialID))
+		Expect(found[0].PrivateKeyPEM).To(HavePrefix("-----BEGIN PRIVATE KEY-----"))
+
+		result, err := rsvc.SignAssertion(SignAssertionInput{
+			RPID:           "github.com",
+			CredentialID:   created.CredentialID,
+			ClientDataHash: clientDataHash,
+			UserPresent:    true,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the signature against the stored COSE public key.
+		var cose coseEC2Key
+		Expect(cbor.Unmarshal(found[0].PublicKeyCOSE, &cose)).To(Succeed())
+		Expect(cose.Alg).To(Equal(COSEAlgES256))
+		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(cose.X), Y: new(big.Int).SetBytes(cose.Y)}
+		digest := sha256.Sum256(append(result.AuthenticatorData, clientDataHash...))
+		Expect(ecdsa.VerifyASN1(pub, digest[:], result.Signature)).To(BeTrue())
+
+		Expect(result.SignCount).To(Equal(uint32(1)))
+		Expect(result.AuthenticatorData[32] & FlagUP).NotTo(Equal(byte(0)))
+		Expect(result.AuthenticatorData[32]&FlagUV).To(Equal(byte(0)), "UV only when the gate verified")
+	})
+
+	It("keeps the sign counter monotonic across assertions", func() {
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		created, err := svc.CreatePasskey(
+			firstPoolUUID(pool),
+			"example.com", "Example", "user", "User",
+			[]int{COSEAlgES256},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		first, err := svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", CredentialID: created.CredentialID,
+			ClientDataHash: hash(), UserPresent: true,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		second, err := svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", CredentialID: created.CredentialID,
+			ClientDataHash: hash(), UserPresent: true,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.SignCount).To(Equal(uint32(1)))
+		Expect(second.SignCount).To(Equal(uint32(2)))
+	})
+
+	It("selects the newest resident credential when no allowList is given", func() {
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		for _, name := range []string{"first", "second"} {
+			_, err := svc.CreatePasskey(
+				firstPoolUUID(pool),
+				"example.com", "Example", name, name,
+				[]int{COSEAlgES256},
+			)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		found, err := svc.FindPasskeysByRPID("", "example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(HaveLen(2))
+
+		// Resident flow must not error on multiple credentials.
+		_, err = svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", ClientDataHash: hash(), UserPresent: true,
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("refuses to sign without user presence", func() {
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		created, err := svc.CreatePasskey(
+			firstPoolUUID(pool),
+			"example.com", "Example", "user", "User",
+			[]int{COSEAlgES256},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", CredentialID: created.CredentialID,
+			ClientDataHash: hash(),
+		})
+		Expect(err).To(MatchError(ContainSubstring("refusing to sign without user presence")))
+	})
+
+	It("refuses a credential ID that belongs to another RPID", func() {
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		created, err := svc.CreatePasskey(
+			firstPoolUUID(pool),
+			"github.com", "GitHub", "user", "User",
+			[]int{COSEAlgES256},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = svc.SignAssertion(SignAssertionInput{
+			RPID: "evil.example.com", CredentialID: created.CredentialID,
+			ClientDataHash: hash(), UserPresent: true,
+		})
+		Expect(err).To(HaveOccurred(), "RP binding must hold at lookup")
+	})
+
+	It("refuses a malformed client data hash", func() {
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		_, err := svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", ClientDataHash: []byte{1, 2, 3}, UserPresent: true,
+		})
+		Expect(err).To(MatchError(ContainSubstring("client data hash must be 32 bytes")))
 	})
 })

@@ -1,8 +1,13 @@
 //go:build linux
 
 // Package fido2 implements WebAuthn/FIDO2 software passkey functionality
-// for kpxcd, allowing credential creation and assertion using keys
-// stored in KeePass entries.
+// for kpxcd. Credentials live in KeePass entries (KPEX_PASSKEY_* custom
+// value fields, KeePassXC-compatible layout plus a kpxcd sign-counter
+// extension) and persist through the dbpool atomic write path.
+//
+// The package does not speak to browsers itself; a CTAP2 transport drives
+// it. Every assertion requires the caller to present an established user
+// presence: this package refuses to sign on its own authority.
 package fido2
 
 import (
@@ -13,11 +18,14 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/tobischo/gokeepasslib/v3"
+	"github.com/tobischo/gokeepasslib/v3/wrappers"
+
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/security"
@@ -42,22 +50,40 @@ const (
 	FlagAT = 0x40 // Attested Credential Data
 	FlagED = 0x80 // Extension Data
 
-	// ID bytes for credential IDs.
+	// IDBytes for credential IDs.
 	IDBytes = 32
+
+	// passkeyGroupName is the root-level group holding passkey entries.
+	passkeyGroupName = "Passkeys"
+)
+
+// Custom data field keys matching the KeePassXC convention, plus the
+// kpxcd sign counter (KPEX_PASSKEY_COUNTER), a kpxcd extension.
+const (
+	KPEXPrefix         = "KPEX_"
+	KPEXPasskeyRPID    = "KPEX_PASSKEY_RPID"
+	KPEXPasskeyRPName  = "KPEX_PASSKEY_RPNAME"
+	KPEXPasskeyUser    = "KPEX_PASSKEY_USER"
+	KPEXPasskeyHandle  = "KPEX_PASSKEY_HANDLE"
+	KPEXPasskeyCredID  = "KPEX_PASSKEY_CRED_ID"
+	KPEXPasskeyPrivKey = "KPEX_PASSKEY_PRIV_KEY"
+	KPEXPasskeyPubKey  = "KPEX_PASSKEY_PUB_KEY"
+	KPEXPasskeyCounter = "KPEX_PASSKEY_COUNTER"
 )
 
 // PasskeyEntry represents a stored passkey in a KeePass entry.
 type PasskeyEntry struct {
-	RPID          string // Relying Party ID (e.g., "github.com")
+	RPID          string // Relying Party ID (e.g. "github.com")
 	RPName        string // Relying Party display name
 	Username      string // User name
 	UserHandle    string // Base64url-encoded user handle
 	CredentialID  string // Base64url-encoded credential ID
-	PrivateKeyPEM string // PEM-encoded private key
+	PrivateKeyPEM string // PEM-encoded private key (PKCS#8)
 	PublicKeyCOSE []byte // COSE-encoded public key
+	SignCount     uint32 // Last persisted signature counter
 	Subject       string // Entry title for display
 	DBUUID        string // Database UUID
-	EntryUUID     string // Entry UUID
+	EntryUUID     string // KeePass entry UUID, hex
 }
 
 // Fido2Service provides FIDO2/WebAuthn passkey operations.
@@ -74,27 +100,20 @@ func NewFido2Service(cfg *config.Fido2Config, pool *dbpool.DatabasePool) *Fido2S
 	}
 }
 
-// CreatePasskey creates a new FIDO2 credential and stores it in the database.
+// CreatePasskey generates a new credential, persists it as a KeePass entry,
+// and returns its metadata. The private key material is generated and
+// encoded inside security.Do so registers and stack lose it promptly.
 func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplayName string, algorithms []int) (*PasskeyEntry, error) {
 	if !s.config.Enabled {
 		return nil, fmt.Errorf("fido2: service is disabled")
+	}
+	if rpID == "" {
+		return nil, fmt.Errorf("fido2: rpID is required")
 	}
 
 	db, err := s.pool.Get(dbUUID)
 	if err != nil {
 		return nil, fmt.Errorf("fido2: database not found: %w", err)
-	}
-
-	// Generate credential ID (32 random bytes, base64url encoded).
-	credID, err := generateCredentialID()
-	if err != nil {
-		return nil, fmt.Errorf("fido2: %w", err)
-	}
-
-	// Generate user handle (random 64-bit, base64url encoded).
-	userHandle, err := generateUserHandle()
-	if err != nil {
-		return nil, fmt.Errorf("fido2: %w", err)
 	}
 
 	// Determine algorithm (default to ES256).
@@ -103,56 +122,24 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 		alg = algorithms[0]
 	}
 
-	// Generate key pair inside security.Do() so private key material
-	// is zeroed from registers and stack after use.
 	var pubKeyCOSE []byte
 	var privKeyPEM string
 	var keyErr error
 
 	security.Do(func() {
-		switch alg {
-		case COSEAlgES256:
-			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			if err != nil {
-				keyErr = err
-				return
-			}
-			pubKeyCOSE, err = encodeECDSAPublicKey(&priv.PublicKey)
-			if err != nil {
-				keyErr = err
-				return
-			}
-			privKeyPEM, err = encodeECDSAPrivateKey(priv)
-			if err != nil {
-				keyErr = err
-				return
-			}
-
-		case COSEAlgEdDSA:
-			pub, priv, err := ed25519.GenerateKey(rand.Reader)
-			if err != nil {
-				keyErr = err
-				return
-			}
-			pubKeyCOSE, err = encodeEd25519PublicKey(pub)
-			if err != nil {
-				keyErr = err
-				return
-			}
-			privKeyPEM, err = encodeEd25519PrivateKey(priv)
-			if err != nil {
-				keyErr = err
-				return
-			}
-
-		default:
-			keyErr = fmt.Errorf("fido2: unsupported algorithm: %d", alg)
-			return
-		}
+		pubKeyCOSE, privKeyPEM, keyErr = generateKeyPair(alg)
 	})
-
 	if keyErr != nil {
 		return nil, fmt.Errorf("fido2: key generation failed: %w", keyErr)
+	}
+
+	credID, err := generateCredentialID()
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
+	userHandle, err := generateUserHandle()
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
 	}
 
 	entry := &PasskeyEntry{
@@ -165,54 +152,103 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 		PublicKeyCOSE: pubKeyCOSE,
 		Subject:       userDisplayName,
 		DBUUID:        dbUUID,
+		SignCount:     0,
 	}
 
-	// Store the passkey data in KeePass custom data fields.
-	storePasskeyInEntry(db, entry, rpID, rpName, userName, userDisplayName)
+	if err := persistPasskey(db, entry); err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
 
-	slog.Info("FIDO2: created passkey",
-		"rpID", rpID,
-		"username", userName,
-		"credentialID", credID)
-
+	slog.Info("fido2: created passkey", "rpID", rpID, "username", userName)
 	return entry, nil
 }
 
-// AssertPasskey performs a FIDO2 assertion (authentication) using a stored passkey.
-func (s *Fido2Service) AssertPasskey(rpID, credentialID, challenge, origin string) (*AssertionResult, error) {
+// SignAssertionInput carries one assertion request. UserPresent is a gate
+// output: the caller must have established user presence before calling.
+type SignAssertionInput struct {
+	RPID           string
+	CredentialID   string // Base64url; empty selects a resident credential by RPID
+	ClientDataHash []byte // SHA-256 of the client data JSON (32 bytes)
+	UserPresent    bool
+	UserVerified   bool
+	BackupEligible bool
+	BackupState    bool
+}
+
+// AssertionResult is one signed WebAuthn assertion. All byte fields are
+// raw; the CTAP transport encodes them.
+type AssertionResult struct {
+	CredentialID      []byte
+	UserHandle        []byte
+	AuthenticatorData []byte
+	Signature         []byte
+	SignCount         uint32
+}
+
+// SignAssertion signs one assertion for a stored credential and advances
+// the persisted sign counter. It refuses unless user presence is claimed:
+// without presence there is no assertion.
+func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, error) {
 	if !s.config.Enabled {
 		return nil, fmt.Errorf("fido2: service is disabled")
 	}
-
-	// Find the passkey entry across all databases.
-	entry, err := s.FindPasskeyByCredentialID(credentialID)
-	if err != nil {
-		return nil, fmt.Errorf("fido2: passkey not found: %w", err)
+	if in.RPID == "" {
+		return nil, fmt.Errorf("fido2: rpID is required")
+	}
+	if len(in.ClientDataHash) != sha256.Size {
+		return nil, fmt.Errorf("fido2: client data hash must be %d bytes, got %d", sha256.Size, len(in.ClientDataHash))
+	}
+	if !in.UserPresent {
+		return nil, fmt.Errorf("fido2: refusing to sign without user presence")
 	}
 
-	// Build authenticator data.
-	flags := byte(FlagUP | FlagUV | FlagBE | FlagBS)
-	authData := buildAuthenticatorData(rpID, flags, 0, nil)
+	odb, entry, err := s.lookupCredential(in.RPID, in.CredentialID)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
 
-	// Sign the challenge with the private key.
-	clientDataJSON := buildClientDataJSON("webauthn.get", challenge, origin)
-	clientDataHash := sha256.Sum256([]byte(clientDataJSON))
-	signedData := append(authData, clientDataHash[:32]...)
+	// Advance the persisted counter before signing; an assertion whose
+	// counter did not persist is an error, never a replayable signature.
+	signCount, err := advanceSignCount(odb, entry)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
 
-	signature, err := signAssertion(entry.PrivateKeyPEM, entry.PublicKeyCOSE, signedData)
+	var flags byte
+	flags |= FlagUP
+	if in.UserVerified {
+		flags |= FlagUV
+	}
+	if in.BackupEligible {
+		flags |= FlagBE
+	}
+	if in.BackupState {
+		flags |= FlagBS
+	}
+
+	authData := buildAuthenticatorData(in.RPID, flags, signCount, nil)
+	signature, err := signWithPrivateKey(entry.PrivateKeyPEM, authData, in.ClientDataHash)
 	if err != nil {
 		return nil, fmt.Errorf("fido2: assertion signing failed: %w", err)
 	}
 
-	result := &AssertionResult{
-		AuthenticatorData: base64.RawURLEncoding.EncodeToString(authData),
-		Signature:         base64.RawURLEncoding.EncodeToString(signature),
-		UserHandle:        entry.UserHandle,
-		CredentialID:      entry.CredentialID,
+	credID, err := base64.RawURLEncoding.DecodeString(entry.CredentialID)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: stored credential ID is not base64url: %w", err)
+	}
+	userHandle, err := base64.RawURLEncoding.DecodeString(entry.UserHandle)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: stored user handle is not base64url: %w", err)
 	}
 
-	slog.Info("FIDO2: asserted passkey", "rpID", rpID, "credentialID", credentialID)
-	return result, nil
+	slog.Info("fido2: signed assertion", "rpID", in.RPID, "signCount", signCount)
+	return &AssertionResult{
+		CredentialID:      credID,
+		UserHandle:        userHandle,
+		AuthenticatorData: authData,
+		Signature:         signature,
+		SignCount:         signCount,
+	}, nil
 }
 
 // FindPasskeysByRPID finds all passkeys for a given relying party ID.
@@ -220,53 +256,368 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 	var results []*PasskeyEntry
 
 	dbs := s.pool.List()
-	for _, db := range dbs {
-		if dbUUID != "" && db.UUID != dbUUID {
+	for i := range dbs {
+		if dbUUID != "" && dbs[i].UUID != dbUUID {
 			continue
 		}
-		entries := db.RootEntries()
-		for i := range entries {
-			pk, err := extractPasskeyFromEntry(&entries[i])
-			if err != nil || pk == nil {
+		entries := dbs[i].RootEntries()
+		for j := range entries {
+			pk, err := extractPasskeyFromEntry(&entries[j])
+			if err != nil {
+				return nil, fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+			}
+			if pk == nil || pk.RPID != rpID {
 				continue
 			}
-			if pk.RPID == rpID {
-				pk.DBUUID = db.UUID
-				pk.EntryUUID = string(entries[i].UUID[:])
-				results = append(results, pk)
-			}
+			pk.DBUUID = dbs[i].UUID
+			pk.EntryUUID = fmt.Sprintf("%x", entries[j].UUID[:])
+			results = append(results, pk)
 		}
 	}
 
 	return results, nil
 }
 
-// FindPassKeyByCredentialID finds a passkey by its credential ID.
+// FindPasskeyByCredentialID finds a passkey by its credential ID.
 func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyEntry, error) {
 	dbs := s.pool.List()
-	for _, db := range dbs {
-		entries := db.RootEntries()
-		for i := range entries {
-			pk, err := extractPasskeyFromEntry(&entries[i])
-			if err != nil || pk == nil {
+	for i := range dbs {
+		entries := dbs[i].RootEntries()
+		for j := range entries {
+			pk, err := extractPasskeyFromEntry(&entries[j])
+			if err != nil {
+				return nil, fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+			}
+			if pk == nil || pk.CredentialID != credentialID {
 				continue
 			}
-			if pk.CredentialID == credentialID {
-				pk.DBUUID = db.UUID
-				pk.EntryUUID = string(entries[i].UUID[:])
-				return pk, nil
-			}
+			pk.DBUUID = dbs[i].UUID
+			pk.EntryUUID = fmt.Sprintf("%x", entries[j].UUID[:])
+			return pk, nil
 		}
 	}
 	return nil, fmt.Errorf("fido2: passkey not found for credential ID: %s", credentialID)
 }
 
-// AssertionResult contains the result of a passkey assertion.
-type AssertionResult struct {
-	AuthenticatorData string `json:"authenticator_data"`
-	Signature         string `json:"signature"`
-	UserHandle        string `json:"user_handle"`
-	CredentialID      string `json:"credential_id"`
+// lookupCredential finds the open database and passkey for an assertion.
+// An empty credential ID selects the newest resident credential for the
+// RPID (D3: kpxcd credentials are resident by nature).
+func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.OpenDatabase, *PasskeyEntry, error) {
+	var (
+		best      *PasskeyEntry
+		bestEntry *gokeepasslib.Entry
+		bestDB    string
+	)
+	dbs := s.pool.List()
+	for i := range dbs {
+		entries := dbs[i].RootEntries()
+		for j := range entries {
+			pk, err := extractPasskeyFromEntry(&entries[j])
+			if err != nil {
+				return nil, nil, fmt.Errorf("database %s: %w", dbs[i].Name, err)
+			}
+			if pk == nil || pk.RPID != rpID || pk.CredentialID == "" {
+				continue
+			}
+			pk.DBUUID = dbs[i].UUID
+			pk.EntryUUID = fmt.Sprintf("%x", entries[j].UUID[:])
+			if credentialID != "" {
+				if pk.CredentialID != credentialID {
+					continue
+				}
+				odb, err := s.pool.Get(dbs[i].UUID)
+				if err != nil {
+					return nil, nil, fmt.Errorf("database not found: %w", err)
+				}
+				return odb, pk, nil
+			}
+			// Resident flow: the newest created credential for this RPID wins.
+			if best == nil || newerThan(entries[j], *bestEntry) {
+				best, bestEntry, bestDB = pk, &entries[j], dbs[i].UUID
+			}
+		}
+	}
+	if best == nil {
+		return nil, nil, fmt.Errorf("no passkey for rpID %q", rpID)
+	}
+	odb, err := s.pool.Get(bestDB)
+	if err != nil {
+		return nil, nil, fmt.Errorf("database not found: %w", err)
+	}
+	return odb, best, nil
+}
+
+// persistPasskey writes a new passkey entry into the Passkeys group.
+func persistPasskey(db *dbpool.OpenDatabase, pk *PasskeyEntry) error {
+	err := db.UpdateAndSave(func(db *gokeepasslib.Database) error {
+		group := findOrCreatePasskeyGroup(db)
+		entry := newPasskeyEntry(pk)
+		group.Entries = append(group.Entries, entry)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("persist passkey: %w", err)
+	}
+	return nil
+}
+
+// advanceSignCount increments the persisted sign counter and returns the
+// new value. The entry is located in its database by UUID; the counter
+// field must exist and stay monotonic.
+func advanceSignCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) (uint32, error) {
+	var newCount uint32
+	err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+		entry := findEntryByUUIDHex(&kdb.Content.Root.Groups, pk.EntryUUID)
+		if entry == nil {
+			return fmt.Errorf("entry %s disappeared", pk.EntryUUID)
+		}
+		current, err := readSignCount(entry)
+		if err != nil {
+			return err
+		}
+		newCount = current + 1
+		setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", newCount), false)
+		now := wrappers.Now()
+		entry.Times.LastModificationTime = &now
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("advance sign counter: %w", err)
+	}
+	return newCount, nil
+}
+
+// readSignCount parses the counter field. A missing field is a hard error:
+// the counter must never silently restart.
+func readSignCount(entry *gokeepasslib.Entry) (uint32, error) {
+	raw := entry.GetContent(KPEXPasskeyCounter)
+	if raw == "" {
+		return 0, fmt.Errorf("passkey entry %q has no sign counter", entry.GetTitle())
+	}
+	var count uint32
+	if _, err := fmt.Sscanf(raw, "%d", &count); err != nil {
+		return 0, fmt.Errorf("passkey entry %q has malformed sign counter %q", entry.GetTitle(), raw)
+	}
+	return count, nil
+}
+
+// extractPasskeyFromEntry reads passkey data from KeePass entry value
+// fields. It returns (nil, nil) for entries without passkey data and a
+// hard error for entries with partial data.
+func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
+	rpID := entry.GetContent(KPEXPasskeyRPID)
+	if rpID == "" {
+		return nil, nil // not a passkey entry
+	}
+
+	pk := &PasskeyEntry{
+		RPID:     rpID,
+		RPName:   entry.GetContent(KPEXPasskeyRPName),
+		Username: entry.GetContent(KPEXPasskeyUser),
+	}
+	for _, field := range []struct {
+		key string
+		dst *string
+	}{
+		{KPEXPasskeyHandle, &pk.UserHandle},
+		{KPEXPasskeyCredID, &pk.CredentialID},
+		{KPEXPasskeyPrivKey, &pk.PrivateKeyPEM},
+	} {
+		*field.dst = entry.GetContent(field.key)
+		if *field.dst == "" {
+			return nil, fmt.Errorf("passkey entry %q is missing %s", entry.GetTitle(), field.key)
+		}
+	}
+
+	coseB64 := entry.GetContent(KPEXPasskeyPubKey)
+	if coseB64 == "" {
+		return nil, fmt.Errorf("passkey entry %q is missing %s", entry.GetTitle(), KPEXPasskeyPubKey)
+	}
+	cose, err := base64.StdEncoding.DecodeString(coseB64)
+	if err != nil {
+		return nil, fmt.Errorf("passkey entry %q has malformed public key: %w", entry.GetTitle(), err)
+	}
+	pk.PublicKeyCOSE = cose
+
+	count, err := readSignCount(entry)
+	if err != nil {
+		return nil, err
+	}
+	pk.SignCount = count
+
+	pk.Subject = entry.GetTitle()
+	return pk, nil
+}
+
+// newPasskeyEntry builds the KeePass entry for a freshly created passkey.
+func newPasskeyEntry(pk *PasskeyEntry) gokeepasslib.Entry {
+	entry := gokeepasslib.NewEntry()
+
+	title := pk.RPName
+	if title == "" {
+		title = pk.RPID
+	}
+	set := func(key, value string, protected bool) { setEntryValue(&entry, key, value, protected) }
+
+	set("Title", title, false)
+	set("UserName", pk.Username, false)
+	set("URL", "https://"+pk.RPID, false)
+	set("Password", "", false)
+	set(KPEXPasskeyRPID, pk.RPID, false)
+	set(KPEXPasskeyRPName, pk.RPName, false)
+	set(KPEXPasskeyUser, pk.Username, false)
+	set(KPEXPasskeyHandle, pk.UserHandle, false)
+	set(KPEXPasskeyCredID, pk.CredentialID, false)
+	set(KPEXPasskeyPrivKey, pk.PrivateKeyPEM, true)
+	set(KPEXPasskeyPubKey, base64.StdEncoding.EncodeToString(pk.PublicKeyCOSE), false)
+	set(KPEXPasskeyCounter, "0", false)
+
+	return entry
+}
+
+// setEntryValue sets an entry value field, replacing an existing value
+// with the same key (same pattern as the Secret Service write path).
+func setEntryValue(entry *gokeepasslib.Entry, key, value string, protected bool) {
+	idx := entry.GetIndex(key)
+	v := gokeepasslib.ValueData{
+		Key: key,
+		Value: gokeepasslib.V{
+			Content:   value,
+			Protected: wrappers.BoolWrapper{Bool: protected},
+		},
+	}
+	if idx >= 0 {
+		entry.Values[idx] = v
+		return
+	}
+	entry.Values = append(entry.Values, v)
+}
+
+// findOrCreatePasskeyGroup returns the root-level Passkeys group.
+func findOrCreatePasskeyGroup(db *gokeepasslib.Database) *gokeepasslib.Group {
+	if db.Content == nil {
+		db.Content = gokeepasslib.NewContent()
+	}
+	if db.Content.Root == nil {
+		db.Content.Root = gokeepasslib.NewRootData()
+	}
+	if len(db.Content.Root.Groups) == 0 {
+		root := gokeepasslib.NewGroup()
+		root.Name = "Root"
+		db.Content.Root.Groups = append(db.Content.Root.Groups, root)
+	}
+	root := &db.Content.Root.Groups[0]
+	for i := range root.Groups {
+		if root.Groups[i].Name == passkeyGroupName {
+			return &root.Groups[i]
+		}
+	}
+	group := gokeepasslib.NewGroup()
+	group.Name = passkeyGroupName
+	root.Groups = append(root.Groups, group)
+	return &root.Groups[len(root.Groups)-1]
+}
+
+// findEntryByUUIDHex locates an entry by its hex UUID across groups.
+func findEntryByUUIDHex(groups *[]gokeepasslib.Group, uuidHex string) *gokeepasslib.Entry {
+	for gi := range *groups {
+		group := &(*groups)[gi]
+		for ei := range group.Entries {
+			if fmt.Sprintf("%x", group.Entries[ei].UUID[:]) == uuidHex {
+				return &group.Entries[ei]
+			}
+		}
+		if found := findEntryByUUIDHex(&group.Groups, uuidHex); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// generateKeyPair generates an ES256 or Ed25519 key pair and encodes the
+// private key as PKCS#8 PEM (D2) and the public key as COSE.
+func generateKeyPair(alg int) (pubKeyCOSE []byte, privKeyPEM string, err error) {
+	switch alg {
+	case COSEAlgES256:
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, "", err
+		}
+		pub, err := encodeECDSAPublicKey(&priv.PublicKey)
+		if err != nil {
+			return nil, "", err
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(priv)
+		if err != nil {
+			return nil, "", err
+		}
+		return pub, encodePEM("PRIVATE KEY", der), nil
+
+	case COSEAlgEdDSA:
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, "", err
+		}
+		cosePub, err := encodeEd25519PublicKey(pub)
+		if err != nil {
+			return nil, "", err
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(priv)
+		if err != nil {
+			return nil, "", err
+		}
+		return cosePub, encodePEM("PRIVATE KEY", der), nil
+
+	default:
+		return nil, "", fmt.Errorf("unsupported algorithm: %d", alg)
+	}
+}
+
+// encodePEM wraps DER bytes in a PEM block.
+func encodePEM(blockType string, der []byte) string {
+	return string(pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der}))
+}
+
+// signWithPrivateKey signs authData || clientDataHash with a stored PKCS#8
+// private key: ECDSA/ASN.1 for ES256, raw RFC 8032 for Ed25519. The private
+// key bytes are parsed inside security.Do.
+func signWithPrivateKey(privKeyPEM string, authData, clientDataHash []byte) ([]byte, error) {
+	signed := make([]byte, 0, len(authData)+len(clientDataHash))
+	signed = append(signed, authData...)
+	signed = append(signed, clientDataHash...)
+
+	var signature []byte
+	var signErr error
+	security.Do(func() {
+		block, _ := pem.Decode([]byte(privKeyPEM))
+		if block == nil {
+			signErr = fmt.Errorf("stored private key is not valid PEM")
+			return
+		}
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			signErr = fmt.Errorf("stored private key does not parse: %w", err)
+			return
+		}
+		switch key := key.(type) {
+		case *ecdsa.PrivateKey:
+			digest := sha256.Sum256(signed)
+			sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+			if err != nil {
+				signErr = err
+				return
+			}
+			signature = sig
+		case ed25519.PrivateKey:
+			signature = ed25519.Sign(key, signed)
+		default:
+			signErr = fmt.Errorf("stored private key has unsupported type %T", key)
+		}
+	})
+	if signErr != nil {
+		return nil, signErr
+	}
+	return signature, nil
 }
 
 // generateCredentialID generates a random 32-byte credential ID, base64url encoded.
@@ -287,7 +638,8 @@ func generateUserHandle() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// buildAuthenticatorData constructs the authenticator data bytes.
+// buildAuthenticatorData constructs the authenticator data bytes:
+// rpIDHash (32) + flags (1) + signCount (4) + optional extensions.
 func buildAuthenticatorData(rpID string, flags byte, signCount uint32, extensions []byte) []byte {
 	rpIDHash := sha256.Sum256([]byte(rpID))
 	data := make([]byte, 0, 37+len(extensions))
@@ -300,16 +652,12 @@ func buildAuthenticatorData(rpID string, flags byte, signCount uint32, extension
 	return data
 }
 
-// buildClientDataJSON constructs the client data JSON for WebAuthn.
-func buildClientDataJSON(typ, challenge, origin string) string {
-	cd := map[string]string{
-		"type":        typ,
-		"challenge":   challenge,
-		"origin":      origin,
-		"crossOrigin": "false",
+// newerThan reports whether entry a was created after entry b.
+func newerThan(a, b gokeepasslib.Entry) bool {
+	if a.Times.CreationTime == nil || b.Times.CreationTime == nil {
+		return false
 	}
-	b, _ := json.Marshal(cd)
-	return string(b)
+	return a.Times.CreationTime.Time.After(b.Times.CreationTime.Time)
 }
 
 // COSE key structure for ECDSA P-256.
@@ -350,84 +698,4 @@ func encodeEd25519PublicKey(pub ed25519.PublicKey) ([]byte, error) {
 		Alg: COSEAlgEdDSA,
 	}
 	return cbor.Marshal(key)
-}
-
-// Custom data field prefixes matching KeePassXC convention.
-const (
-	KPEXPrefix         = "KPEX_"
-	KPEXPasskeyRPID    = "KPEX_PASSKEY_RPID"
-	KPEXPasskeyRPName  = "KPEX_PASSKEY_RPNAME"
-	KPEXPasskeyUser    = "KPEX_PASSKEY_USER"
-	KPEXPasskeyHandle  = "KPEX_PASSKEY_HANDLE"
-	KPEXPasskeyCredID  = "KPEX_PASSKEY_CRED_ID"
-	KPEXPasskeyPrivKey = "KPEX_PASSKEY_PRIV_KEY"
-	KPEXPasskeyPubKey  = "KPEX_PASSKEY_PUB_KEY"
-)
-
-// storePasskeyInEntry stores passkey data in a KeePass entry's custom data fields.
-// Not wired yet: kpxcd has an atomic write path (dbpool.OpenDatabase.UpdateAndSave),
-// but passkey persistence is still to be implemented on top of it.
-func storePasskeyInEntry(_ *dbpool.OpenDatabase, _ *PasskeyEntry, _, _, _, _ string) {
-	// Return the passkey data to the caller only; nothing is written to disk yet.
-	slog.Warn("fido2: passkey storage in database is not yet implemented")
-}
-
-// extractPasskeyFromEntry extracts passkey data from KeePass entry custom data.
-func extractPasskeyFromEntry(entry interface {
-	GetContent(key string) string
-}) (*PasskeyEntry, error) {
-	_ = entry
-	// This function will need the actual entry type when integrated.
-	// For now, return nil to indicate no passkey found.
-	return nil, nil
-}
-
-// signAssertion signs the assertion data with the private key.
-func signAssertion(privKeyPEM string, pubKeyCOSE []byte, data []byte) ([]byte, error) {
-	// TODO: Implement actual signing using the private key from PEM.
-	// For now, use Go's crypto/ecdsa or crypto/ed25519 depending on the COSE algorithm.
-	switch {
-	case len(pubKeyCOSE) > 0:
-		// Decode the COSE key to determine algorithm and sign.
-		return signWithCOSEKey(privKeyPEM, pubKeyCOSE, data)
-	default:
-		return nil, fmt.Errorf("fido2: no public key available for signing")
-	}
-}
-
-// signWithCOSEKey decodes the COSE key, determines the algorithm, and signs.
-func signWithCOSEKey(privKeyPEM string, pubKeyCOSE []byte, data []byte) ([]byte, error) {
-	// Try to determine the algorithm from the COSE key.
-	// For now, return a placeholder.
-	_ = privKeyPEM
-	_ = data
-	return nil, fmt.Errorf("fido2: assertion signing not yet fully implemented")
-}
-
-// encodeECDSAPrivateKey encodes an ECDSA private key as PEM.
-func encodeECDSAPrivateKey(key *ecdsa.PrivateKey) (string, error) {
-	// Use x509.MarshalECPrivateKey for the simplest encoding.
-	der, err := x509MarshalECPrivateKey(key)
-	if err != nil {
-		return "", err
-	}
-	return "-----BEGIN EC PRIVATE KEY-----\n" +
-		base64.StdEncoding.EncodeToString(der) +
-		"\n-----END EC PRIVATE KEY-----", nil
-}
-
-// encodeEd25519PrivateKey encodes an Ed25519 private key as PEM.
-func encodeEd25519PrivateKey(key ed25519.PrivateKey) (string, error) {
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return "", err
-	}
-	return "-----BEGIN PRIVATE KEY-----\n" +
-		base64.StdEncoding.EncodeToString(der) +
-		"\n-----END PRIVATE KEY-----", nil
-}
-
-// x509MarshalECPrivateKey wraps x509.MarshalECPrivateKey.
-func x509MarshalECPrivateKey(key *ecdsa.PrivateKey) ([]byte, error) {
-	return x509.MarshalECPrivateKey(key)
 }
