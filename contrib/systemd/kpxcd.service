@@ -22,11 +22,11 @@ IPAddressDeny=any
 CapabilityBoundingSet=
 LockPersonality=true
 MemoryDenyWriteExecute=true
-# Private /dev, whitelisted for the virtual FIDO2 device only: the
-# daemon opens /dev/uhid to create its virtual authenticator. The node
-# is materialized inside the private /dev on behalf of this unit.
-PrivateDevices=true
-DeviceAllow=/dev/uhid rw
+# NOTE: PrivateDevices=true cannot be used here — it hides /dev/uhid
+# behind an empty private /dev and DeviceAllow does not materialize
+# nodes inside it. The daemon needs the real uhid node to create the
+# virtual authenticator. (Access control happens via the udev rule:
+# contrib/udev/70-kpxcd-fido2.rules scopes /dev/uhid to seated users.)
 PrivateTmp=true
 ProtectClock=true
 ProtectControlGroups=true
