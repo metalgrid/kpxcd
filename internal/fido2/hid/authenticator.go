@@ -85,6 +85,9 @@ func (a *Authenticator) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("hid: build device: %w", err)
 	}
+	if err := dev.SetUniq("kpxcd"); err != nil {
+		return fmt.Errorf("hid: set uniq: %w", err)
+	}
 	dev.Data.Bus = BusUSB
 	dev.Data.VendorID = VendorID
 	dev.Data.ProductID = ProductID
@@ -300,12 +303,11 @@ func (a *Authenticator) runCommand(ctx context.Context, command byte, data []byt
 // getInfo answers the static CTAP2.0 capability map.
 func (a *Authenticator) getInfo() (byte, []byte) {
 	encoded, err := cbor.Marshal(getInfoResponse{
-		Versions:           []string{"FIDO_2_0"},
-		Extensions:         []string{},
-		AAGUID:             aaguid[:],
-		Options:            getInfoOptions{Rk: true, Up: true, ClientPin: false},
-		MaxMsgSize:         maxMessageLen,
-		PinUvAuthProtocols: []int{},
+		Versions:   []string{"FIDO_2_0"},
+		Extensions: []string{},
+		AAGUID:     aaguid[:],
+		Options:    getInfoOptions{Rk: true, Up: true},
+		MaxMsgSize: maxMessageLen,
 	})
 	if err != nil {
 		return statusInvalidCBOR, nil

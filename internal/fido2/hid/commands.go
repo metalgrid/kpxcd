@@ -47,9 +47,8 @@ type getAssertionResponse struct {
 // (byte length, then byte-wise): Chrome's CBOR reader rejects maps whose
 // keys are not strictly monotonically increasing.
 type getInfoOptions struct {
-	Rk        bool `cbor:"rk"`
-	Up        bool `cbor:"up"`
-	ClientPin bool `cbor:"clientPin"`
+	Rk bool `cbor:"rk"`
+	Up bool `cbor:"up"`
 }
 
 type getInfoResponse struct {
@@ -58,9 +57,6 @@ type getInfoResponse struct {
 	AAGUID     []byte         `cbor:"3,keyasint"`
 	Options    getInfoOptions `cbor:"4,keyasint"`
 	MaxMsgSize uint           `cbor:"5,keyasint"`
-	// clientPin:false still counts as "PIN supported but not set", and
-	// the protocols list is then required — empty means none.
-	PinUvAuthProtocols []int `cbor:"6,keyasint"`
 }
 
 // decodeRequest parses an inbound CTAP2 request body. fxamacker decodes

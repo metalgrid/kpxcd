@@ -253,19 +253,18 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(ok).To(BeTrue(), "options map at key 4")
 		Expect(options["up"]).To(Equal(true))
 		Expect(options["rk"]).To(Equal(true))
-		Expect(options["clientPin"]).To(Equal(false))
+		Expect(options).NotTo(HaveKey("clientPin"), "clientPin omitted = not supported (D4)")
 		_, ok = info[5].(uint64)
 		Expect(ok).To(BeTrue(), "maxMsgSize unsigned at key 5")
-		protocols, ok := info[6].([]interface{})
-		Expect(ok).To(BeTrue(), "pinUvAuthProtocols array at key 6")
-		Expect(protocols).To(BeEmpty())
+		_, hasProtocols := info[6]
+		Expect(hasProtocols).To(BeFalse(), "clientPin omitted means pinUvAuthProtocols omitted too (D4)")
 
 		// Chrome's CBOR reader requires strictly monotonic map keys
 		// (byte length, then byte-wise). The options map must appear
-		// canonically ordered: rk, up, clientPin.
+		// canonically ordered: rk, up (clientPin omitted = not supported).
 		bodyHex := hex.EncodeToString(body)
-		Expect(bodyHex).To(ContainSubstring("a362726bf5627570f569636c69656e7450696ef4"),
-			"options map must be canonically ordered (rk, up, clientPin)")
+		Expect(bodyHex).To(ContainSubstring("04a262726bf5627570f5"),
+			"options map must be canonically ordered (rk, up)")
 	})
 
 	It("registers a credential when the gate approves", func() {
