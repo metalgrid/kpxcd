@@ -83,7 +83,7 @@ func Run(configPath string, cliLevel slog.Level, version string) error {
 		})))
 	}
 
-	slog.Info("kpxcd starting", "version", version,
+	slog.Info("kpxcd "+version+" starting",
 		"config", configPath,
 		"databases", len(cfg.Databases),
 		"secret_service", cfg.SecretService.Enabled,
