@@ -22,6 +22,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/fido2"
 	"github.com/metalgrid/kpxcd/internal/pamcred"
+	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
 	"golang.org/x/term"
@@ -268,11 +269,32 @@ func cmdUnlockDefault() {
 	fmt.Println("No sealed PAM state found; bootstrapping the default database.")
 	fmt.Println("The login password seals the database credential (never stored in the clear).")
 	loginPassword := readSecretPrompt("Login password: ")
-	if err := sendPAMToken([]byte(loginPassword)); err != nil {
+	token := pamcred.DerivePAMToken([]byte(loginPassword))
+	defer security.Wipe(token)
+	if err := sendPAMToken(token); err != nil {
 		fmt.Fprintf(os.Stderr, "kpxcctl: bootstrap failed (daemon running?): %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("Default database created and unlocked. On your next login the PAM hook unlocks it automatically.")
+
+	// The PAM handoff is fire-and-forget; confirm the outcome by polling
+	// the daemon until the database shows up in its pool.
+	obj2, conn2, err := connectDBus()
+	if err == nil {
+		defer conn2.Close()
+		for i := 0; i < 15; i++ {
+			call := obj2.Call(iface+".ListDatabases", 0)
+			if call.Err == nil {
+				var dbs []map[string]dbus.Variant
+				if call.Store(&dbs) == nil && len(dbs) > 0 {
+					fmt.Println("Default database created and unlocked. On your next login the PAM hook unlocks it automatically.")
+					return
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "kpxcctl: token sent, but the daemon did not report an unlocked database; check `journalctl --user -u kpxcd`\n")
+	os.Exit(1)
 }
 
 // sendPAMToken sends a derived token over the PAM socket — the same
