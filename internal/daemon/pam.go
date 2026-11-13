@@ -129,3 +129,17 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// defaultDatabasePath returns the configured path of the default database
+// (or the first configured one). Passkey registrations land there.
+func (app *DaemonApp) defaultDatabasePath() string {
+	if len(app.cfg.Databases) == 0 {
+		return ""
+	}
+	for _, db := range app.cfg.Databases {
+		if db.Default {
+			return db.Path
+		}
+	}
+	return app.cfg.Databases[0].Path
+}

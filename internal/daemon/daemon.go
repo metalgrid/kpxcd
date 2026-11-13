@@ -23,6 +23,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/dbusapi"
 	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/fido2/hid"
 	"github.com/metalgrid/kpxcd/internal/secretservice"
 	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
@@ -37,6 +38,9 @@ type DaemonApp struct {
 	sshAgent  *sshagent.AgentServer
 	sshClient *sshagent.AgentClient
 	fido2Svc  *fido2.Fido2Service
+	fido2Auth *hid.Authenticator
+	fido2Ctx  context.Context
+	fido2Stop context.CancelFunc
 	pamSocket *PAMSocketServer
 	dbusConn  *dbus.Conn
 	done      chan struct{}
@@ -122,9 +126,20 @@ func Run(configPath string, cliLevel slog.Level) error {
 		// Non-fatal: other services can still run.
 	}
 
-	// FIDO2/passkey API is intentionally disabled until storage and assertions are complete.
+	// FIDO2 virtual authenticator. The presence gate lands with the
+	// polkit integration; until then the deny-all gate refuses every
+	// browser operation (fail closed).
 	if cfg.Fido2.Enabled {
-		slog.Warn("FIDO2/passkey API is not implemented; ignoring fido2.enabled=true")
+		app.fido2Svc = fido2.NewFido2Service(&cfg.Fido2, app.pool)
+		app.fido2Ctx, app.fido2Stop = context.WithCancel(context.Background())
+		gate := fido2.NewPresenceGate()
+		store := fido2.NewCtapStore(app.fido2Svc, app.pool, app.defaultDatabasePath())
+		app.fido2Auth = hid.NewAuthenticator(store, gate, slog.Default())
+		if err := app.fido2Auth.Start(app.fido2Ctx); err != nil {
+			slog.Error("FIDO2 virtual device unavailable; passkeys disabled", "error", err)
+			app.fido2Auth.Close()
+			app.fido2Auth = nil
+		}
 	}
 
 	// Register signal handler.
@@ -250,6 +265,14 @@ func (app *DaemonApp) startSSHAgentClient() error {
 // shutdown performs a clean shutdown of all services.
 func (app *DaemonApp) shutdown() {
 	slog.Info("shutting down")
+
+	// Stop the FIDO2 virtual device.
+	if app.fido2Stop != nil {
+		app.fido2Stop()
+	}
+	if app.fido2Auth != nil {
+		app.fido2Auth.Close()
+	}
 
 	// Stop PAM socket.
 	if app.pamSocket != nil {
