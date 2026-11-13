@@ -32,6 +32,8 @@ install: build
 		$(DESTDIR)/etc/kpxcd/kpxcd.toml.example
 	install -Dm644 contrib/polkit/org.keepassxc.daemon.policy \
 		$(DESTDIR)/usr/share/polkit-1/actions/org.keepassxc.daemon.policy
+	install -Dm644 contrib/udev/70-kpxcd-fido2.rules \
+		$(DESTDIR)/usr/lib/udev/rules.d/70-kpxcd-fido2.rules
 	install -d $(DESTDIR)$(PREFIX)/share/man/man1
 	install -d $(DESTDIR)$(PREFIX)/share/man/man5
 	install -d $(DESTDIR)$(PREFIX)/share/man/man8
