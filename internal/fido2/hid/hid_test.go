@@ -361,3 +361,27 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(status).To(Equal(statusUnsupportedCommand))
 	})
 })
+
+var _ = Describe("uhid event bridge", func() {
+	It("strips Chromium's 0x00 report-ID prefix from writes", func() {
+		// Reproduce the observed bytes: an INIT written with the 0x00
+		// report-ID prefix Chromium adds for report-ID-less devices.
+		chromeWrite := append([]byte{0x00}, buildRequest(broadcastChannel, cmdInit, []byte{9, 8, 7, 6, 5, 4, 3, 2})[0]...)
+		Expect(chromeWrite).To(HaveLen(reportSize + 1))
+
+		a := NewAuthenticator(nil, nil, nil)
+		msg, err := a.decodeReport(chromeWrite[1 : 1+reportSize])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(msg.command).To(Equal(byte(cmdInit)))
+		Expect(msg.payload[:8]).To(Equal([]byte{9, 8, 7, 6, 5, 4, 3, 2}))
+	})
+
+	It("keeps plain 64-byte host reports as-is", func() {
+		report := make([]byte, reportSize)
+		copy(report[4:], []byte{0x86, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8})
+		a := NewAuthenticator(nil, nil, nil)
+		msg, err := a.decodeReport(report)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(msg.command).To(Equal(byte(cmdInit)))
+	})
+})

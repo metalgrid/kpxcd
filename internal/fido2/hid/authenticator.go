@@ -118,8 +118,15 @@ func (a *Authenticator) Start(ctx context.Context) error {
 					return
 				}
 				if evt.Type == uhid.Output {
+					// Chromium prefixes hidraw writes with a 0x00 report-ID
+					// byte for devices that declare no report IDs; strip it
+					// before framing. Non-prefixed 64-byte hosts are untouched.
+					data := evt.Data
+					if len(data) > reportSize && data[0] == 0x00 {
+						data = data[1:]
+					}
 					report := make([]byte, reportSize)
-					copy(report, evt.Data)
+					copy(report, data)
 					internal <- event{isHostReport: true, report: report}
 				}
 			}
