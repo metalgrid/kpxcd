@@ -50,7 +50,7 @@ type DaemonApp struct {
 // database pool, starts all services (DBus API, Secret Service, SSH agent,
 // FIDO2), registers signal handlers, notifies systemd readiness, and runs
 // the main event loop. It blocks until a shutdown signal is received.
-func Run(configPath string, cliLevel slog.Level) error {
+func Run(configPath string, cliLevel slog.Level, version string) error {
 	app := &DaemonApp{
 		done: make(chan struct{}),
 	}
@@ -83,7 +83,8 @@ func Run(configPath string, cliLevel slog.Level) error {
 		})))
 	}
 
-	slog.Info("kpxcd starting", "config", configPath,
+	slog.Info("kpxcd starting", "version", version,
+		"config", configPath,
 		"databases", len(cfg.Databases),
 		"secret_service", cfg.SecretService.Enabled,
 		"ssh_agent", cfg.SSHAgent.Enabled,

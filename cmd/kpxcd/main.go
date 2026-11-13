@@ -11,6 +11,9 @@ import (
 	"github.com/metalgrid/kpxcd/internal/daemon"
 )
 
+// version is overridden at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "Path to configuration file")
 	verbose := flag.Bool("v", false, "Enable verbose (debug) logging")
@@ -30,7 +33,7 @@ func main() {
 		Level: level,
 	})))
 
-	if err := daemon.Run(*configPath, level); err != nil {
+	if err := daemon.Run(*configPath, level, version); err != nil {
 		slog.Error("daemon failed", "error", err)
 		os.Exit(1)
 	}

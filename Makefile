@@ -7,16 +7,17 @@ PAM_DIR = contrib/pam/kpxcd-pam
 
 LDFLAGS = -s -w
 GOFLAGS = -trimpath
+VERSION = $(shell git describe --tags --long --always --dirty 2>/dev/null || echo dev)
 
 build: $(BINDIR)/kpxcd $(BINDIR)/kpxcctl
 
 $(BINDIR)/kpxcd: $(wildcard cmd/kpxcd/*.go internal/**/*.go go.mod go.sum)
 	@mkdir -p $(BINDIR)
-	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS)' ./cmd/kpxcd
+	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcd
 
 $(BINDIR)/kpxcctl: $(wildcard cmd/kpxcctl/*.go internal/**/*.go go.mod go.sum)
 	@mkdir -p $(BINDIR)
-	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS)' ./cmd/kpxcctl
+	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcctl
 
 install: build
 	install -Dm755 $(BINDIR)/kpxcd $(DESTDIR)$(PREFIX)/bin/kpxcd
