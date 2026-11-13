@@ -246,6 +246,15 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(versions).To(ContainElement("FIDO_2_0"))
 		aaguid, _ := info[3].([]byte)
 		Expect(aaguid).To(Equal(aaguid[:]))
+		// Chrome parses options at key 4 and maxMsgSize at key 5 (the
+		// shipped CTAP2 layout); the options map must be there.
+		options, ok := info[4].(map[interface{}]interface{})
+		Expect(ok).To(BeTrue(), "options map at key 4")
+		Expect(options["up"]).To(Equal(true))
+		Expect(options["rk"]).To(Equal(true))
+		Expect(options["clientPin"]).To(Equal(false))
+		_, ok = info[5].(uint64)
+		Expect(ok).To(BeTrue(), "maxMsgSize unsigned at key 5")
 	})
 
 	It("registers a credential when the gate approves", func() {

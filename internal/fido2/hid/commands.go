@@ -44,8 +44,8 @@ type getInfoResponse struct {
 	Versions   []string        `cbor:"1,keyasint"`
 	Extensions []string        `cbor:"2,keyasint"`
 	AAGUID     []byte          `cbor:"3,keyasint"`
-	Options    map[string]bool `cbor:"5,keyasint"`
-	MaxMsgSize uint            `cbor:"6,keyasint"`
+	Options    map[string]bool `cbor:"4,keyasint"`
+	MaxMsgSize uint            `cbor:"5,keyasint"`
 }
 
 // decodeRequest parses an inbound CTAP2 request body. fxamacker decodes
