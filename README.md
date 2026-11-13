@@ -13,7 +13,7 @@ Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is
 - **Unlocks databases at session start** and holds them in memory
 - **Secret Service** — exposes and persists secrets for any same-user `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`), matching the GNOME Keyring/libsecret trust model
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — disabled experimental plumbing; storage and assertions are still in progress
+- **FIDO2 passkeys** — KeePass-backed passkeys served to browsers as a virtual CTAP2 security key, gated by polkit; Bitwarden import via `kpxcctl passkey import` (experimental, disabled by default)
 
 ## Planned / In Progress
 
@@ -24,7 +24,7 @@ Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is
 
 - Act as a full database editor (Secret Service item writes are supported; general KeePass management still belongs in `keepassxc-cli` or a GUI)
 - Provide a GUI
-- Integrate with browsers (use the KeePassXC browser proxy)
+- Integrate with browsers via extensions (kpxcd instead appears as a CTAP2 security key)
 - Auto-type
 - Windows or macOS support
 - Network access (no phone-home, no icon downloading)

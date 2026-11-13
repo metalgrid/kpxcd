@@ -283,7 +283,8 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 	return results, nil
 }
 
-// FindPasskeyByCredentialID finds a passkey by its credential ID.
+// FindPasskeyByCredentialID finds a passkey by its credential ID. It
+// returns ErrNoCredentials when nothing matches.
 func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyEntry, error) {
 	dbs := s.pool.List()
 	for i := range dbs {
@@ -301,7 +302,155 @@ func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyE
 			return pk, nil
 		}
 	}
-	return nil, fmt.Errorf("fido2: passkey not found for credential ID: %s", credentialID)
+	return nil, ErrNoCredentials
+}
+
+// ImportPasskeyInput describes one externally exported credential.
+type ImportPasskeyInput struct {
+	RPID            string
+	RPName          string
+	Username        string
+	UserDisplayName string
+	CredentialID    string // Base64url
+	UserHandle      string // Base64url
+	PrivateKeyPEM   string // PKCS#8 PEM, ECDSA P-256 only
+	SignCount       uint32
+}
+
+// ImportPasskey stores an externally exported credential (e.g. a
+// Bitwarden vault export) as a passkey entry. Only ECDSA P-256 keys are
+// accepted — the format every WebAuthn RP and Bitwarden export uses.
+func (s *Fido2Service) ImportPasskey(dbUUID string, in ImportPasskeyInput) (*PasskeyEntry, error) {
+	if !s.config.Enabled {
+		return nil, fmt.Errorf("fido2: service is disabled")
+	}
+	if in.RPID == "" || in.CredentialID == "" || in.UserHandle == "" || in.PrivateKeyPEM == "" {
+		return nil, fmt.Errorf("fido2: rpID, credential ID, user handle, and private key are required")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(in.CredentialID); err != nil {
+		return nil, fmt.Errorf("fido2: credential ID is not base64url: %w", err)
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(in.UserHandle); err != nil {
+		return nil, fmt.Errorf("fido2: user handle is not base64url: %w", err)
+	}
+
+	db, err := s.pool.Get(dbUUID)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: database not found: %w", err)
+	}
+
+	// Duplicate credential IDs would silently shadow each other at
+	// lookup time; refuse instead.
+	if _, err := s.FindPasskeyByCredentialID(in.CredentialID); err == nil {
+		return nil, fmt.Errorf("fido2: credential %s already exists", in.CredentialID)
+	}
+
+	// The private key must parse and carry the COSE public key we store:
+	// an unparseable import would create an entry that can never sign.
+	var cose []byte
+	var pemErr error
+	security.Do(func() {
+		block, _ := pem.Decode([]byte(in.PrivateKeyPEM))
+		if block == nil {
+			pemErr = fmt.Errorf("private key is not valid PEM")
+			return
+		}
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			pemErr = fmt.Errorf("private key does not parse: %w", err)
+			return
+		}
+		ecKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok || ecKey.Curve != elliptic.P256() {
+			pemErr = fmt.Errorf("only ECDSA P-256 keys are importable")
+			return
+		}
+		cose, pemErr = encodeECDSAPublicKey(&ecKey.PublicKey)
+	})
+	if pemErr != nil {
+		return nil, fmt.Errorf("fido2: %w", pemErr)
+	}
+
+	entry := &PasskeyEntry{
+		RPID:          in.RPID,
+		RPName:        in.RPName,
+		Username:      in.Username,
+		UserHandle:    in.UserHandle,
+		CredentialID:  in.CredentialID,
+		PrivateKeyPEM: in.PrivateKeyPEM,
+		PublicKeyCOSE: cose,
+		SignCount:     in.SignCount,
+		Subject:       in.UserDisplayName,
+		DBUUID:        dbUUID,
+	}
+	if err := persistPasskeyWithCount(db, entry); err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
+	slog.Info("fido2: imported passkey", "rpID", in.RPID)
+	return entry, nil
+}
+
+// RemovePasskey deletes the passkey entry with the given credential ID.
+func (s *Fido2Service) RemovePasskey(credentialID string) error {
+	dbs := s.pool.List()
+	for i := range dbs {
+		entries := dbs[i].RootEntries()
+		for j := range entries {
+			pk, err := extractPasskeyFromEntry(&entries[j])
+			if err != nil {
+				return fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+			}
+			if pk == nil || pk.CredentialID != credentialID {
+				continue
+			}
+			entryUUID := fmt.Sprintf("%x", entries[j].UUID[:])
+			db, err := s.pool.Get(dbs[i].UUID)
+			if err != nil {
+				return fmt.Errorf("fido2: database not found: %w", err)
+			}
+			if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+				return removeEntryByUUIDHex(&kdb.Content.Root.Groups, entryUUID)
+			}); err != nil {
+				return fmt.Errorf("fido2: remove passkey: %w", err)
+			}
+			slog.Info("fido2: removed passkey", "rpID", pk.RPID)
+			return nil
+		}
+	}
+	return ErrNoCredentials
+}
+
+// removeEntryByUUIDHex deletes an entry by hex UUID from the group tree.
+func removeEntryByUUIDHex(groups *[]gokeepasslib.Group, uuidHex string) error {
+	for gi := range *groups {
+		group := &(*groups)[gi]
+		for ei := range group.Entries {
+			if fmt.Sprintf("%x", group.Entries[ei].UUID[:]) == uuidHex {
+				group.Entries = append(group.Entries[:ei], group.Entries[ei+1:]...)
+				return nil
+			}
+		}
+		if err := removeEntryByUUIDHex(&group.Groups, uuidHex); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("entry %s not found", uuidHex)
+}
+
+// persistPasskeyWithCount writes a new passkey entry carrying an explicit
+// initial sign counter (imports seed the exported counter).
+func persistPasskeyWithCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) error {
+	err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+		group := findOrCreatePasskeyGroup(kdb)
+		entry := newPasskeyEntry(pk)
+		setEntryValue(&entry, KPEXPasskeyCounter, fmt.Sprintf("%d", pk.SignCount), false)
+		group.Entries = append(group.Entries, entry)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("persist passkey: %w", err)
+	}
+	return nil
 }
 
 // lookupCredential finds the open database and passkey for an assertion.
@@ -354,16 +503,7 @@ func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.Open
 
 // persistPasskey writes a new passkey entry into the Passkeys group.
 func persistPasskey(db *dbpool.OpenDatabase, pk *PasskeyEntry) error {
-	err := db.UpdateAndSave(func(db *gokeepasslib.Database) error {
-		group := findOrCreatePasskeyGroup(db)
-		entry := newPasskeyEntry(pk)
-		group.Entries = append(group.Entries, entry)
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("persist passkey: %w", err)
-	}
-	return nil
+	return persistPasskeyWithCount(db, pk)
 }
 
 // advanceSignCount increments the persisted sign counter and returns the

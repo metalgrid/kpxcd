@@ -123,7 +123,11 @@
 | PAM password change rewrap | ❌ | Changing login password breaks sealed identity |
 | TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
 | Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
-| FIDO2/passkey API | ❌ | Disabled until storage/extraction and signing are complete |
+| FIDO2/passkey storage and signing | ✅ | KeePass-backed credentials, PKCS#8 keys, persisted counters |
+| FIDO2 virtual CTAP2 device (browsers) | ✅ | /dev/uhid transport, GetInfo/MakeCredential/GetAssertion, ES256 only |
+| FIDO2 presence gate | ✅ | polkit auth_self per register/assert; deny-by-default |
+| Bitwarden passkey import | ✅ | `kpxcctl passkey import` on decrypted JSON exports (ECDSA P-256) |
+| FIDO2 clientPin/UV, credProtect, largeBlob, caBLE | ❌ | Out of scope for v1 (see doc/threat-model.md) |
 | Secret Service credential source | ❌ | Removed — circular dependency with kpxcd's own Secret Service server |
 | `kpxcctl ssh list/add/remove` | ✅ | Wired to AgentServer IdentityManager |
 | `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |

@@ -128,13 +128,22 @@ var _ = Describe("DaemonDBus.SearchEntries", func() {
 })
 
 var _ = Describe("FIDO2 D-Bus methods", func() {
-	It("stay disabled until storage and signing are complete", func() {
-		handler := newHandler(true)
+	It("refuse to run when the fido2 service is not running", func() {
+		handler := newHandler(false)
 
 		_, err := handler.CreatePasskey("", "db", "example.com", "Example", "user", "User", []int{-7})
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
 
-		_, err = handler.AssertPasskey("", "example.com", "cred", "challenge", "https://example.com")
-		Expect(err).To(HaveOccurred())
+		_, err = handler.AssertPasskey("", "example.com", "cred", make([]byte, 32))
+		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
+
+		_, err = handler.ListPasskeys("")
+		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
+
+		_, err = handler.RemovePasskey("", "cred")
+		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
+
+		_, err = handler.ImportPasskey("", "db", "example.com", "Example", "user", "User", "cred", "handle", "PEM", 0)
+		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
 	})
 })

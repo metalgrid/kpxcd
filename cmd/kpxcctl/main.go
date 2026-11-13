@@ -4,10 +4,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/fido2"
 	"github.com/metalgrid/kpxcd/internal/pamcred"
 	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
@@ -89,8 +93,12 @@ Commands:
   ssh test-sign <fingerprint>
                              Test-sign a challenge with a loaded key
   ssh diag                   Show SSH agent diagnostics
-  passkey create <uuid> <rpID> <username>  Disabled: passkey API is not implemented
-  passkey assert <rpID> <credID>            Disabled: passkey API is not implemented
+  passkey list                             List stored passkeys
+  passkey create <uuid> <rpID> <username> [displayName]
+                                           Create a passkey (polkit-gated)
+  passkey remove <credentialID>            Remove a passkey (polkit-gated)
+  passkey import <uuid> <bitwarden.json> [--dry-run]
+                                           Import passkeys from a Bitwarden JSON export
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
   setup-ssh                  Configure SSH_AUTH_SOCK for the current user
   ping                       Check if daemon is alive
@@ -688,21 +696,261 @@ func cmdSSH(args []string) {
 	}
 }
 
-// cmdPasskey handles passkey subcommands.
+// cmdPasskey handles passkey subcommands: list, create, remove, import.
+// Assertions happen in browsers; the daemon CTAP surface handles them.
 func cmdPasskey(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "kpxcctl passkey: missing subcommand (create, assert)")
+		fmt.Fprintln(os.Stderr, "kpxcctl passkey: missing subcommand (list, create, remove, import)")
 		os.Exit(1)
 	}
 
-	switch args[0] {
-	case "create", "assert":
-		fmt.Fprintln(os.Stderr, "kpxcctl passkey: disabled; passkey API is not implemented")
+	obj, conn, err := connectDBus()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	defer conn.Close()
+
+	switch args[0] {
+	case "list":
+		passkeyList(obj)
+	case "create":
+		if len(args) < 4 {
+			fmt.Fprintln(os.Stderr, "kpxcctl passkey create: usage: passkey create <uuid> <rpID> <username> [displayName]")
+			os.Exit(1)
+		}
+		display := args[3]
+		if len(args) > 4 {
+			display = args[4]
+		}
+		call := obj.Call(iface+".CreatePasskey", 0, args[1], args[2], args[2], args[3], display, []int32{-7})
+		if call.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl passkey create: %v\n", call.Err)
+			os.Exit(1)
+		}
+		var out map[string]dbus.Variant
+		if err := call.Store(&out); err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl passkey create: unexpected response: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("created passkey %s for %s (%s)\n",
+			getVariantString(out["credentialID"]), getVariantString(out["rpID"]), getVariantString(out["username"]))
+
+	case "remove":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "kpxcctl passkey remove: usage: passkey remove <credentialID>")
+			os.Exit(1)
+		}
+		call := obj.Call(iface+".RemovePasskey", 0, args[1])
+		if call.Err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl passkey remove: %v\n", call.Err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed passkey %s\n", args[1])
+
+	case "import":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "kpxcctl passkey import: usage: passkey import <uuid> <bitwarden-export.json> [--dry-run]")
+			os.Exit(1)
+		}
+		passkeyImport(obj, args[1], args[2])
+
 	default:
 		fmt.Fprintf(os.Stderr, "kpxcctl passkey: unknown subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
+}
+
+// passkeyList prints metadata for every stored passkey.
+func passkeyList(obj dbus.BusObject) {
+	call := obj.Call(iface+".ListPasskeys", 0)
+	if call.Err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl passkey list: %v\n", call.Err)
+		os.Exit(1)
+	}
+	var rows []map[string]dbus.Variant
+	if err := call.Store(&rows); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl passkey list: unexpected response: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rows) == 0 {
+		fmt.Println("no passkeys stored")
+		return
+	}
+	for _, row := range rows {
+		fmt.Printf("%s  %s@%s  cred=%s  count=%d  db=%s\n",
+			getVariantString(row["rpID"]),
+			getVariantString(row["username"]),
+			getVariantString(row["rpName"]),
+			getVariantString(row["credentialID"]),
+			getVariantUint32(row["signCount"]),
+			getVariantString(row["database"]))
+	}
+}
+
+// passkeyImport ingests a decrypted Bitwarden JSON vault export. Secrets
+// in the file are hot: print a reminder, never echo key material.
+func passkeyImport(obj dbus.BusObject, uuid, path string) {
+	dryRun := false
+	for _, arg := range os.Args {
+		if arg == "--dry-run" {
+			dryRun = true
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl passkey import: %v\n", err)
+		os.Exit(1)
+	}
+
+	var export bitwardenExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		fmt.Fprintf(os.Stderr, "kpxcctl passkey import: not a valid Bitwarden JSON export: %v\n", err)
+		os.Exit(1)
+	}
+
+	imported, failed := 0, 0
+	for _, item := range export.Items {
+		if item.Login == nil {
+			continue
+		}
+		for _, cred := range item.Login.Fido2Credentials {
+			entry, err := parseBitwardenCredential(cred)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  skip %s: %v\n", cred.CredentialID, err)
+				failed++
+				continue
+			}
+			if dryRun {
+				fmt.Printf("would import %s@%s (cred=%s, count=%d)\n",
+					entry.Username, entry.RPID, entry.CredentialID, entry.SignCount)
+				imported++
+				continue
+			}
+			call := obj.Call(iface+".ImportPasskey", 0,
+				uuid, entry.RPID, entry.RPName, entry.Username, entry.UserDisplayName,
+				entry.CredentialID, entry.UserHandle, entry.PrivateKeyPEM, int32(entry.SignCount))
+			if call.Err != nil {
+				fmt.Fprintf(os.Stderr, "  fail %s@%s: %v\n", entry.Username, entry.RPID, call.Err)
+				failed++
+				continue
+			}
+			fmt.Printf("imported %s@%s (cred=%s)\n", entry.Username, entry.RPID, entry.CredentialID)
+			imported++
+		}
+	}
+
+	fmt.Printf("\n%d imported, %d failed\n", imported, failed)
+	if dryRun {
+		fmt.Println("dry run — nothing written")
+	}
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// bitwardenExport models the decrypted Bitwarden JSON vault export.
+type bitwardenExport struct {
+	Items []struct {
+		Login *struct {
+			Fido2Credentials []bitwardenFido2Credential `json:"fido2Credentials"`
+		} `json:"login"`
+	} `json:"items"`
+}
+
+type bitwardenFido2Credential struct {
+	CredentialID    string `json:"credentialId"`
+	KeyType         string `json:"keyType"`
+	KeyAlgorithm    string `json:"keyAlgorithm"`
+	KeyCurve        string `json:"keyCurve"`
+	KeyValue        string `json:"keyValue"`
+	RPID            string `json:"rpId"`
+	RPName          string `json:"rpName"`
+	UserHandle      string `json:"userHandle"`
+	UserName        string `json:"userName"`
+	UserDisplayName string `json:"userDisplayName"`
+	Counter         string `json:"counter"`
+	Discoverable    string `json:"discoverable"`
+	CreationDate    string `json:"creationDate"`
+}
+
+// parseBitwardenCredential validates one Bitwarden passkey and converts it
+// into the kpxcd import shape: base64url IDs, PKCS#8 PEM key, counter.
+func parseBitwardenCredential(cred bitwardenFido2Credential) (fido2.ImportPasskeyInput, error) {
+	var in fido2.ImportPasskeyInput
+	if cred.KeyType != "public-key" || cred.KeyAlgorithm != "ECDSA" || cred.KeyCurve != "P-256" {
+		return in, fmt.Errorf("unsupported key type %s/%s/%s (only ECDSA P-256)", cred.KeyType, cred.KeyAlgorithm, cred.KeyCurve)
+	}
+	if cred.RPID == "" || cred.CredentialID == "" || cred.UserHandle == "" || cred.KeyValue == "" {
+		return in, fmt.Errorf("missing required fields")
+	}
+
+	// Bitwarden stores DER PKCS#8 base64; kpxcd stores PEM.
+	der, err := base64.StdEncoding.DecodeString(cred.KeyValue)
+	if err != nil {
+		return in, fmt.Errorf("keyValue is not base64: %w", err)
+	}
+	pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+
+	// Bitwarden credential IDs and user handles are base64url (padding
+	// varies by client version); normalize to kpxcd's unpadded form.
+	credID, err := normalizeBase64URL(cred.CredentialID)
+	if err != nil {
+		return in, fmt.Errorf("credentialId is not base64url: %w", err)
+	}
+	handle, err := normalizeBase64URL(cred.UserHandle)
+	if err != nil {
+		return in, fmt.Errorf("userHandle is not base64: %w", err)
+	}
+
+	count := uint32(0)
+	if cred.Counter != "" {
+		parsed, err := strconv.ParseUint(cred.Counter, 10, 32)
+		if err != nil {
+			return in, fmt.Errorf("counter is not a number: %w", err)
+		}
+		count = uint32(parsed)
+	}
+
+	display := cred.UserDisplayName
+	if display == "" {
+		display = cred.UserName
+	}
+
+	return fido2.ImportPasskeyInput{
+		RPID:            cred.RPID,
+		RPName:          cred.RPName,
+		Username:        cred.UserName,
+		UserDisplayName: display,
+		CredentialID:    credID,
+		UserHandle:      handle,
+		PrivateKeyPEM:   pemKey,
+		SignCount:       count,
+	}, nil
+}
+
+// normalizeBase64URL decodes std-or-url, padded-or-not base64 and
+// re-encodes kpxcd's canonical unpadded base64url form.
+func normalizeBase64URL(s string) (string, error) {
+	trimmed := strings.TrimRight(s, "=")
+	decoded, err := base64.RawURLEncoding.DecodeString(trimmed)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(trimmed)
+		if err != nil {
+			decoded, err = base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	return base64.RawURLEncoding.EncodeToString(decoded), nil
+}
+
+// getVariantUint32 extracts a uint32 from a Variant, or 0.
+func getVariantUint32(v dbus.Variant) uint32 {
+	n, _ := v.Value().(uint32)
+	return n
 }
 
 // cmdPing checks if the daemon is alive.

@@ -148,6 +148,14 @@ type polkitResult struct {
 	Details      map[string]string
 }
 
+// CheckPolkitAuthorization asks polkit whether caller may perform
+// actionID, allowing user interaction so a desktop polkit agent can show
+// the prompt. Shared with the dbusapi passkey gate; the polkit concept is
+// session-wide, not secret-service-specific.
+func CheckPolkitAuthorization(caller CallerInfo, actionID string) error {
+	return checkPolkitAuthorization(caller, actionID)
+}
+
 // checkPolkitAuthorization asks polkit whether caller may perform actionID.
 // It allows user interaction so a desktop polkit agent can show the prompt.
 func checkPolkitAuthorization(caller CallerInfo, actionID string) error {

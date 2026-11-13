@@ -15,6 +15,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/secretservice"
 	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/tobischo/gokeepasslib/v3"
@@ -730,20 +731,162 @@ func (d *DaemonDBus) SshRemoveKey(sender dbus.Sender, fingerprint string) (bool,
 	return true, nil
 }
 
-// CreatePasskey is reserved for the future passkey API.
-func (d *DaemonDBus) CreatePasskey(sender dbus.Sender, uuid string, rpID string, rpName string, userName string, userDisplayName string, algorithms []int) (map[string]dbus.Variant, *dbus.Error) {
+// polkit action IDs for passkey operations (contrib/polkit policy).
+const (
+	ActionPasskeyCreate = "org.keepassxc.daemon.passkey.create"
+	ActionPasskeyAssert = "org.keepassxc.daemon.passkey.assert"
+)
+
+// authorizePasskey authorizes the sender and gates the operation behind
+// polkit (auth_self; the desktop agent prompts). Unit-test-style calls
+// (empty sender, no connection) follow the same convention as authorize:
+// real D-Bus callers always carry a sender, so no production path skips
+// the gate.
+func (d *DaemonDBus) authorizePasskey(sender dbus.Sender, actionID string) error {
 	if err := d.authorize(sender); err != nil {
-		return nil, dbus.MakeFailedError(err)
+		return err
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2/passkey API is not implemented"))
+	if d.conn == nil && sender == "" {
+		return nil
+	}
+
+	bus := d.conn.Object("org.freedesktop.DBus", dbus.ObjectPath("/org/freedesktop/DBus"))
+	var pid uint32
+	if err := bus.Call("org.freedesktop.DBus.GetConnectionUnixProcessID", 0, string(sender)).Store(&pid); err != nil {
+		return fmt.Errorf("dbusapi: failed to resolve caller process: %w", err)
+	}
+	var uid uint32
+	if err := bus.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender)).Store(&uid); err != nil {
+		return fmt.Errorf("dbusapi: failed to resolve caller user: %w", err)
+	}
+
+	caller := secretservice.CallerInfo{PID: pid, UID: uid, Sender: string(sender)}
+	if err := secretservice.CheckPolkitAuthorization(caller, actionID); err != nil {
+		slog.Warn("passkey operation refused by presence gate", "action", actionID, "sender", string(sender), "err", err)
+		return fmt.Errorf("dbusapi: presence gate refused the operation")
+	}
+	return nil
 }
 
-// AssertPasskey is reserved for the future passkey API.
-func (d *DaemonDBus) AssertPasskey(sender dbus.Sender, rpID string, credentialID string, challenge string, origin string) (map[string]dbus.Variant, *dbus.Error) {
+// CreatePasskey creates and persists a passkey for the given relying party.
+func (d *DaemonDBus) CreatePasskey(sender dbus.Sender, uuid string, rpID string, rpName string, userName string, userDisplayName string, algorithms []int) (map[string]dbus.Variant, *dbus.Error) {
+	if d.fido2 == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
+	}
+	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+		return nil, dbus.MakeFailedError(err)
+	}
+
+	entry, err := d.fido2.CreatePasskey(uuid, rpID, rpName, userName, userDisplayName, algorithms)
+	if err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: %w", err))
+	}
+	return map[string]dbus.Variant{
+		"rpID":         dbus.MakeVariant(entry.RPID),
+		"rpName":       dbus.MakeVariant(entry.RPName),
+		"username":     dbus.MakeVariant(entry.Username),
+		"credentialID": dbus.MakeVariant(entry.CredentialID),
+		"userHandle":   dbus.MakeVariant(entry.UserHandle),
+	}, nil
+}
+
+// AssertPasskey signs one assertion for a stored passkey. The caller
+// supplies the client data hash; user presence is established by the
+// polkit gate inside this call.
+func (d *DaemonDBus) AssertPasskey(sender dbus.Sender, rpID string, credentialID string, clientDataHash []byte) (map[string]dbus.Variant, *dbus.Error) {
+	if d.fido2 == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
+	}
+	if err := d.authorizePasskey(sender, ActionPasskeyAssert); err != nil {
+		return nil, dbus.MakeFailedError(err)
+	}
+
+	result, err := d.fido2.SignAssertion(fido2.SignAssertionInput{
+		RPID:           rpID,
+		CredentialID:   credentialID,
+		ClientDataHash: clientDataHash,
+		UserPresent:    true, // gate approved above
+	})
+	if err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: %w", err))
+	}
+	return map[string]dbus.Variant{
+		"credentialID":      dbus.MakeVariant(result.CredentialID),
+		"userHandle":        dbus.MakeVariant(result.UserHandle),
+		"authenticatorData": dbus.MakeVariant(result.AuthenticatorData),
+		"signature":         dbus.MakeVariant(result.Signature),
+		"signCount":         dbus.MakeVariant(result.SignCount),
+	}, nil
+}
+
+// ListPasskeys returns metadata for every stored passkey. Credential IDs
+// and relying parties are not secret material; private keys never leave
+// the database.
+func (d *DaemonDBus) ListPasskeys(sender dbus.Sender) ([]map[string]dbus.Variant, *dbus.Error) {
+	if d.fido2 == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
+	}
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2/passkey API is not implemented"))
+
+	results := []map[string]dbus.Variant{}
+	for _, db := range d.pool.List() {
+		found, err := d.fido2.FindPasskeysByRPID(db.UUID, "")
+		if err != nil {
+			return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: %w", err))
+		}
+		for _, pk := range found {
+			results = append(results, map[string]dbus.Variant{
+				"database":     dbus.MakeVariant(db.Name),
+				"rpID":         dbus.MakeVariant(pk.RPID),
+				"rpName":       dbus.MakeVariant(pk.RPName),
+				"username":     dbus.MakeVariant(pk.Username),
+				"credentialID": dbus.MakeVariant(pk.CredentialID),
+				"signCount":    dbus.MakeVariant(pk.SignCount),
+			})
+		}
+	}
+	return results, nil
+}
+
+// RemovePasskey deletes the passkey with the given credential ID.
+func (d *DaemonDBus) RemovePasskey(sender dbus.Sender, credentialID string) (bool, *dbus.Error) {
+	if d.fido2 == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
+	}
+	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+		return false, dbus.MakeFailedError(err)
+	}
+	if err := d.fido2.RemovePasskey(credentialID); err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: %w", err))
+	}
+	return true, nil
+}
+
+// ImportPasskey stores one externally exported credential (Bitwarden
+// format: PKCS#8 ECDSA P-256). Caller passes one credential at a time.
+func (d *DaemonDBus) ImportPasskey(sender dbus.Sender, uuid string, rpID string, rpName string, username string, userDisplayName string, credentialID string, userHandle string, privateKeyPEM string, signCount int32) (bool, *dbus.Error) {
+	if d.fido2 == nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
+	}
+	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+		return false, dbus.MakeFailedError(err)
+	}
+	_, err := d.fido2.ImportPasskey(uuid, fido2.ImportPasskeyInput{
+		RPID:            rpID,
+		RPName:          rpName,
+		Username:        username,
+		UserDisplayName: userDisplayName,
+		CredentialID:    credentialID,
+		UserHandle:      userHandle,
+		PrivateKeyPEM:   privateKeyPEM,
+		SignCount:       uint32(signCount),
+	})
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: %w", err))
+	}
+	return true, nil
 }
 
 // findEntryByPath searches for an entry by slash-separated path.
