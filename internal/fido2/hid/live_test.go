@@ -46,11 +46,13 @@ var _ = Describe("live uhid transport", func() {
 		defer hidraw.Close()
 
 		nonce := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04}
-		req := buildRequest(broadcastChannel, cmdInit, nonce)
-		Expect(req).To(HaveLen(1))
-		n, err := hidraw.Write(req[0])
+		// Chrome prefixes hidraw writes with a 0x00 report-ID byte for
+		// report-ID-less devices; write exactly what Chrome writes.
+		req := append([]byte{0x00}, buildRequest(broadcastChannel, cmdInit, nonce)[0]...)
+		Expect(req).To(HaveLen(reportSize + 1))
+		n, err := hidraw.Write(req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(reportSize))
+		Expect(n).To(Equal(reportSize + 1))
 
 		reply := make([]byte, reportSize)
 		read, err := hidraw.Read(reply)

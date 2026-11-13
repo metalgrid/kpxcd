@@ -230,6 +230,7 @@ func (a *Authenticator) handleInit(msg *hostMessage) {
 		a.sendError(msg.channelID, errInvalidCmd)
 		return
 	}
+	slog.Info("hid: CTAPHID handshake from host", "channel", fmt.Sprintf("%#08x", msg.channelID))
 	newCID := msg.channelID
 	if newCID == broadcastChannel {
 		a.mu.Lock()
@@ -249,6 +250,7 @@ func (a *Authenticator) handleCBOR(ctx context.Context, msg *hostMessage) {
 	}
 	command := msg.payload[0]
 	data := msg.payload[1:]
+	slog.Info("hid: CTAP2 command received", "command", fmt.Sprintf("0x%02x", command), "channel", fmt.Sprintf("%#08x", msg.channelID))
 
 	// Run the operation on its own goroutine so the event loop keeps
 	// reading (cancels, new commands) while the gate is pending.
