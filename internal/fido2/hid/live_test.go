@@ -64,5 +64,25 @@ var _ = Describe("live uhid transport", func() {
 		Expect(payload[:8]).To(Equal(nonce))
 		newCID := uint32(payload[8])<<24 | uint32(payload[9])<<16 | uint32(payload[10])<<8 | uint32(payload[11])
 		Expect(newCID).NotTo(Equal(uint32(broadcastChannel)))
+
+		// Chrome-style GetInfo round-trip: prefixed write, reply readback.
+		getInfoFrames := buildRequest(newCID, cmdCBOR, []byte{cmdGetInfo})
+		getInfo := append([]byte{0x00}, getInfoFrames[0]...)
+		_, err = hidraw.Write(getInfo)
+		Expect(err).NotTo(HaveOccurred())
+		reply2 := make([]byte, reportSize)
+		_, err = hidraw.Read(reply2)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reply2[4]).To(Equal(byte(cmdCBOR | typeInit)))
+		total := int(reply2[5])<<8 | int(reply2[6])
+		body := append([]byte{}, reply2[7:]...)
+		for remaining := total - len(body); remaining > 0; remaining -= contPayloadLen {
+			next := make([]byte, reportSize)
+			_, rerr := hidraw.Read(next)
+			Expect(rerr).NotTo(HaveOccurred())
+			body = append(body, next[contHeaderLen:]...)
+		}
+		Expect(body[0]).To(Equal(byte(0x00))) // CTAP2_OK
+		GinkgoWriter.Printf("GetInfo reply: total=%d body=% x\n", total-1, body[1:total])
 	})
 })
