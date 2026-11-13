@@ -300,11 +300,12 @@ func (a *Authenticator) runCommand(ctx context.Context, command byte, data []byt
 // getInfo answers the static CTAP2.0 capability map.
 func (a *Authenticator) getInfo() (byte, []byte) {
 	encoded, err := cbor.Marshal(getInfoResponse{
-		Versions:   []string{"FIDO_2_0"},
-		Extensions: []string{},
-		AAGUID:     aaguid[:],
-		Options:    map[string]bool{"rk": true, "up": true, "clientPin": false},
-		MaxMsgSize: maxMessageLen,
+		Versions:           []string{"FIDO_2_0"},
+		Extensions:         []string{},
+		AAGUID:             aaguid[:],
+		Options:            map[string]bool{"rk": true, "up": true, "clientPin": false},
+		MaxMsgSize:         maxMessageLen,
+		PinUvAuthProtocols: []int{},
 	})
 	if err != nil {
 		return statusInvalidCBOR, nil

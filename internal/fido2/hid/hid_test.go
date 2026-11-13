@@ -255,6 +255,9 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(options["clientPin"]).To(Equal(false))
 		_, ok = info[5].(uint64)
 		Expect(ok).To(BeTrue(), "maxMsgSize unsigned at key 5")
+		protocols, ok := info[6].([]interface{})
+		Expect(ok).To(BeTrue(), "pinUvAuthProtocols array at key 6")
+		Expect(protocols).To(BeEmpty())
 	})
 
 	It("registers a credential when the gate approves", func() {
