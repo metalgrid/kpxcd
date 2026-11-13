@@ -9,15 +9,13 @@ LDFLAGS = -s -w
 GOFLAGS = -trimpath
 VERSION = $(shell git describe --tags --long --always --dirty 2>/dev/null || echo dev)
 
-build: $(BINDIR)/kpxcd $(BINDIR)/kpxcctl
-
-$(BINDIR)/kpxcd: $(wildcard cmd/kpxcd/*.go internal/**/*.go go.mod go.sum)
+# Always build: go's own cache handles incrementality correctly, while
+# make-level wildcards missed nested packages (internal/fido2/hid) and
+# shipped stale binaries under fresh version names once already.
+build:
 	@mkdir -p $(BINDIR)
-	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcd
-
-$(BINDIR)/kpxcctl: $(wildcard cmd/kpxcctl/*.go internal/**/*.go go.mod go.sum)
-	@mkdir -p $(BINDIR)
-	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $@ $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcctl
+	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $(BINDIR)/kpxcd $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcd
+	GOEXPERIMENT=$(GOEXPERIMENT) go build -o $(BINDIR)/kpxcctl $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.version=$(VERSION)' ./cmd/kpxcctl
 
 install: build
 	install -Dm755 $(BINDIR)/kpxcd $(DESTDIR)$(PREFIX)/bin/kpxcd
