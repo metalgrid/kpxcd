@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -85,6 +86,10 @@ type PasskeyEntry struct {
 	DBUUID        string // Database UUID
 	EntryUUID     string // KeePass entry UUID, hex
 }
+
+// ErrNoCredentials is returned when no stored credential matches an
+// assertion request. The CTAP layer maps it to CTAP2_ERR_NO_CREDENTIALS.
+var ErrNoCredentials = errors.New("fido2: no matching passkey")
 
 // Fido2Service provides FIDO2/WebAuthn passkey operations.
 type Fido2Service struct {
@@ -338,7 +343,7 @@ func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.Open
 		}
 	}
 	if best == nil {
-		return nil, nil, fmt.Errorf("no passkey for rpID %q", rpID)
+		return nil, nil, ErrNoCredentials
 	}
 	odb, err := s.pool.Get(bestDB)
 	if err != nil {

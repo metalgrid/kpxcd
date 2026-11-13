@@ -12,6 +12,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/pquerna/otp v1.5.0
+	github.com/psanford/uhid v0.0.0-20210516231035-a7c1e481958d
 	github.com/tobischo/gokeepasslib/v3 v3.6.2
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0

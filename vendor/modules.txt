@@ -97,6 +97,9 @@ github.com/onsi/gomega/types
 # github.com/pquerna/otp v1.5.0
 ## explicit; go 1.12
 github.com/pquerna/otp
+# github.com/psanford/uhid v0.0.0-20210516231035-a7c1e481958d
+## explicit; go 1.16
+github.com/psanford/uhid
 # github.com/tobischo/argon2 v0.1.0
 ## explicit; go 1.21.6
 github.com/tobischo/argon2
