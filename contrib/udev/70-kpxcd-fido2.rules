@@ -3,9 +3,10 @@
 # browser needs rw on the resulting hidraw node. Both grants are seat-
 # scoped via uaccess and apply to the logged-in user only.
 
-# The virtual device carries kpxcd's own VID:PID (not a real vendor);
-# match it exactly so no other device is affected.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2f7c", ATTRS{idProduct}=="2f7c", TAG+="uaccess"
+# NOTE: uhid-created HID devices carry no idVendor/idProduct attributes,
+# so the virtual hidraw nodes can only be matched by their devpath: they
+# always live under /devices/virtual/misc/uhid/.
+SUBSYSTEM=="hidraw", KERNELS=="*misc/uhid*", TAG+="uaccess"
 
 # Allow the user session to create virtual HID devices at all.
 KERNEL=="uhid", TAG+="uaccess"

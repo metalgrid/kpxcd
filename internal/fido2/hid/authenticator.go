@@ -174,7 +174,12 @@ func (a *Authenticator) cancelAll() {
 func (a *Authenticator) handleReport(ctx context.Context, report []byte) {
 	msg, err := a.decodeReport(report)
 	if err != nil {
-		a.log.Warn("hid: dropped malformed report", "err", err)
+		// Kernel drivers (hid-generic bind-time probes) and misbehaving
+		// hosts both end up here; keep the bytes for diagnosis.
+		a.log.Warn("hid: dropped malformed report",
+			"err", err,
+			"len", len(report),
+			"head", fmt.Sprintf("% x", report[:min(len(report), 16)]))
 		return
 	}
 	if msg == nil {
