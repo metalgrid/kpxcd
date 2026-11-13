@@ -114,18 +114,6 @@ func Run(configPath string, cliLevel slog.Level) error {
 		}
 	}
 
-	// Connect to the session bus (shared by DaemonDBus + SecretService).
-	if err := app.startDBus(); err != nil {
-		slog.Error("DBus setup failed", "error", err)
-		// Non-fatal: daemon can still manage databases locally.
-	}
-
-	// Start the SSH agent.
-	if err := app.startSSHAgent(); err != nil {
-		slog.Error("SSH agent setup failed", "error", err)
-		// Non-fatal: other services can still run.
-	}
-
 	// FIDO2 virtual authenticator. The presence gate lands with the
 	// polkit integration; until then the deny-all gate refuses every
 	// browser operation (fail closed).
@@ -140,6 +128,18 @@ func Run(configPath string, cliLevel slog.Level) error {
 			app.fido2Auth.Close()
 			app.fido2Auth = nil
 		}
+	}
+
+	// Connect to the session bus (shared by DaemonDBus + SecretService).
+	if err := app.startDBus(); err != nil {
+		slog.Error("DBus setup failed", "error", err)
+		// Non-fatal: daemon can still manage databases locally.
+	}
+
+	// Start the SSH agent.
+	if err := app.startSSHAgent(); err != nil {
+		slog.Error("SSH agent setup failed", "error", err)
+		// Non-fatal: other services can still run.
 	}
 
 	// Register signal handler.
