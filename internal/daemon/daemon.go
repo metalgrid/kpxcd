@@ -114,9 +114,9 @@ func Run(configPath string, cliLevel slog.Level) error {
 		}
 	}
 
-	// FIDO2 virtual authenticator. The presence gate lands with the
-	// polkit integration; until then the deny-all gate refuses every
-	// browser operation (fail closed).
+	// FIDO2 virtual authenticator. Built before startDBus so the D-Bus
+	// handler captures a live service pointer. The polkit presence gate
+	// denies every browser operation without an explicit approval.
 	if cfg.Fido2.Enabled {
 		app.fido2Svc = fido2.NewFido2Service(&cfg.Fido2, app.pool)
 		app.fido2Ctx, app.fido2Stop = context.WithCancel(context.Background())
