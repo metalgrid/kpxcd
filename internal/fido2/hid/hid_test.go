@@ -4,6 +4,7 @@ package hid
 
 import (
 	"context"
+	"encoding/hex"
 	"sync"
 
 	"github.com/fxamacker/cbor/v2"
@@ -258,6 +259,13 @@ var _ = Describe("CTAP2 commands", func() {
 		protocols, ok := info[6].([]interface{})
 		Expect(ok).To(BeTrue(), "pinUvAuthProtocols array at key 6")
 		Expect(protocols).To(BeEmpty())
+
+		// Chrome's CBOR reader requires strictly monotonic map keys
+		// (byte length, then byte-wise). The options map must appear
+		// canonically ordered: rk, up, clientPin.
+		bodyHex := hex.EncodeToString(body)
+		Expect(bodyHex).To(ContainSubstring("a362726bf5627570f569636c69656e7450696ef4"),
+			"options map must be canonically ordered (rk, up, clientPin)")
 	})
 
 	It("registers a credential when the gate approves", func() {

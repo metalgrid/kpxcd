@@ -43,12 +43,21 @@ type getAssertionResponse struct {
 // Field order per CTAP 2.0 §5.4 authenticatorGetInfo: options at key 4,
 // maxMsgSize at key 5, pinUvAuthProtocols at key 6 — the layout Chrome,
 // libfido2, and shipped authenticators parse.
+// getInfoOptions fields are declared in CBOR canonical key order
+// (byte length, then byte-wise): Chrome's CBOR reader rejects maps whose
+// keys are not strictly monotonically increasing.
+type getInfoOptions struct {
+	Rk        bool `cbor:"rk"`
+	Up        bool `cbor:"up"`
+	ClientPin bool `cbor:"clientPin"`
+}
+
 type getInfoResponse struct {
-	Versions   []string        `cbor:"1,keyasint"`
-	Extensions []string        `cbor:"2,keyasint"`
-	AAGUID     []byte          `cbor:"3,keyasint"`
-	Options    map[string]bool `cbor:"4,keyasint"`
-	MaxMsgSize uint            `cbor:"5,keyasint"`
+	Versions   []string       `cbor:"1,keyasint"`
+	Extensions []string       `cbor:"2,keyasint"`
+	AAGUID     []byte         `cbor:"3,keyasint"`
+	Options    getInfoOptions `cbor:"4,keyasint"`
+	MaxMsgSize uint           `cbor:"5,keyasint"`
 	// clientPin:false still counts as "PIN supported but not set", and
 	// the protocols list is then required — empty means none.
 	PinUvAuthProtocols []int `cbor:"6,keyasint"`

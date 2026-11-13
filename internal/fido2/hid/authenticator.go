@@ -303,7 +303,7 @@ func (a *Authenticator) getInfo() (byte, []byte) {
 		Versions:           []string{"FIDO_2_0"},
 		Extensions:         []string{},
 		AAGUID:             aaguid[:],
-		Options:            map[string]bool{"rk": true, "up": true, "clientPin": false},
+		Options:            getInfoOptions{Rk: true, Up: true, ClientPin: false},
 		MaxMsgSize:         maxMessageLen,
 		PinUvAuthProtocols: []int{},
 	})
