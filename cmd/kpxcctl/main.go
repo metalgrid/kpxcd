@@ -944,8 +944,17 @@ func parseBitwardenCredential(cred bitwardenFido2Credential) (fido2.ImportPasske
 		return in, fmt.Errorf("missing required fields")
 	}
 
-	// Bitwarden stores DER PKCS#8 base64; kpxcd stores PEM.
-	der, err := base64.StdEncoding.DecodeString(cred.KeyValue)
+	// Bitwarden stores DER PKCS#8 as base64url (dashes/underscores,
+	// usually unpadded); older exports used standard base64. Decode any
+	// of the three shapes; kpxcd stores PEM.
+	trimmed := strings.TrimRight(cred.KeyValue, "=")
+	der, err := base64.RawURLEncoding.DecodeString(trimmed)
+	if err != nil {
+		der, err = base64.RawStdEncoding.DecodeString(trimmed)
+	}
+	if err != nil {
+		der, err = base64.StdEncoding.DecodeString(cred.KeyValue)
+	}
 	if err != nil {
 		return in, fmt.Errorf("keyValue is not base64: %w", err)
 	}
