@@ -56,6 +56,11 @@ type Authenticator struct {
 type inflightOp struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// cancelRequested records that CTAPHID_CANCEL aborted this
+	// operation; the aborted transaction must then reply
+	// CTAP2_ERR_KEEPALIVE_CANCEL. Aborts by other means stay silent.
+	cancelRequested bool
 }
 
 // NewAuthenticator builds an authenticator. A nil gate denies everything.
@@ -202,8 +207,12 @@ func (a *Authenticator) handleReport(ctx context.Context, report []byte) {
 func (a *Authenticator) handleMessage(ctx context.Context, msg *hostMessage) {
 	a.mu.Lock()
 	// A new command on a channel with an in-flight operation cancels that
-	// operation first (the host protocol treats it as an abort).
+	// operation first (the host protocol treats it as an abort). Only an
+	// explicit CTAPHID_CANCEL earns the aborted transaction a reply.
 	if op, busy := a.inflight[msg.channelID]; busy {
+		if msg.command == cmdCancel {
+			op.cancelRequested = true
+		}
 		op.cancel()
 		delete(a.inflight, msg.channelID)
 	}
@@ -217,7 +226,10 @@ func (a *Authenticator) handleMessage(ctx context.Context, msg *hostMessage) {
 	case cmdWink:
 		// Not advertised in capabilities; ignore.
 	case cmdCancel:
-		// Already handled by the cancel above; nothing in flight now.
+		// The pending transaction is canceled above and replies
+		// CTAP2_ERR_KEEPALIVE_CANCEL; CANCEL itself is never answered
+		// directly (CTAP 2.0 §8.1.9.1.5). With nothing in flight it is
+		// ignored, as the spec requires.
 	case cmdCBOR:
 		a.handleCBOR(ctx, msg)
 	case cmdMsg:
@@ -267,10 +279,18 @@ func (a *Authenticator) handleCBOR(ctx context.Context, msg *hostMessage) {
 	go func() {
 		defer close(op.done)
 		status, response := a.runCommand(opCtx, command, data, cid)
-		select {
-		case <-opCtx.Done():
-			return // canceled; the host moved on
-		default:
+		if opCtx.Err() != nil {
+			// The transaction was aborted before it could respond. An
+			// explicit CTAPHID_CANCEL abort replies CTAP2_ERR_KEEPALIVE_CANCEL
+			// (CTAP 2.0 §8.1.9.1.5); any other abort means the host moved
+			// on and must not receive a stale reply.
+			a.mu.Lock()
+			reply := op.cancelRequested
+			a.mu.Unlock()
+			if reply {
+				a.sendCBORStatus(cid, statusKeepaliveCancel)
+			}
+			return
 		}
 		a.mu.Lock()
 		if a.inflight[cid] == op {

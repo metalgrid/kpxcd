@@ -98,6 +98,23 @@ func buildRequest(channelID uint32, command byte, payload []byte) [][]byte {
 	return encodeInitReply(channelID, command, payload)
 }
 
+// allocateChannel drives a broadcast INIT and returns the new CID.
+func allocateChannel(writer *fakeWriter, feeds *fakeEvents) uint32 {
+	for _, report := range buildRequest(broadcastChannel, cmdInit, make([]byte, 8)) {
+		feeds.feedHostReport(report)
+	}
+	Eventually(writer.all, "3s").Should(HaveLen(1))
+	reply := writer.all()[0]
+	return uint32(reply[8])<<24 | uint32(reply[9])<<16 | uint32(reply[10])<<8 | uint32(reply[11])
+}
+
+// sendCBORRequest frames and feeds one CTAPHID_CBOR command.
+func sendCBORRequest(feeds *fakeEvents, cid uint32, command byte, body []byte) {
+	for _, report := range buildRequest(cid, cmdCBOR, append([]byte{command}, body...)) {
+		feeds.feedHostReport(report)
+	}
+}
+
 // firstCBORReply waits for the first CBOR reply report and returns its
 // payload (status byte + optional CBOR body).
 func firstCBORReply(writer *fakeWriter) (byte, []byte) {
@@ -217,18 +234,11 @@ var _ = Describe("CTAPHID handshake", func() {
 
 var _ = Describe("CTAP2 commands", func() {
 	allocate := func(writer *fakeWriter, feeds *fakeEvents) uint32 {
-		for _, report := range buildRequest(broadcastChannel, cmdInit, make([]byte, 8)) {
-			feeds.feedHostReport(report)
-		}
-		Eventually(writer.all, "3s").Should(HaveLen(1))
-		reply := writer.all()[0]
-		return uint32(reply[8])<<24 | uint32(reply[9])<<16 | uint32(reply[10])<<8 | uint32(reply[11])
+		return allocateChannel(writer, feeds)
 	}
 
 	sendCBOR := func(feeds *fakeEvents, cid uint32, command byte, body []byte) {
-		for _, report := range buildRequest(cid, cmdCBOR, append([]byte{command}, body...)) {
-			feeds.feedHostReport(report)
-		}
+		sendCBORRequest(feeds, cid, command, body)
 	}
 
 	It("answers GetInfo with the kpxcd capabilities", func() {
@@ -409,6 +419,67 @@ var _ = Describe("CTAP2 status codes", func() {
 			"NO_CREDENTIALS":        0x2E,
 			"USER_ACTION_TIMEOUT":   0x2F,
 		}))
+	})
+})
+
+// pendingGate blocks Approve until released, mimicking a human still
+// deciding at the prompt.
+type pendingGate struct{ release chan struct{} }
+
+func (g pendingGate) Approve(ctx context.Context, _ Operation) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-g.release:
+		return true
+	}
+}
+
+var _ = Describe("CTAPHID_CANCEL", func() {
+	It("replies KEEPALIVE_CANCEL to the aborted transaction", func() {
+		release := make(chan struct{})
+		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, pendingGate{release: release})
+		defer stop()
+		cid := allocateChannel(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: "example.com",
+			2: make([]byte, 32),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBORRequest(feeds, cid, cmdGetAssertion, req)
+
+		// The gate is pending once keepalives start flowing.
+		Eventually(func() bool {
+			for _, r := range writer.all() {
+				if r[4] == byte(cmdKeepalive|typeInit) {
+					return true
+				}
+			}
+			return false
+		}, "3s").Should(BeTrue(), "gate wait emits CTAPHID_KEEPALIVE")
+
+		for _, report := range buildRequest(cid, cmdCancel, nil) {
+			feeds.feedHostReport(report)
+		}
+
+		// The aborted transaction answers CTAP2_ERR_KEEPALIVE_CANCEL;
+		// CANCEL itself is never answered directly.
+		status, body := firstCBORReply(writer)
+		Expect(status).To(Equal(statusKeepaliveCancel))
+		Expect(body).To(BeEmpty())
+	})
+
+	It("ignores CANCEL with nothing in flight", func() {
+		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, allowGate{})
+		defer stop()
+		cid := allocateChannel(writer, feeds)
+
+		for _, report := range buildRequest(cid, cmdCancel, nil) {
+			feeds.feedHostReport(report)
+		}
+		// No reply of any kind: the reply count stays at the INIT reply.
+		Consistently(func() int { return len(writer.all()) }, "300ms", "50ms").Should(Equal(1))
 	})
 })
 
