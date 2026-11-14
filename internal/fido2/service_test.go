@@ -413,7 +413,10 @@ var _ = Describe("SignAssertion", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("refuses to sign without user presence", func() {
+	It("signs silent exclude-list probes without the UP flag", func() {
+		// Chrome's exclude-list probe signs without user presence: the
+		// assertion only proves the credential exists, so authData
+		// carries no UP bit and the refusal above does not apply.
 		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 		created, err := svc.CreatePasskey(
@@ -423,11 +426,19 @@ var _ = Describe("SignAssertion", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = svc.SignAssertion(SignAssertionInput{
+		res, err := svc.SignAssertion(SignAssertionInput{
 			RPID: "example.com", CredentialID: created.CredentialID,
 			ClientDataHash: hash(),
 		})
-		Expect(err).To(MatchError(ContainSubstring("refusing to sign without user presence")))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.AuthenticatorData[32]&FlagUP).To(Equal(byte(0)), "silent probe carries no UP flag")
+
+		_, err = svc.SignAssertion(SignAssertionInput{
+			RPID: "example.com", CredentialID: created.CredentialID,
+			ClientDataHash: hash(), UserVerified: true,
+		})
+		Expect(err).To(MatchError(ContainSubstring("refusing to sign UV-flagged without user presence")),
+			"UV without presence is incoherent and must be refused")
 	})
 
 	It("refuses a credential ID that belongs to another RPID", func() {

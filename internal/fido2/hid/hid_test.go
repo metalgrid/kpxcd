@@ -44,12 +44,14 @@ func (f *fakeEvents) feedHostReport(report []byte) {
 
 // stubStore is a CredentialStore with canned responses. A non-nil cose
 // overrides the filler COSE blob Create returns, so live specs can push
-// a real key through the kernel path.
+// a real key through the kernel path. excluded=true makes HasCredential
+// report every ID as stored (excludeList enforcement specs).
 type stubStore struct {
 	createCalls int
 	denyAssert  bool
 	creds       bool
 	cose        []byte
+	excluded    bool
 }
 
 func (s *stubStore) Create(rpID, rpName, userName, userDisplayName string) ([]byte, []byte, []byte, error) {
@@ -67,17 +69,28 @@ func (s *stubStore) Create(rpID, rpName, userName, userDisplayName string) ([]by
 	return []byte{0xAA, 0xBB}, []byte{0x01, 0x02}, cose, nil
 }
 
-func (s *stubStore) Assert(rpID string, credentialID, clientDataHash []byte, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
+func (s *stubStore) Assert(rpID string, credentialID, clientDataHash []byte, userPresence, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
 	if s.denyAssert {
 		return nil, nil, nil, nil, ErrNoCredentials
 	}
-	authData := authenticatorData(rpID, FlagUP, 1, nil)
+	var flags byte
+	if userPresence {
+		flags |= FlagUP
+	}
+	if userVerified {
+		flags |= FlagUV
+	}
+	authData := authenticatorData(rpID, flags, 1, nil)
 	sig := make([]byte, 70)
 	return []byte{0xAA, 0xBB}, []byte{0x01, 0x02}, authData, sig, nil
 }
 
 func (s *stubStore) HasCredentialsForRPID(rpID string) (bool, error) {
 	return s.creds, nil
+}
+
+func (s *stubStore) HasCredential(credentialID []byte) (bool, error) {
+	return s.excluded && len(credentialID) > 0, nil
 }
 
 // allowGate approves everything; denyGate refuses everything.
@@ -460,6 +473,74 @@ var _ = Describe("CTAP2 commands", func() {
 		authData, _ := resp[2].([]byte)
 		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)),
 			"the gate's face verification performs UV for uv-flagged requests")
+	})
+
+	It("signs silently for exclude-list probes without the UP flag", func() {
+		// Chrome probes excluded credentials with userPresence=false:
+		// no gate may fire (denyGate proves it) and authData carries no
+		// UP bit, or the platform treats the probe as a user touch.
+		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, denyGate{})
+		defer stop()
+		cid := allocate(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: "example.com",
+			2: make([]byte, 32),
+			5: map[string]interface{}{"userPresence": false},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBOR(feeds, cid, cmdGetAssertion, req)
+
+		status, body := firstCBORReply(writer)
+		Expect(status).To(Equal(statusOK))
+		var resp map[interface{}]interface{}
+		Expect(cbor.Unmarshal(body, &resp)).To(Succeed())
+		resp = normalizeMap(resp)
+		authData, _ := resp[2].([]byte)
+		Expect(authData[32]&FlagUP).To(Equal(byte(0)), "silent probes carry no UP flag")
+	})
+
+	It("sets the UV flag on GetAssertion when the request requires it", func() {
+		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, allowGate{})
+		defer stop()
+		cid := allocate(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: "example.com",
+			2: make([]byte, 32),
+			5: map[string]interface{}{"uv": true},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBOR(feeds, cid, cmdGetAssertion, req)
+
+		status, body := firstCBORReply(writer)
+		Expect(status).To(Equal(statusOK))
+		var resp map[interface{}]interface{}
+		Expect(cbor.Unmarshal(body, &resp)).To(Succeed())
+		resp = normalizeMap(resp)
+		authData, _ := resp[2].([]byte)
+		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)), "gate-performed face verification is UV")
+	})
+
+	It("refuses registrations whose excludeList matches a stored credential", func() {
+		store := &stubStore{creds: true, excluded: true}
+		_, writer, feeds, stop := newTestAuthenticator(store, allowGate{})
+		defer stop()
+		cid := allocate(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: make([]byte, 32),
+			2: map[string]interface{}{"id": "example.com"},
+			3: map[string]interface{}{"id": []byte{9}, "name": "user"},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
+			5: []interface{}{map[string]interface{}{"type": "public-key", "id": []byte{0xAA, 0xBB}}},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBOR(feeds, cid, cmdMakeCredential, req)
+
+		status, _ := firstCBORReply(writer)
+		Expect(status).To(Equal(statusCredentialExcluded))
+		Expect(store.createCalls).To(Equal(0), "excluded registrations must not create duplicates")
 	})
 
 	It("refuses unknown CTAP2 commands", func() {

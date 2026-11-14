@@ -169,7 +169,8 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 }
 
 // SignAssertionInput carries one assertion request. UserPresent is a gate
-// output: the caller must have established user presence before calling.
+// verdict (the caller must have established presence before calling);
+// false marks a silent exclude-list probe, signed without the UP flag.
 type SignAssertionInput struct {
 	RPID           string
 	CredentialID   string // Base64url; empty selects a resident credential by RPID
@@ -203,8 +204,11 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	if len(in.ClientDataHash) != sha256.Size {
 		return nil, fmt.Errorf("fido2: client data hash must be %d bytes, got %d", sha256.Size, len(in.ClientDataHash))
 	}
-	if !in.UserPresent {
-		return nil, fmt.Errorf("fido2: refusing to sign without user presence")
+	// Silent exclude-list probes sign without user presence: the
+	// assertion only proves the credential exists, and the flags carry
+	// no UP bit. UV without presence is incoherent and refused.
+	if in.UserVerified && !in.UserPresent {
+		return nil, fmt.Errorf("fido2: refusing to sign UV-flagged without user presence")
 	}
 
 	odb, entry, err := s.lookupCredential(in.RPID, in.CredentialID)
@@ -220,8 +224,10 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	}
 
 	var flags byte
-	flags |= FlagUP
-	if in.UserVerified {
+	if in.UserPresent {
+		flags |= FlagUP
+	}
+	if in.UserVerified && in.UserPresent {
 		flags |= FlagUV
 	}
 	if in.BackupEligible {

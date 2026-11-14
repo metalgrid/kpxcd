@@ -48,11 +48,19 @@ type CredentialStore interface {
 
 	// Assert signs for the credential matching rpID and credentialID
 	// (nil credentialID selects the newest resident credential for the
-	// RPID). Returns the credential ID actually used — resident lookups
-	// must surface it — plus user handle, authenticator data, and
-	// signature. The store refuses unknown or cross-RP credentials and
-	// returns ErrNoCredentials when nothing matches.
-	Assert(rpID string, credentialID, clientDataHash []byte, userVerified bool) (usedCredentialID, userHandle, authenticatorData, signature []byte, err error)
+	// RPID). userPresence=false marks a silent exclude-list probe: no
+	// gate, no UP flag. userVerified=true marks that user verification
+	// was performed and must be reflected in the UV flag. Returns the
+	// credential ID actually used — resident lookups must surface it —
+	// plus user handle, authenticator data, and signature. The store
+	// refuses unknown or cross-RP credentials and returns
+	// ErrNoCredentials when nothing matches.
+	Assert(rpID string, credentialID, clientDataHash []byte, userPresence, userVerified bool) (usedCredentialID, userHandle, authenticatorData, signature []byte, err error)
+
+	// HasCredential reports whether the store holds a credential with
+	// this exact ID — used for excludeList enforcement during
+	// MakeCredential.
+	HasCredential(credentialID []byte) (bool, error)
 
 	// HasCredentialsForRPID reports whether any resident credential
 	// exists for the RPID. GetAssertion consults this before asking the

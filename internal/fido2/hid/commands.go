@@ -159,6 +159,13 @@ func boolAt(m map[interface{}]interface{}, key interface{}) bool {
 	return b
 }
 
+// boolOK reports whether the key is present with a boolean value,
+// distinguishing "explicitly false" from "absent".
+func boolOK(m map[interface{}]interface{}, key string) (bool, bool) {
+	b, ok := m[key].(bool)
+	return b, ok
+}
+
 // send frames and writes a complete device message.
 func (a *Authenticator) send(channelID uint32, command byte, payload []byte) {
 	for _, report := range encodeInitReply(channelID, command, payload) {
@@ -258,11 +265,33 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	// User verification: the gate (zdr face via polkit) is the UV
 	// mechanism, so a uv-flagged request runs the gate and sets the UV
 	// flag on approval. Options arrive at top-level key 7 as a map with
-	// text keys ("rk", "uv", ...).
+	// text keys ("rk", "uv", ...); excludeList entries at key 5 are
+	// descriptor maps with text keys too.
 	options, _ := req[7].(map[interface{}]interface{})
 	uvRequested := boolAt(options, "uv")
 	if uvRequested {
 		slog.Info("hid: MakeCredential requests user verification", "rpID", rpID)
+	}
+
+	// Exclude list (key 5): if any listed credential is ours, the site
+	// already has this user registered — refuse before prompting so no
+	// duplicate credential is created. CTAP2_ERR_CREDENTIAL_EXCLUDED.
+	if excludeList, ok := req[5].([]interface{}); ok {
+		for _, item := range excludeList {
+			desc, _ := item.(map[interface{}]interface{})
+			id := bytesAt(desc, "id")
+			if len(id) == 0 {
+				continue
+			}
+			excluded, err := a.store.HasCredential(id)
+			if err != nil {
+				a.log.Error("hid: exclude list lookup failed", "rpID", rpID, "err", err)
+				return statusOperationDenied, nil
+			}
+			if excluded {
+				return statusCredentialExcluded, nil
+			}
+		}
 	}
 
 	// shortcut: the gate is invoked with no per-site attribution because
@@ -315,14 +344,19 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		return statusMissingParam, nil
 	}
 
-	// UV requests are satisfied by the gate's face verification; the
-	// flag is set on the signed assertion below. Options arrive at
-	// top-level key 7 as a map with text keys ("rk", "uv", ...).
-	options, _ := req[7].(map[interface{}]interface{})
-	uvRequested := boolAt(options, "uv")
+	// GetAssertion options live at top-level key 5 ("userPresence"
+	// defaults to true; "uv" defaults to false). Chrome's exclude-list
+	// silent sign sets userPresence=false: answer without prompting and
+	// without the UP flag so the platform learns which credentials exist.
+	options, _ := req[5].(map[interface{}]interface{})
+	silent := false
+	if present, ok := boolOK(options, "userPresence"); ok && !present {
+		silent = true
+	}
+	uvRequested := boolAt(options, "uv") && !silent
 
 	// Consult availability before the gate: a site the user has no
-	// credentials for must not trigger a prompt (0x22 without waiting).
+	// credentials for must not trigger a prompt (0x2E without waiting).
 	available, err := a.store.HasCredentialsForRPID(rpID)
 	if err != nil {
 		a.log.Error("hid: credential lookup failed", "rpID", rpID, "err", err)
@@ -342,15 +376,21 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		}
 	}
 
-	approved, timedOut := a.waitGate(ctx, cid, Operation{Kind: OperationAuthenticate, RPID: rpID})
-	if timedOut {
-		return statusUserActionTimeout, nil
-	}
-	if !approved {
-		return statusOperationDenied, nil
+	// The gate is the user-presence touch (and, for uv-flagged requests,
+	// the face verification). Silent exclude-list signs skip it entirely.
+	var approved = true
+	if !silent {
+		var timedOut bool
+		approved, timedOut = a.waitGate(ctx, cid, Operation{Kind: OperationAuthenticate, RPID: rpID})
+		if timedOut {
+			return statusUserActionTimeout, nil
+		}
+		if !approved {
+			return statusOperationDenied, nil
+		}
 	}
 
-	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, uvRequested)
+	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, !silent, uvRequested && !silent)
 	if err != nil {
 		if errors.Is(err, ErrNoCredentials) {
 			return statusNoCredentials, nil

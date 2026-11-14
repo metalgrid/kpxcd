@@ -22,6 +22,7 @@ const (
 	statusInvalidCommand       byte = 0x01 // CTAP1_ERR_INVALID_COMMAND: sent for unknown CTAP2 commands (CTAP 2.1 §8.1)
 	statusInvalidCBOR          byte = 0x12 // CTAP2_ERR_INVALID_CBOR
 	statusMissingParam         byte = 0x14 // CTAP2_ERR_MISSING_PARAMETER
+	statusCredentialExcluded   byte = 0x19 // CTAP2_ERR_CREDENTIAL_EXCLUDED
 	statusInvalidCredential    byte = 0x22 // CTAP2_ERR_INVALID_CREDENTIAL
 	statusUnsupportedAlgorithm byte = 0x26 // CTAP2_ERR_UNSUPPORTED_ALGORITHM
 	statusOperationDenied      byte = 0x27 // CTAP2_ERR_OPERATION_DENIED

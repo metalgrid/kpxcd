@@ -69,8 +69,10 @@ func (c *CtapStore) Create(rpID, rpName, userName, userDisplayName string) ([]by
 }
 
 // Assert implements hid.CredentialStore. User presence is established by
-// the gate before the transport calls this.
-func (c *CtapStore) Assert(rpID string, credentialID, clientDataHash []byte, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
+// the gate before the transport calls this, except for silent
+// exclude-list probes (userPresence=false), which sign without the UP
+// flag so the platform can discover credential presence.
+func (c *CtapStore) Assert(rpID string, credentialID, clientDataHash []byte, userPresence, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
 	credIDStr := ""
 	if credentialID != nil {
 		credIDStr = base64.RawURLEncoding.EncodeToString(credentialID)
@@ -79,7 +81,7 @@ func (c *CtapStore) Assert(rpID string, credentialID, clientDataHash []byte, use
 		RPID:           rpID,
 		CredentialID:   credIDStr,
 		ClientDataHash: clientDataHash,
-		UserPresent:    true, // gate output, checked upstream
+		UserPresent:    userPresence, // gate output, checked upstream
 		UserVerified:   userVerified,
 	})
 	if err != nil {
@@ -98,6 +100,22 @@ func (c *CtapStore) HasCredentialsForRPID(rpID string) (bool, error) {
 		return false, err
 	}
 	return len(found) > 0, nil
+}
+
+// HasCredential implements hid.CredentialStore for excludeList
+// enforcement: reports whether this exact credential ID is stored.
+func (c *CtapStore) HasCredential(credentialID []byte) (bool, error) {
+	if len(credentialID) == 0 {
+		return false, nil
+	}
+	_, err := c.svc.FindPasskeyByCredentialID(base64.RawURLEncoding.EncodeToString(credentialID))
+	if errors.Is(err, ErrNoCredentials) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // defaultDB resolves the registration database UUID at call time.
