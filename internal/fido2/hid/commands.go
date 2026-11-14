@@ -162,7 +162,9 @@ func (a *Authenticator) waitGate(ctx context.Context, cid uint32, op Operation) 
 		case ok := <-approvedCh:
 			return ok, false
 		case <-ticker.C:
-			a.send(cid, cmdKeepalive, encodeKeepalive(statusProcessing))
+			// Still waiting on the gate: report user-presence-needed so
+			// the host keeps its dialog in the "touch the device" state.
+			a.send(cid, cmdKeepalive, encodeKeepalive(statusUpNeeded))
 		}
 	}
 }

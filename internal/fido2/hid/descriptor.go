@@ -96,11 +96,11 @@ const (
 	errOther      = 0x0A
 )
 
-// keepaliveStatus values.
-const (
-	statusIdle       = 0x01
-	statusProcessing = 0x02
-)
+// CTAPHID_KEEPALIVE status values (CTAP 2.0 §8.1.9.1.7): 0x01 is
+// STATUS_PROCESSING (still working on the request), 0x02 is
+// STATUS_UPNEEDED (waiting for user presence). The gate prompt is the
+// user-presence wait, so that is what the device reports.
+const statusUpNeeded = 0x02
 
 // hostMessage is one fully reassembled CTAPHID command from the client.
 type hostMessage struct {
