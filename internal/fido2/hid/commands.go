@@ -95,7 +95,7 @@ func normalizeMap(in map[interface{}]interface{}) map[interface{}]interface{} {
 }
 
 // intAt reads an integer value regardless of decode width.
-func intAt(m map[interface{}]interface{}, key int) (int64, bool) {
+func intAt(m map[interface{}]interface{}, key interface{}) (int64, bool) {
 	switch v := m[key].(type) {
 	case int:
 		return int64(v), true
@@ -108,17 +108,17 @@ func intAt(m map[interface{}]interface{}, key int) (int64, bool) {
 	}
 }
 
-func textAt(m map[interface{}]interface{}, key int) string {
+func textAt(m map[interface{}]interface{}, key interface{}) string {
 	s, _ := m[key].(string)
 	return s
 }
 
-func bytesAt(m map[interface{}]interface{}, key int) []byte {
+func bytesAt(m map[interface{}]interface{}, key interface{}) []byte {
 	b, _ := m[key].([]byte)
 	return b
 }
 
-func boolAt(m map[interface{}]interface{}, key int) bool {
+func boolAt(m map[interface{}]interface{}, key interface{}) bool {
 	b, _ := m[key].(bool)
 	return b
 }
@@ -179,19 +179,27 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	}
 	rp, _ := req[2].(map[interface{}]interface{})
 	user, _ := req[3].(map[interface{}]interface{})
-	rpID := textAt(rp, 1)
-	rpName := textAt(rp, 2)
-	userID := bytesAt(user, 1)
-	userName := textAt(user, 2)
-	userDisplayName := textAt(user, 3)
+	rpID := textAt(rp, "id")
+	rpName := textAt(rp, "name")
+	userID := bytesAt(user, "id")
+	userName := textAt(user, "name")
+	userDisplayName := textAt(user, "displayName")
 	if rpID == "" || len(userID) == 0 {
 		slog.Warn("hid: MakeCredential rejected as missing parameter",
 			"req_len", len(data),
 			"req_keys", fmt.Sprintf("%v", req),
-			"req", fmt.Sprintf("% x", data),
 			"rpID", rpID,
 			"user_id_len", len(userID))
 		return statusMissingParam, nil
+	}
+
+	// Chromium's FidoDeviceAuthenticator::GetTouch probes devices with a
+	// dummy MakeCredential whose RP ID is ".dummy" (its kDummyRpID) to
+	// collect a touch; it discards the response either way. Decline it
+	// without prompting or storing — no gate, no junk credential. A real
+	// site cannot claim ".dummy": it is not a valid domain.
+	if rpID == ".dummy" {
+		return statusOperationDenied, nil
 	}
 
 	// D4: ES256 only on the CTAP surface.
@@ -199,8 +207,10 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	params, _ := req[4].([]interface{})
 	for _, p := range params {
 		pm, _ := p.(map[interface{}]interface{})
-		if alg, ok := intAt(pm, 1); ok && alg == -7 {
-			algOK = true
+		if textAt(pm, "type") == "public-key" {
+			if alg, ok := intAt(pm, "alg"); ok && alg == -7 {
+				algOK = true
+			}
 		}
 	}
 	if !algOK {
@@ -208,8 +218,9 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	}
 
 	// D4: no user verification mechanism exists; a UV-required request is
-	// denied rather than silently downgraded.
-	if boolAt(req, 7) {
+	// denied rather than silently downgraded. The options arrive at
+	// top-level key 7 as a map with text keys ("rk", "uv", ...).
+	if options, ok := req[7].(map[interface{}]interface{}); ok && boolAt(options, "uv") {
 		return statusOperationDenied, nil
 	}
 
@@ -258,8 +269,9 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		return statusMissingParam, nil
 	}
 
-	// D4: no user verification mechanism exists.
-	if boolAt(req, 7) {
+	// D4: no user verification mechanism exists. Options arrive at
+	// top-level key 7 as a map with text keys ("rk", "uv", ...).
+	if options, ok := req[7].(map[interface{}]interface{}); ok && boolAt(options, "uv") {
 		return statusOperationDenied, nil
 	}
 
@@ -278,7 +290,7 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 	allowList, _ := req[3].([]interface{})
 	for _, item := range allowList {
 		im, _ := item.(map[interface{}]interface{})
-		if id := bytesAt(im, 2); len(id) > 0 {
+		if id := bytesAt(im, "id"); len(id) > 0 {
 			credentialID = id
 			break
 		}

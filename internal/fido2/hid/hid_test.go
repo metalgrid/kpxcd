@@ -293,9 +293,9 @@ var _ = Describe("CTAP2 commands", func() {
 
 		req, err := cbor.Marshal(map[interface{}]interface{}{
 			1: make([]byte, 32), // clientDataHash
-			2: map[interface{}]interface{}{1: "example.com", 2: "Example"},
-			3: map[interface{}]interface{}{1: []byte{9, 9}, 2: "user", 3: "User"},
-			4: []interface{}{map[interface{}]interface{}{1: -7, 2: "public-key"}},
+			2: map[string]interface{}{"id": "example.com", "name": "Example"},
+			3: map[string]interface{}{"id": []byte{9, 9}, "name": "user", "displayName": "User"},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdMakeCredential, req)
@@ -320,9 +320,9 @@ var _ = Describe("CTAP2 commands", func() {
 
 		req, err := cbor.Marshal(map[interface{}]interface{}{
 			1: make([]byte, 32),
-			2: map[interface{}]interface{}{1: "example.com"},
-			3: map[interface{}]interface{}{1: []byte{9}},
-			4: []interface{}{map[interface{}]interface{}{1: -7, 2: "public-key"}},
+			2: map[string]interface{}{"id": "example.com"},
+			3: map[string]interface{}{"id": []byte{9}},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdMakeCredential, req)
@@ -338,9 +338,9 @@ var _ = Describe("CTAP2 commands", func() {
 
 		req, err := cbor.Marshal(map[interface{}]interface{}{
 			1: make([]byte, 32),
-			2: map[interface{}]interface{}{1: "example.com"},
-			3: map[interface{}]interface{}{1: []byte{9}},
-			4: []interface{}{map[interface{}]interface{}{1: -8, 2: "public-key"}},
+			2: map[string]interface{}{"id": "example.com"},
+			3: map[string]interface{}{"id": []byte{9}},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -8}},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdMakeCredential, req)
@@ -386,6 +386,46 @@ var _ = Describe("CTAP2 commands", func() {
 		resp = normalizeMap(resp)
 		Expect(resp[1]).To(Equal([]byte{0xAA, 0xBB}))
 		Expect(resp[3]).NotTo(BeEmpty())
+	})
+
+	It("declines Chromium's .dummy touch probe without prompting or storing", func() {
+		store := &stubStore{creds: true}
+		_, writer, feeds, stop := newTestAuthenticator(store, allowGate{})
+		defer stop()
+		cid := allocate(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: make([]byte, 32),
+			2: map[string]interface{}{"id": ".dummy"},
+			3: map[string]interface{}{"id": []byte{1}, "name": "dummy"},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBOR(feeds, cid, cmdMakeCredential, req)
+
+		status, _ := firstCBORReply(writer)
+		Expect(status).To(Equal(statusOperationDenied))
+		Expect(store.createCalls).To(Equal(0),
+			"the touch probe must not create a credential or reach the store")
+	})
+
+	It("denies MakeCredential requests that require user verification", func() {
+		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, allowGate{})
+		defer stop()
+		cid := allocate(writer, feeds)
+
+		req, err := cbor.Marshal(map[interface{}]interface{}{
+			1: make([]byte, 32),
+			2: map[string]interface{}{"id": "example.com"},
+			3: map[string]interface{}{"id": []byte{9}, "name": "user"},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
+			7: map[string]interface{}{"uv": true},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		sendCBOR(feeds, cid, cmdMakeCredential, req)
+
+		status, _ := firstCBORReply(writer)
+		Expect(status).To(Equal(statusOperationDenied))
 	})
 
 	It("refuses unknown CTAP2 commands", func() {

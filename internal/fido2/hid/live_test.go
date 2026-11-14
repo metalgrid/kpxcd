@@ -151,9 +151,9 @@ var _ = Describe("live uhid transport", func() {
 		clientDataHash := bytes.Repeat([]byte{0x5A}, 32)
 		req, err := cbor.Marshal(map[interface{}]interface{}{
 			1: clientDataHash,
-			2: map[interface{}]interface{}{1: "example.com", 2: "Example"},
-			3: map[interface{}]interface{}{1: []byte{9, 9}, 2: "user", 3: "User"},
-			4: []interface{}{map[interface{}]interface{}{1: -7, 2: "public-key"}},
+			2: map[string]interface{}{"id": "example.com", "name": "Example"},
+			3: map[string]interface{}{"id": []byte{9, 9}, "name": "user", "displayName": "User"},
+			4: []interface{}{map[string]interface{}{"type": "public-key", "alg": -7}},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		writeCTAP(hidraw, cid, cmdCBOR, append([]byte{cmdMakeCredential}, req...))
