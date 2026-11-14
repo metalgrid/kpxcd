@@ -324,7 +324,9 @@ func (a *Authenticator) runCommand(ctx context.Context, command byte, data []byt
 	}
 }
 
-// getInfo answers the static CTAP2.0 capability map.
+// getInfo answers the static CTAP2 capability map. The algorithms field
+// (CTAP 2.1) is present because Chrome refuses candidate devices without
+// it; creation itself stays ES256 per D4.
 func (a *Authenticator) getInfo() (byte, []byte) {
 	encoded, err := cbor.Marshal(getInfoResponse{
 		Versions:   []string{"FIDO_2_0"},
@@ -332,6 +334,7 @@ func (a *Authenticator) getInfo() (byte, []byte) {
 		AAGUID:     aaguid[:],
 		Options:    getInfoOptions{Rk: true, Up: true},
 		MaxMsgSize: maxMessageLen,
+		Algorithms: getInfoAlgorithms,
 	})
 	if err != nil {
 		return statusInvalidCBOR, nil

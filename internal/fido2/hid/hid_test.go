@@ -283,6 +283,21 @@ var _ = Describe("CTAP2 commands", func() {
 		bodyHex := hex.EncodeToString(body)
 		Expect(bodyHex).To(ContainSubstring("04a262726bf5627570f5"),
 			"options map must be canonically ordered (rk, up)")
+
+		// Chrome 157 classifies candidate authenticators by the
+		// algorithms field (key 10); a device without it never receives
+		// a MakeCredential. Both inner maps must be canonically ordered
+		// ("alg" sorts before "type").
+		algs, ok := info[10].([]interface{})
+		Expect(ok).To(BeTrue(), "algorithms array at key 10")
+		Expect(algs).To(HaveLen(2))
+		first, _ := algs[0].(map[interface{}]interface{})
+		Expect(normalizeMap(first)["alg"]).To(Equal(int64(-7)))
+		Expect(normalizeMap(first)["type"]).To(Equal("public-key"))
+		second, _ := algs[1].(map[interface{}]interface{})
+		Expect(normalizeMap(second)["alg"]).To(Equal(int64(-8)))
+		Expect(bodyHex).To(ContainSubstring("0a82a263616c6726"),
+			"algorithms entries must be canonically ordered (alg, type)")
 	})
 
 	It("registers a credential when the gate approves", func() {

@@ -43,7 +43,7 @@ type getAssertionResponse struct {
 }
 
 // Field order per CTAP 2.0 §5.4 authenticatorGetInfo: options at key 4,
-// maxMsgSize at key 5, pinUvAuthProtocols at key 6 — the layout Chrome,
+// maxMsgSize at key 5, algorithms at key 10 — the layout Chrome,
 // libfido2, and shipped authenticators parse.
 // getInfoOptions fields are declared in CBOR canonical key order
 // (byte length, then byte-wise): Chrome's CBOR reader rejects maps whose
@@ -53,12 +53,28 @@ type getInfoOptions struct {
 	Up bool `cbor:"up"`
 }
 
+// Algorithms (key 10, CTAP 2.1 field) must be present: Chrome 157
+// classifies candidate authenticators by this field and refuses a device
+// without it as "no common algorithms" before dispatching any request.
+// Entity maps use text keys, inner algorithm maps in canonical order
+// ("alg" sorts before "type").
+type getInfoAlgorithm struct {
+	Alg  int64  `cbor:"alg"`
+	Type string `cbor:"type"`
+}
+
+var getInfoAlgorithms = []getInfoAlgorithm{
+	{Alg: -7, Type: "public-key"},
+	{Alg: -8, Type: "public-key"},
+}
+
 type getInfoResponse struct {
-	Versions   []string       `cbor:"1,keyasint"`
-	Extensions []string       `cbor:"2,keyasint"`
-	AAGUID     []byte         `cbor:"3,keyasint"`
-	Options    getInfoOptions `cbor:"4,keyasint"`
-	MaxMsgSize uint           `cbor:"5,keyasint"`
+	Versions   []string           `cbor:"1,keyasint"`
+	Extensions []string           `cbor:"2,keyasint"`
+	AAGUID     []byte             `cbor:"3,keyasint"`
+	Options    getInfoOptions     `cbor:"4,keyasint"`
+	MaxMsgSize uint               `cbor:"5,keyasint"`
+	Algorithms []getInfoAlgorithm `cbor:"10,keyasint"`
 }
 
 // decodeRequest parses an inbound CTAP2 request body. fxamacker decodes
