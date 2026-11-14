@@ -24,6 +24,10 @@ install: build
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.service
 	install -Dm644 contrib/systemd/kpxcd.socket \
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.socket
+	# The virtual FIDO2 device needs the uhid kernel module; without it
+	# /dev/uhid is a driverless static node and the daemon fails closed.
+	install -Dm644 contrib/systemd/kpxcd-uhid.conf \
+		$(DESTDIR)/usr/lib/modules-load.d/kpxcd-uhid.conf
 	# Patch the service file so ExecStart matches the installation prefix.
 	sed -i 's|/usr/local/bin|$(PREFIX)/bin|' \
 		$(DESTDIR)/usr/lib/systemd/user/kpxcd.service
