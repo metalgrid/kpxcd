@@ -5,6 +5,8 @@ package hid
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -183,6 +185,12 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	userName := textAt(user, 2)
 	userDisplayName := textAt(user, 3)
 	if rpID == "" || len(userID) == 0 {
+		slog.Warn("hid: MakeCredential rejected as missing parameter",
+			"req_len", len(data),
+			"req_keys", fmt.Sprintf("%v", req),
+			"req", fmt.Sprintf("% x", data),
+			"rpID", rpID,
+			"user_id_len", len(userID))
 		return statusMissingParam, nil
 	}
 
