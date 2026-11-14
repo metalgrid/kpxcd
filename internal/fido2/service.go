@@ -806,20 +806,26 @@ func newerThan(a, b gokeepasslib.Entry) bool {
 }
 
 // COSE key structure for ECDSA P-256.
+// COSE EC2 key structure. Fields are declared in CTAP canonical key
+// order — uint keys ascending, then negative keys ascending (1, 3, -1,
+// -2, -3). fxamacker encodes struct fields in declaration order, and
+// Chrome's CBOR reader rejects maps whose keys are not strictly
+// monotonic; CTAP 2.0 §6 requires canonical encoding for every message.
 type coseEC2Key struct {
 	Kty int    `cbor:"1,keyasint"`
+	Alg int    `cbor:"3,keyasint"`
 	Crv int    `cbor:"-1,keyasint"`
 	X   []byte `cbor:"-2,keyasint"`
 	Y   []byte `cbor:"-3,keyasint"`
-	Alg int    `cbor:"3,keyasint"`
 }
 
-// COSE key structure for Ed25519 (OKP).
+// COSE key structure for Ed25519 (OKP), fields in CTAP canonical key
+// order (1, 3, -1, -2).
 type coseOKPKey struct {
 	Kty int    `cbor:"1,keyasint"`
+	Alg int    `cbor:"3,keyasint"`
 	Crv int    `cbor:"-1,keyasint"`
 	X   []byte `cbor:"-2,keyasint"`
-	Alg int    `cbor:"3,keyasint"`
 }
 
 // encodeECDSAPublicKey encodes an ECDSA P-256 public key as a COSE key.

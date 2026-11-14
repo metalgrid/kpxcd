@@ -3,10 +3,13 @@
 package fido2
 
 import (
+	"bytes"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -427,5 +430,46 @@ var _ = Describe("SignAssertion", func() {
 			RPID: "example.com", ClientDataHash: []byte{1, 2, 3}, UserPresent: true,
 		})
 		Expect(err).To(MatchError(ContainSubstring("client data hash must be 32 bytes")))
+	})
+})
+
+// canonicalCOSESpecs pins the exact COSE wire bytes. Chrome's CBOR
+// reader rejects maps whose keys are not strictly monotonic (CTAP
+// canonical order: uint keys ascending, then negative keys ascending),
+// and the P-256 coordinates must be the fixed 32-byte field width —
+// big.Int.Bytes() strips leading zeros, so the encoder must pad.
+var _ = Describe("COSE public key encoding", func() {
+	It("encodes the EC2 key in CTAP canonical key order", func() {
+		scalar := make([]byte, 32)
+		scalar[31] = 1
+		x, y := elliptic.P256().ScalarBaseMult(scalar)
+		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
+		encoded, err := encodeECDSAPublicKey(pub)
+		Expect(err).NotTo(HaveOccurred())
+
+		// map(5){1:2, 3:-7, -1:1, -2:x(32), -3:y(32)} — keys must appear
+		// in exactly this order; alg (key 3) sorts before the negative
+		// keys.
+		gx := "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+		gy := "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+		want, err := hex.DecodeString("a501020326" + "2001" + "215820" + gx + "225820" + gy)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(encoded).To(Equal(want),
+			"EC2 COSE key must be canonically ordered (1, 3, -1, -2, -3)")
+	})
+
+	It("encodes the OKP key in CTAP canonical key order", func() {
+		priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+		pub := priv.Public().(ed25519.PublicKey)
+		encoded, err := encodeEd25519PublicKey(pub)
+		Expect(err).NotTo(HaveOccurred())
+
+		// map(4){1:1, 3:-8, -1:6, -2:x(32)} — keys 01, 03 27, 20 06,
+		// 21 58 20 in exactly this order.
+		seedPub := hex.EncodeToString(pub)
+		want, err := hex.DecodeString("a401010327" + "2006" + "215820" + seedPub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(encoded).To(Equal(want),
+			"OKP COSE key must be canonically ordered (1, 3, -1, -2)")
 	})
 })
