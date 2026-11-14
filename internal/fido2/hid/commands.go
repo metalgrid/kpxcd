@@ -211,12 +211,13 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 
 	// Chromium's FidoDeviceAuthenticator::GetTouch probes devices with a
 	// dummy MakeCredential whose RP ID is ".dummy" (its kDummyRpID) to
-	// collect a touch; it discards the response either way. Decline it
-	// without prompting or storing — no gate, no junk credential. A real
-	// site cannot claim ".dummy": it is not a valid domain.
+	// collect a touch. The probe flows through the gate like any
+	// registration (the approval IS the touch Chrome counts), and the
+	// store answers it ephemerally — Chrome discards the response
+	// unconditionally. A real site cannot claim ".dummy": it is not a
+	// valid domain.
 	if rpID == ".dummy" {
-		slog.Info("hid: MakeCredential declined: Chromium touch probe", "rpID", rpID)
-		return statusOperationDenied, nil
+		slog.Info("hid: Chromium touch probe routed through gate", "rpID", rpID)
 	}
 
 	// D4: ES256 only on the CTAP surface.

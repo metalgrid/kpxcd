@@ -403,7 +403,7 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(resp[3]).NotTo(BeEmpty())
 	})
 
-	It("declines Chromium's .dummy touch probe without prompting or storing", func() {
+	It("answers Chromium's .dummy touch probe with a credential", func() {
 		store := &stubStore{creds: true}
 		_, writer, feeds, stop := newTestAuthenticator(store, allowGate{})
 		defer stop()
@@ -418,10 +418,11 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdMakeCredential, req)
 
+		// Chrome's GetTouch counts the probe only when it succeeds
+		// (kSuccess / PIN errors); the response itself is discarded.
 		status, _ := firstCBORReply(writer)
-		Expect(status).To(Equal(statusOperationDenied))
-		Expect(store.createCalls).To(Equal(0),
-			"the touch probe must not create a credential or reach the store")
+		Expect(status).To(Equal(statusOK))
+		Expect(store.createCalls).To(Equal(1))
 	})
 
 	It("denies MakeCredential requests that require user verification", func() {

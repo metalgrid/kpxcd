@@ -3,6 +3,7 @@
 package fido2
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -31,6 +32,22 @@ func NewCtapStore(svc *Fido2Service, pool *dbpool.DatabasePool, defaultPath stri
 
 // Create implements hid.CredentialStore.
 func (c *CtapStore) Create(rpID, rpName, userName, userDisplayName string) ([]byte, []byte, []byte, error) {
+	// Chromium's GetTouch flash probe (rpID ".dummy", its kDummyRpID)
+	// expects a real credential to be created so the touch counts; the
+	// client discards the response unconditionally. Generate the key and
+	// credential ephemerally — nothing persists to the vault.
+	if rpID == ".dummy" {
+		pubKeyCOSE, _, err := generateKeyPair(COSEAlgES256)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("fido2: ephemeral touch-probe credential: %w", err)
+		}
+		credID := make([]byte, 32)
+		if _, err := rand.Read(credID); err != nil {
+			return nil, nil, nil, fmt.Errorf("fido2: ephemeral touch-probe credential: %w", err)
+		}
+		return credID, []byte{0x01}, pubKeyCOSE, nil
+	}
+
 	dbUUID, err := c.defaultDB()
 	if err != nil {
 		return nil, nil, nil, err
