@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1070,9 +1072,12 @@ func parseBitwardenCredential(cred bitwardenFido2Credential) (fido2.ImportPasske
 	}
 	pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 
-	// Bitwarden credential IDs and user handles are base64url (padding
-	// varies by client version); normalize to kpxcd's unpadded form.
-	credID, err := normalizeBase64URL(cred.CredentialID)
+	// Credential IDs: sites like GitHub and Amazon issue UUID-shaped
+	// credential IDs whose wire form is the UUID's 16 raw bytes (the
+	// dashes are display formatting). Hex-decode those; everything else
+	// is base64url (padding varies) and normalizes to kpxcd's canonical
+	// unpadded form.
+	credID, err := credentialIDForVault(cred.CredentialID)
 	if err != nil {
 		return in, fmt.Errorf("credentialId is not base64url: %w", err)
 	}
@@ -1107,7 +1112,24 @@ func parseBitwardenCredential(cred bitwardenFido2Credential) (fido2.ImportPasske
 	}, nil
 }
 
-// normalizeBase64URL decodes std-or-url, padded-or-not base64 and
+var uuidShape = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// credentialIDForVault normalizes an exported credential ID into the
+// unpadded base64url string of its wire bytes. UUID-shaped IDs (GitHub,
+// Amazon, ...) hex-decode to 16 bytes; everything else is treated as
+// base64 of the raw bytes.
+func credentialIDForVault(id string) (string, error) {
+	if uuidShape.MatchString(id) {
+		raw, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(id), "-", ""))
+		if err != nil {
+			return "", err
+		}
+		return base64.RawURLEncoding.EncodeToString(raw), nil
+	}
+	return normalizeBase64URL(id)
+}
+
+// normalizeBase64URL decodes std-or-url, padded-or-not base64 and// normalizeBase64URL decodes std-or-url, padded-or-not base64 and
 // re-encodes kpxcd's canonical unpadded base64url form.
 func normalizeBase64URL(s string) (string, error) {
 	trimmed := strings.TrimRight(s, "=")

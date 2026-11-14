@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"strings"
 	"testing"
@@ -159,5 +160,35 @@ func TestSelectCandidatesRejectsBadInput(t *testing.T) {
 	}
 	if _, err := selectCandidates(candidates, strings.NewReader("nope\n")); err == nil {
 		t.Fatal("non-numeric selection must be refused")
+	}
+}
+
+func TestCredentialIDForVaultUUIDShape(t *testing.T) {
+	// GitHub's credential ID as Bitwarden exports it: a dashed UUID.
+	// The wire bytes are the UUID's 16 hex bytes, NOT the base64 decode
+	// of the dashed string (that yields 27 garbage bytes and GitHub
+	// rejects the assertion as an unknown credential).
+	id := "e318d707-4531-47ca-ba7b-4a22e5bd29ba"
+	got, err := credentialIDForVault(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := hex.DecodeString("e318d707453147caba7b4a22e5bd29ba")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := base64.RawURLEncoding.EncodeToString(raw)
+	if got != want {
+		t.Fatalf("UUID credential ID not converted to wire bytes: got %q want %q", got, want)
+	}
+}
+
+func TestCredentialIDForVaultNonUUIDStaysBase64(t *testing.T) {
+	got, err := credentialIDForVault("hhhvuH_j-rF2QBQEndgVLP443V5h9111HqJd0C1gt74")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hhhvuH_j-rF2QBQEndgVLP443V5h9111HqJd0C1gt74" {
+		t.Fatalf("genuine base64url IDs must round-trip: %q", got)
 	}
 }
