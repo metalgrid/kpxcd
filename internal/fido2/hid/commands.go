@@ -35,13 +35,6 @@ type makeCredentialResponse struct {
 	AttStmt  map[string]interface{} `cbor:"3,keyasint"`
 }
 
-type getAssertionResponse struct {
-	CredentialID []byte `cbor:"1,keyasint"`
-	AuthData     []byte `cbor:"2,keyasint"`
-	Signature    []byte `cbor:"3,keyasint"`
-	UserID       []byte `cbor:"4,keyasint"`
-}
-
 // Field order per CTAP 2.0 §5.4 authenticatorGetInfo: options at key 4,
 // maxMsgSize at key 5, algorithms at key 10 — the layout Chrome,
 // libfido2, and shipped authenticators parse.
@@ -337,11 +330,14 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		return statusInvalidCredential, nil
 	}
 
-	resp, err := cbor.Marshal(getAssertionResponse{
-		CredentialID: usedID,
-		AuthData:     authData,
-		Signature:    signature,
-		UserID:       userHandle,
+	// Per CTAP 2.0 §5.2: key 1 is a PublicKeyCredentialDescriptor map
+	// (type 1, id 2), key 4 a user entity map (id 1). Raw bytes in
+	// either slot make the platform drop the assertion.
+	resp, err := cbor.Marshal(map[interface{}]interface{}{
+		1: map[string]interface{}{"type": "public-key", "id": usedID},
+		2: authData,
+		3: signature,
+		4: map[string]interface{}{"id": userHandle},
 	})
 	if err != nil {
 		return statusInvalidCBOR, nil

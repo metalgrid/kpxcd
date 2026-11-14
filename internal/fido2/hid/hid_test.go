@@ -399,8 +399,13 @@ var _ = Describe("CTAP2 commands", func() {
 		var resp map[interface{}]interface{}
 		Expect(cbor.Unmarshal(body, &resp)).To(Succeed())
 		resp = normalizeMap(resp)
-		Expect(resp[1]).To(Equal([]byte{0xAA, 0xBB}))
+		desc, _ := resp[1].(map[interface{}]interface{})
+		Expect(desc).NotTo(BeNil(), "key 1 is a PublicKeyCredentialDescriptor map")
+		Expect(normalizeMap(desc)["type"]).To(Equal("public-key"), "descriptor type")
+		Expect(normalizeMap(desc)["id"]).To(Equal([]byte{0xAA, 0xBB}), "descriptor credential ID")
 		Expect(resp[3]).NotTo(BeEmpty())
+		user, _ := resp[4].(map[interface{}]interface{})
+		Expect(normalizeMap(user)["id"]).To(Equal([]byte{0x01, 0x02}), "user handle as a user entity map")
 	})
 
 	It("answers Chromium's .dummy touch probe with a credential", func() {
