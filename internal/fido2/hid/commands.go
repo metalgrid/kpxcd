@@ -199,6 +199,7 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	// without prompting or storing — no gate, no junk credential. A real
 	// site cannot claim ".dummy": it is not a valid domain.
 	if rpID == ".dummy" {
+		slog.Info("hid: MakeCredential declined: Chromium touch probe", "rpID", rpID)
 		return statusOperationDenied, nil
 	}
 
@@ -221,11 +222,14 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	// denied rather than silently downgraded. The options arrive at
 	// top-level key 7 as a map with text keys ("rk", "uv", ...).
 	if options, ok := req[7].(map[interface{}]interface{}); ok && boolAt(options, "uv") {
+		slog.Warn("hid: MakeCredential denied: request requires user verification",
+			"rpID", rpID, "options", fmt.Sprintf("%v", options))
 		return statusOperationDenied, nil
 	}
 
 	// shortcut: the gate is invoked with no per-site attribution because
 	// polkit actions cannot carry dynamic text; the daemon logs the RPID.
+	slog.Info("hid: MakeCredential accepted for gate", "rpID", rpID, "user", userName)
 	approved, timedOut := a.waitGate(ctx, cid, Operation{Kind: OperationRegister, RPID: rpID})
 	if timedOut {
 		return statusUserActionTimeout, nil
