@@ -10,9 +10,9 @@ import (
 var _ = Describe("polkit subject details", func() {
 	It("encodes the exact GVariant types polkitd looks up", func() {
 		details := polkitSubjectDetails(63908, 1000, 12345)
-		Expect(details["pid"].Signature().String()).To(Equal("i"),
-			"polkitd looks pid up as int32; an int64 variant is silently ignored and no prompt is routed")
-		Expect(details["uid"].Signature().String()).To(Equal("i"), "uid must be int32")
+		Expect(details["pid"].Signature().String()).To(Equal("u"),
+			"polkitd looks pid up as uint32; any other type rejects the whole subject and no prompt is routed")
+		Expect(details["uid"].Signature().String()).To(Equal("u"), "uid must be uint32")
 		Expect(details["start-time"].Signature().String()).To(Equal("t"), "start-time must be uint64")
 	})
 

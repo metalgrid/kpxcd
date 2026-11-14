@@ -62,11 +62,11 @@ func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) bool {
 
 // polkitSubjectDetails builds the unix-process subject details for
 // CheckAuthorization. Variant types matter to polkitd: it looks each
-// key up with an exact GVariant type (pid and uid int32, start-time
-// uint64); a wrong width makes the lookup return nothing, polkitd
-// treats the subject as an unknown process, and no prompt is ever
-// routed — the call then blocks forever.
-func polkitSubjectDetails(pid, uid int32, startTime uint64) map[string]dbus.Variant {
+// key up with an exact GVariant type — pid uint32, uid int32,
+// start-time uint64 — and rejects the whole subject when a type
+// differs ("Value for key `pid' found but is of type i and type u was
+// expected"). A rejected subject means the call never routes a prompt.
+func polkitSubjectDetails(pid, uid uint32, startTime uint64) map[string]dbus.Variant {
 	details := map[string]dbus.Variant{
 		"pid": dbus.MakeVariant(pid),
 		"uid": dbus.MakeVariant(uid),
@@ -96,7 +96,7 @@ func checkPolkitSelf(actionID string) error {
 		Details map[string]dbus.Variant
 	}{
 		Kind:    "unix-process",
-		Details: polkitSubjectDetails(int32(pid), int32(os.Getuid()), startTime),
+		Details: polkitSubjectDetails(uint32(pid), uint32(os.Getuid()), startTime),
 	}
 
 	const allowUserInteraction uint32 = 1
