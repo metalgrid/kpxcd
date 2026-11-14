@@ -377,7 +377,38 @@ var _ = Describe("CTAP2 commands", func() {
 
 		sendCBOR(feeds, cid, 0x41, nil)
 		status, _ := firstCBORReply(writer)
-		Expect(status).To(Equal(statusUnsupportedCommand))
+		Expect(status).To(Equal(statusInvalidCommand))
+	})
+})
+
+var _ = Describe("CTAP2 status codes", func() {
+	It("matches the published status tables (CTAP 2.0 §6.3 / CTAP 2.1 §8.2)", func() {
+		// Hosts key their error handling off these bytes; a wrong value
+		// reports the wrong failure (e.g. 0x23 means "user action
+		// pending", not a timeout). Pin every code against the spec.
+		Expect(map[string]byte{
+			"OK":                    statusOK,
+			"INVALID_COMMAND":       statusInvalidCommand,
+			"INVALID_CBOR":          statusInvalidCBOR,
+			"MISSING_PARAMETER":     statusMissingParam,
+			"INVALID_CREDENTIAL":    statusInvalidCredential,
+			"UNSUPPORTED_ALGORITHM": statusUnsupportedAlgorithm,
+			"OPERATION_DENIED":      statusOperationDenied,
+			"KEEPALIVE_CANCEL":      statusKeepaliveCancel,
+			"NO_CREDENTIALS":        statusNoCredentials,
+			"USER_ACTION_TIMEOUT":   statusUserActionTimeout,
+		}).To(Equal(map[string]byte{
+			"OK":                    0x00,
+			"INVALID_COMMAND":       0x01,
+			"INVALID_CBOR":          0x12,
+			"MISSING_PARAMETER":     0x14,
+			"INVALID_CREDENTIAL":    0x22,
+			"UNSUPPORTED_ALGORITHM": 0x26,
+			"OPERATION_DENIED":      0x27,
+			"KEEPALIVE_CANCEL":      0x2D,
+			"NO_CREDENTIALS":        0x2E,
+			"USER_ACTION_TIMEOUT":   0x2F,
+		}))
 	})
 })
 

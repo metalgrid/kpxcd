@@ -296,7 +296,7 @@ func (a *Authenticator) runCommand(ctx context.Context, command byte, data []byt
 	case cmdGetAssertion:
 		return a.getAssertion(ctx, data, cid)
 	default:
-		return statusUnsupportedCommand, nil
+		return statusInvalidCommand, nil
 	}
 }
 

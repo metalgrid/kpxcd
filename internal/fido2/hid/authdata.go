@@ -14,17 +14,20 @@ const (
 	cmdGetInfo        = 0x04
 )
 
-// CTAP2 status codes (single-byte CBOR-less replies on failure).
+// CTAP2 status codes (single-byte replies on failure). Values per the
+// CTAP 2.0 §6.3 / CTAP 2.1 §8.2 status tables; hosts map every code to a
+// distinct outcome, so a wrong value misleads the client UI.
 const (
 	statusOK                   byte = 0x00
-	statusUnsupportedCommand   byte = 0x02
-	statusInvalidCBOR          byte = 0x03
-	statusMissingParam         byte = 0x05
-	statusInvalidCredential    byte = 0x16
-	statusUnsupportedAlgorithm byte = 0x1A
-	statusOperationDenied      byte = 0x1B
-	statusNoCredentials        byte = 0x22
-	statusUserActionTimeout    byte = 0x23
+	statusInvalidCommand       byte = 0x01 // CTAP1_ERR_INVALID_COMMAND: sent for unknown CTAP2 commands (CTAP 2.1 §8.1)
+	statusInvalidCBOR          byte = 0x12 // CTAP2_ERR_INVALID_CBOR
+	statusMissingParam         byte = 0x14 // CTAP2_ERR_MISSING_PARAMETER
+	statusInvalidCredential    byte = 0x22 // CTAP2_ERR_INVALID_CREDENTIAL
+	statusUnsupportedAlgorithm byte = 0x26 // CTAP2_ERR_UNSUPPORTED_ALGORITHM
+	statusOperationDenied      byte = 0x27 // CTAP2_ERR_OPERATION_DENIED
+	statusKeepaliveCancel      byte = 0x2D // CTAP2_ERR_KEEPALIVE_CANCEL
+	statusNoCredentials        byte = 0x2E // CTAP2_ERR_NO_CREDENTIALS
+	statusUserActionTimeout    byte = 0x2F // CTAP2_ERR_USER_ACTION_TIMEOUT
 )
 
 // WebAuthn authenticator flag bits (wire values).
