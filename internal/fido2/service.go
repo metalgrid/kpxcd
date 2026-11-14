@@ -830,11 +830,14 @@ type coseOKPKey struct {
 
 // encodeECDSAPublicKey encodes an ECDSA P-256 public key as a COSE key.
 func encodeECDSAPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
+	// RFC 9052 fixes the P-256 field width: x and y are exactly 32
+	// bytes. big.Int.Bytes() strips leading zeros, so pad explicitly —
+	// an unpadded coordinate makes Chrome reject the whole key.
 	key := coseEC2Key{
 		Kty: 2, // EC2
 		Crv: 1, // P-256
-		X:   pub.X.Bytes(),
-		Y:   pub.Y.Bytes(),
+		X:   pub.X.FillBytes(make([]byte, 32)),
+		Y:   pub.Y.FillBytes(make([]byte, 32)),
 		Alg: COSEAlgES256,
 	}
 	return cbor.Marshal(key)

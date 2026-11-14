@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -471,5 +472,30 @@ var _ = Describe("COSE public key encoding", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(encoded).To(Equal(want),
 			"OKP COSE key must be canonically ordered (1, 3, -1, -2)")
+	})
+
+	It("left-pads P-256 coordinates to the fixed 32-byte field width", func() {
+		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(1)}
+		encoded, err := encodeECDSAPublicKey(pub)
+		Expect(err).NotTo(HaveOccurred())
+
+		var key coseEC2Key
+		Expect(cbor.Unmarshal(encoded, &key)).To(Succeed())
+		Expect(key.X).To(HaveLen(32), "RFC 9052: P-256 x is 32 bytes, zero-padded")
+		Expect(key.Y).To(HaveLen(32), "RFC 9052: P-256 y is 32 bytes, zero-padded")
+		Expect(key.X[31]).To(Equal(byte(1)), "small coordinate value preserved")
+	})
+
+	It("never emits a short coordinate for generated keys", func() {
+		for i := 0; i < 128; i++ {
+			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			Expect(err).NotTo(HaveOccurred())
+			encoded, err := encodeECDSAPublicKey(&priv.PublicKey)
+			Expect(err).NotTo(HaveOccurred())
+			var key coseEC2Key
+			Expect(cbor.Unmarshal(encoded, &key)).To(Succeed())
+			Expect(key.X).To(HaveLen(32))
+			Expect(key.Y).To(HaveLen(32))
+		}
 	})
 })
