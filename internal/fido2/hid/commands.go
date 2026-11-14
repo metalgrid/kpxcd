@@ -35,6 +35,29 @@ type makeCredentialResponse struct {
 	AttStmt  map[string]interface{} `cbor:"3,keyasint"`
 }
 
+// GetAssertion response shapes. Entity maps use text keys per the
+// DOM-to-CBOR conversion, and structs pin the canonical wire order:
+// Go map iteration is randomized (swiss maps shuffle every traversal)
+// and fxamacker encodes plain maps in iteration order, so a map
+// literal here is a coin flip against Chrome's strict
+// monotonic-key validation ("id" encodes to 3 bytes and sorts before
+// "type" at 5).
+type credentialDescriptor struct {
+	ID   []byte `cbor:"id"`   // encoded key 62 6964 — sorts first
+	Type string `cbor:"type"` // encoded key 64 74797065
+}
+
+type userEntity struct {
+	ID []byte `cbor:"id"`
+}
+
+type getAssertionResponse struct {
+	Credential credentialDescriptor `cbor:"1,keyasint"`
+	AuthData   []byte               `cbor:"2,keyasint"`
+	Signature  []byte               `cbor:"3,keyasint"`
+	User       userEntity           `cbor:"4,keyasint"`
+}
+
 // Field order per CTAP 2.0 §5.4 authenticatorGetInfo: options at key 4,
 // maxMsgSize at key 5, algorithms at key 10 — the layout Chrome,
 // libfido2, and shipped authenticators parse.
@@ -333,11 +356,11 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 	// Per CTAP 2.0 §5.2: key 1 is a PublicKeyCredentialDescriptor map
 	// (type 1, id 2), key 4 a user entity map (id 1). Raw bytes in
 	// either slot make the platform drop the assertion.
-	resp, err := cbor.Marshal(map[interface{}]interface{}{
-		1: map[string]interface{}{"type": "public-key", "id": usedID},
-		2: authData,
-		3: signature,
-		4: map[string]interface{}{"id": userHandle},
+	resp, err := cbor.Marshal(getAssertionResponse{
+		Credential: credentialDescriptor{ID: usedID, Type: "public-key"},
+		AuthData:   authData,
+		Signature:  signature,
+		User:       userEntity{ID: userHandle},
 	})
 	if err != nil {
 		return statusInvalidCBOR, nil

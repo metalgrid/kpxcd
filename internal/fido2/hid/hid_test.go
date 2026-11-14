@@ -406,6 +406,13 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(resp[3]).NotTo(BeEmpty())
 		user, _ := resp[4].(map[interface{}]interface{})
 		Expect(normalizeMap(user)["id"]).To(Equal([]byte{0x01, 0x02}), "user handle as a user entity map")
+
+		// Chrome rejects any assertion whose map keys are not in CTAP
+		// canonical order. Struct encoding must pin the wire bytes:
+		// map(4), key 01, descriptor map(2) with "id" first, bytes(32).
+		bodyHex := hex.EncodeToString(body)
+		Expect(bodyHex).To(ContainSubstring("a401a262696442aabb6474797065"),
+			"assertion descriptor must be canonically ordered (id before type)")
 	})
 
 	It("answers Chromium's .dummy touch probe with a credential", func() {
