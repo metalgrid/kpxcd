@@ -51,7 +51,7 @@ kpxcd/
 │   ├── dbpool/         # DatabasePool — open, close, lock, unlock, lookup, save
 │   ├── dbusapi/        # org.keepassxc.Daemon D-Bus interface
 │   ├── deps/           # Build-time dependency anchors
-│   ├── fido2/          # Experimental FIDO2 / passkey service
+│   ├── fido2/          # FIDO2 passkey service and virtual CTAP2 authenticator
 │   ├── pamcred/        # PAM-derived credential bootstrap
 │   ├── secretservice/  # org.freedesktop.secrets D-Bus implementation
 │   ├── security/       # runtime/secret + mlock helpers

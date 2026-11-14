@@ -6,14 +6,15 @@ Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is
 
 > **Status:** pre-1.0, Linux-only, security-sensitive software. Review the
 > threat model and run it in a test user session before trusting it with
-> production secrets.
+> production secrets. Current release:
+> [v0.2.0](https://github.com/metalgrid/kpxcd/releases/tag/v0.2.0).
 
 ## What It Does
 
 - **Unlocks databases at session start** and holds them in memory
 - **Secret Service** — exposes and persists secrets for any same-user `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`), matching the GNOME Keyring/libsecret trust model
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — KeePass-backed passkeys served to browsers as a virtual CTAP2 security key, gated by polkit; Bitwarden import via `kpxcctl passkey import` (experimental, disabled by default)
+- **FIDO2 passkeys** — KeePass-backed passkeys served to any browser as a virtual CTAP2 security key, gated by polkit (face verification via [zdr](https://github.com/metalgrid/zdr), passwords via any desktop agent); Bitwarden import via `kpxcctl passkey import`. Verified end-to-end against webauthn.io and GitHub on Chrome and Firefox — see [`doc/passkeys.md`](doc/passkeys.md)
 
 ## Planned / In Progress
 
@@ -59,6 +60,20 @@ ssh-add -l  # should show keys from your database
 secret-tool lookup kpxcd:dbname Default  # retrieve a password from an exposed, unlocked DB
 ```
 
+### Passkeys
+
+```bash
+# Requires the uhid kernel module and a polkit agent in your session.
+# See doc/passkeys.md for the full setup and limitations.
+
+# Enable (off by default; one line in the generated config)
+sed -i 's/enabled = false/enabled = true/' ~/.config/kpxcd/config.toml
+systemctl --user restart kpxcd
+
+# Register and sign in on any site that supports passkeys.
+# Each ceremony asks for one approval through your polkit agent.
+```
+
 ## Documentation
 
 | Document | Description |
@@ -69,6 +84,7 @@ secret-tool lookup kpxcd:dbname Default  # retrieve a password from an exposed, 
 | [`doc/config.md`](doc/config.md) | Configuration file reference |
 | [`doc/threat-model.md`](doc/threat-model.md) | Threat model and mitigations |
 | [`doc/security-audit.md`](doc/security-audit.md) | Security review notes and mitigations |
+| [`doc/passkeys.md`](doc/passkeys.md) | FIDO2 passkeys: design, setup, Bitwarden import, limitations |
 | [`doc/feature-matrix.md`](doc/feature-matrix.md) | Implemented and planned feature status |
 
 ## Contributing and Security

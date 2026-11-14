@@ -67,13 +67,22 @@
 
 ## FIDO2 / Passkeys
 
+Verified end-to-end against webauthn.io and GitHub on Chrome 157 and
+Firefox. See [`doc/passkeys.md`](passkeys.md).
+
 | Feature | Status | Notes |
 |---|---|---|
-| Passkey creation | ❌ | D-Bus API is disabled until storage and assertions are complete |
-| Passkey assertion | ❌ | Assertion signing is not yet fully implemented |
+| CTAP2 registration (MakeCredential) | ✅ | Chrome 157 + Firefox against webauthn.io and GitHub |
+| CTAP2 assertion (GetAssertion) | ✅ | Username-less and `allowCredentials` sign-in |
+| GetInfo conformance | ✅ | versions, algorithms (ES256/Ed25519), options, aaguid, maxMsgSize; canonical CBOR pinned by regression specs |
+| User verification (UV) | ✅ | `uv` advertised; the polkit gate performs verification and sets the UV flag |
+| User presence | ✅ | Gate approval per ceremony; silent exclude-list probes sign without UP |
+| excludeList enforcement | ✅ | Matching stored credential returns `CTAP2_ERR_CREDENTIAL_EXCLUDED` |
 | Configurable AAGUID | ✅ | Defaults to KeePassXC's AAGUID |
-| ES256 / EdDSA algorithms | ✅ | `-7`, `-8` |
-| User verification | ✅ | `preferred` / `required` / `discouraged` |
+| Bitwarden import | ✅ | base64url keys, UUID-shaped credential IDs, sign counter carried |
+| clientPin | ❌ | UV is the gate instead; pinUvAuth protocols not implemented |
+| credProtect / largeBlob / caBLE / hmac-secret | ❌ | Not implemented |
+| D-Bus CreatePasskey / AssertPasskey | ❌ | Passkey management over D-Bus is list/remove/import only |
 
 ## D-Bus API (`org.keepassxc.Daemon`)
 
@@ -124,10 +133,11 @@
 | TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
 | Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
 | FIDO2/passkey storage and signing | ✅ | KeePass-backed credentials, PKCS#8 keys, persisted counters |
-| FIDO2 virtual CTAP2 device (browsers) | ✅ | /dev/uhid transport, GetInfo/MakeCredential/GetAssertion, ES256 only |
+| FIDO2 virtual CTAP2 device (browsers) | ✅ | /dev/uhid transport; verified against Chrome 157 and Firefox |
+| FIDO2 UV via gate | ✅ | `uv` advertised; gate approval sets the UV flag |
 | FIDO2 presence gate | ✅ | polkit auth_self per register/assert; deny-by-default |
 | Bitwarden passkey import | ✅ | `kpxcctl passkey import` on decrypted JSON exports (ECDSA P-256) |
-| FIDO2 clientPin/UV, credProtect, largeBlob, caBLE | ❌ | Out of scope for v1 (see doc/threat-model.md) |
+| FIDO2 clientPin, credProtect, largeBlob, caBLE, hmac-secret | ❌ | Out of scope for v0.2 (see doc/threat-model.md) |
 | Secret Service credential source | ❌ | Removed — circular dependency with kpxcd's own Secret Service server |
 | `kpxcctl ssh list/add/remove` | ✅ | Wired to AgentServer IdentityManager |
 | `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |
