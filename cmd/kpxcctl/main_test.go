@@ -10,6 +10,8 @@ import (
 	"encoding/pem"
 	"strings"
 	"testing"
+
+	"github.com/metalgrid/kpxcd/internal/fido2"
 )
 
 // Bitwarden exports fido2Credentials keyValue as base64url (dashes and
@@ -101,4 +103,61 @@ func TestParseBitwardenCredentialDecodesStandardPaddedKey(t *testing.T) {
 func bigIntDER() []byte {
 	// Minimal deterministic non-empty DER for base64 fixtures only.
 	return []byte{0x04, 0x02, 0x01, 0x02}
+}
+
+func TestSelectCandidatesByNumber(t *testing.T) {
+	candidates := []candidate{
+		{entry: fido2.ImportPasskeyInput{RPID: "a.example.com"}},
+		{entry: fido2.ImportPasskeyInput{RPID: "b.example.com"}},
+		{entry: fido2.ImportPasskeyInput{RPID: "c.example.com"}},
+	}
+
+	picked, err := selectCandidates(candidates, strings.NewReader("2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 1 || picked[0].entry.RPID != "b.example.com" {
+		t.Fatalf("picked %+v", picked)
+	}
+
+	picked, err = selectCandidates(candidates, strings.NewReader("1, 3\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 2 || picked[0].entry.RPID != "a.example.com" || picked[1].entry.RPID != "c.example.com" {
+		t.Fatalf("picked %+v", picked)
+	}
+}
+
+func TestSelectCandidatesAllAndCancel(t *testing.T) {
+	candidates := []candidate{
+		{entry: fido2.ImportPasskeyInput{RPID: "a.example.com"}},
+		{entry: fido2.ImportPasskeyInput{RPID: "b.example.com"}},
+	}
+
+	picked, err := selectCandidates(candidates, strings.NewReader("a\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 2 {
+		t.Fatalf("all: picked %+v", picked)
+	}
+
+	picked, err = selectCandidates(candidates, strings.NewReader("\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 0 {
+		t.Fatalf("cancel: picked %+v", picked)
+	}
+}
+
+func TestSelectCandidatesRejectsBadInput(t *testing.T) {
+	candidates := []candidate{{entry: fido2.ImportPasskeyInput{RPID: "a.example.com"}}}
+	if _, err := selectCandidates(candidates, strings.NewReader("9\n")); err == nil {
+		t.Fatal("out-of-range selection must be refused")
+	}
+	if _, err := selectCandidates(candidates, strings.NewReader("nope\n")); err == nil {
+		t.Fatal("non-numeric selection must be refused")
+	}
 }

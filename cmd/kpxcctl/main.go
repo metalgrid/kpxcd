@@ -4,10 +4,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -811,7 +813,23 @@ func cmdPasskey(args []string) {
 			fmt.Fprintln(os.Stderr, "kpxcctl passkey import: usage: passkey import <uuid> <bitwarden-export.json> [--dry-run]")
 			os.Exit(1)
 		}
-		passkeyImport(obj, args[1], args[2])
+		rpFilter, credFilter, importAll := "", "", false
+		for _, flag := range args[3:] {
+			switch {
+			case flag == "--all":
+				importAll = true
+			case flag == "--dry-run":
+				// consumed inside passkeyImport via os.Args
+			case strings.HasPrefix(flag, "--rp="):
+				rpFilter = strings.TrimPrefix(flag, "--rp=")
+			case strings.HasPrefix(flag, "--cred="):
+				credFilter = strings.TrimPrefix(flag, "--cred=")
+			default:
+				fmt.Fprintf(os.Stderr, "kpxcctl passkey import: unknown flag %q (use --all, --rp=<rpID>, --cred=<credentialID>)\n", flag)
+				os.Exit(1)
+			}
+		}
+		passkeyImport(obj, args[1], args[2], rpFilter, credFilter, importAll)
 
 	default:
 		fmt.Fprintf(os.Stderr, "kpxcctl passkey: unknown subcommand: %s\n", args[0])
@@ -846,9 +864,27 @@ func passkeyList(obj dbus.BusObject) {
 	}
 }
 
+// stdinIsInteractive reports whether standard input is a terminal, so
+// the interactive credential picker only runs for humans.
+func stdinIsInteractive() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// candidate is one importable passkey from a Bitwarden export.
+type candidate struct {
+	entry fido2.ImportPasskeyInput
+	cred  bitwardenFido2Credential
+}
+
 // passkeyImport ingests a decrypted Bitwarden JSON vault export. Secrets
-// in the file are hot: print a reminder, never echo key material.
-func passkeyImport(obj dbus.BusObject, uuid, path string) {
+// in the file are hot: print a reminder, never echo key material. With
+// no filter the candidates are listed and selected interactively; --all,
+// --rp=<rpID> and --cred=<credentialID> select non-interactively.
+func passkeyImport(obj dbus.BusObject, uuid, path, rpFilter, credFilter string, importAll bool) {
 	dryRun := false
 	for _, arg := range os.Args {
 		if arg == "--dry-run" {
@@ -868,7 +904,8 @@ func passkeyImport(obj dbus.BusObject, uuid, path string) {
 		os.Exit(1)
 	}
 
-	imported, failed := 0, 0
+	var candidates []candidate
+	skipped := 0
 	for _, item := range export.Items {
 		if item.Login == nil {
 			continue
@@ -877,35 +914,108 @@ func passkeyImport(obj dbus.BusObject, uuid, path string) {
 			entry, err := parseBitwardenCredential(cred)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  skip %s: %v\n", cred.CredentialID, err)
-				failed++
+				skipped++
 				continue
 			}
-			if dryRun {
-				fmt.Printf("would import %s@%s (cred=%s, count=%d)\n",
-					entry.Username, entry.RPID, entry.CredentialID, entry.SignCount)
-				imported++
+			if rpFilter != "" && entry.RPID != rpFilter {
 				continue
 			}
-			call := obj.Call(iface+".ImportPasskey", 0,
-				uuid, entry.RPID, entry.RPName, entry.Username, entry.UserDisplayName,
-				entry.CredentialID, entry.UserHandle, entry.PrivateKeyPEM, int32(entry.SignCount))
-			if call.Err != nil {
-				fmt.Fprintf(os.Stderr, "  fail %s@%s: %v\n", entry.Username, entry.RPID, call.Err)
-				failed++
+			if credFilter != "" && entry.CredentialID != credFilter {
 				continue
 			}
-			fmt.Printf("imported %s@%s (cred=%s)\n", entry.Username, entry.RPID, entry.CredentialID)
-			imported++
+			candidates = append(candidates, candidate{entry: entry, cred: cred})
+		}
+	}
+	if len(candidates) == 0 {
+		fmt.Println("no matching passkeys in the export")
+		if skipped > 0 {
+			fmt.Printf("%d skipped (unsupported or filtered)\n", skipped)
+		}
+		return
+	}
+
+	selected := candidates
+	if !importAll && rpFilter == "" && credFilter == "" && !stdinIsInteractive() {
+		fmt.Fprintln(os.Stderr, "kpxcctl passkey import: no selection and stdin is not interactive; pass --all, --rp=<rpID> or --cred=<credentialID>")
+		os.Exit(1)
+	}
+	if !importAll && rpFilter == "" && credFilter == "" {
+		selected, err = selectCandidates(candidates, os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kpxcctl passkey import: %v\n", err)
+			os.Exit(1)
+		}
+		if len(selected) == 0 {
+			fmt.Println("nothing selected — nothing imported")
+			return
 		}
 	}
 
-	fmt.Printf("\n%d imported, %d failed\n", imported, failed)
 	if dryRun {
+		for _, c := range selected {
+			fmt.Printf("would import %s@%s (cred=%s, count=%d)\n",
+				c.entry.Username, c.entry.RPID, c.entry.CredentialID, c.entry.SignCount)
+		}
 		fmt.Println("dry run — nothing written")
+		return
 	}
+
+	fmt.Println("Secrets in the export file are live: delete the file after importing.")
+	imported, failed := 0, 0
+	for _, c := range selected {
+		entry := c.entry
+		call := obj.Call(iface+".ImportPasskey", 0,
+			uuid, entry.RPID, entry.RPName, entry.Username, entry.UserDisplayName,
+			entry.CredentialID, entry.UserHandle, entry.PrivateKeyPEM, int32(entry.SignCount))
+		if call.Err != nil {
+			fmt.Fprintf(os.Stderr, "  fail %s@%s: %v\n", entry.Username, entry.RPID, call.Err)
+			failed++
+			continue
+		}
+		fmt.Printf("imported %s@%s (cred=%s)\n", entry.Username, entry.RPID, entry.CredentialID)
+		imported++
+	}
+
+	fmt.Printf("\n%d imported, %d failed\n", imported, failed)
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// selectCandidates prints the numbered candidate list and reads the
+// user's pick: a comma-separated list of numbers, or "a"/"all". An empty
+// answer selects nothing.
+func selectCandidates(candidates []candidate, input io.Reader) ([]candidate, error) {
+	fmt.Printf("%d passkeys in the export:\n", len(candidates))
+	for i, c := range candidates {
+		fmt.Printf("  %d. %s@%s (cred=%s, count=%d)\n",
+			i+1, c.entry.Username, c.entry.RPID, c.entry.CredentialID, c.entry.SignCount)
+	}
+	fmt.Print("import which? numbers (comma-separated), 'a' for all, enter to cancel: ")
+
+	line, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && line == "" {
+		return nil, fmt.Errorf("read selection: %w", err)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, nil
+	}
+
+	if strings.EqualFold(line, "a") || strings.EqualFold(line, "all") {
+		return candidates, nil
+	}
+
+	var picked []candidate
+	for _, field := range strings.Split(line, ",") {
+		field = strings.TrimSpace(field)
+		n, err := strconv.Atoi(field)
+		if err != nil || n < 1 || n > len(candidates) {
+			return nil, fmt.Errorf("invalid selection %q", field)
+		}
+		picked = append(picked, candidates[n-1])
+	}
+	return picked, nil
 }
 
 // bitwardenExport models the decrypted Bitwarden JSON vault export.
