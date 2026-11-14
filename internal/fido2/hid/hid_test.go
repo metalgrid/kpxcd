@@ -206,8 +206,8 @@ var _ = Describe("CTAPHID handshake", func() {
 		Expect(payload[:8]).To(Equal(nonce))
 		newCID := uint32(payload[8])<<24 | uint32(payload[9])<<16 | uint32(payload[10])<<8 | uint32(payload[11])
 		Expect(newCID).NotTo(Equal(uint32(broadcastChannel)))
-		Expect(payload[12]).To(Equal(byte(2)))       // CTAPHID protocol version
-		Expect(payload[16]).To(Equal(byte(capCBOR))) // CBOR capable, no wink
+		Expect(payload[12]).To(Equal(byte(2))) // CTAPHID protocol version
+		Expect(payload[16]).To(Equal(byte(capCBOR|capNMSG)), "CBOR capable, no wink, no CTAP1/U2F")
 	})
 
 	It("echoes ping payloads", func() {

@@ -82,6 +82,9 @@ const (
 const (
 	capWink = 0x01
 	capCBOR = 0x04
+	// capNMSG tells hosts CTAPHID_MSG (CTAP1/U2F) is not implemented,
+	// so they skip U2F fallbacks entirely instead of probing it.
+	capNMSG = 0x08
 )
 
 // CTAPHID error codes.
@@ -191,6 +194,7 @@ func encodeInitReply(channelID uint32, command byte, payload []byte) [][]byte {
 
 // encodeInitResponse builds the 17-byte CTAPHID_INIT reply payload:
 // nonce(8) + newCID(4) + protocolVersion(2) + version(3) + capabilities(1).
+// CTAPHID_MSG is not implemented, so NMSG is set per CTAP 2.0 §8.1.9.1.3.
 func encodeInitResponse(nonce []byte, newChannelID uint32) []byte {
 	payload := make([]byte, 17)
 	copy(payload[:8], nonce)
@@ -199,7 +203,7 @@ func encodeInitResponse(nonce []byte, newChannelID uint32) []byte {
 	payload[13] = 3 // device version major
 	payload[14] = 0 // device version minor
 	payload[15] = 0 // device version build
-	payload[16] = capCBOR
+	payload[16] = capCBOR | capNMSG
 	return payload
 }
 
