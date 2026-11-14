@@ -63,10 +63,11 @@ func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) bool {
 // polkitSubjectDetails builds the unix-process subject details for
 // CheckAuthorization. Variant types matter to polkitd: it looks each
 // key up with an exact GVariant type — pid uint32, uid int32,
-// start-time uint64 — and rejects the whole subject when a type
-// differs ("Value for key `pid' found but is of type i and type u was
-// expected"). A rejected subject means the call never routes a prompt.
-func polkitSubjectDetails(pid, uid uint32, startTime uint64) map[string]dbus.Variant {
+// start-time uint64 — mirroring polkit's own unix-process encoding.
+// Any type mismatch rejects the whole subject and the call never
+// routes a prompt. This encoding is byte-identical to the probe that
+// verified the full sandboxed flow live.
+func polkitSubjectDetails(pid uint32, uid int32, startTime uint64) map[string]dbus.Variant {
 	details := map[string]dbus.Variant{
 		"pid": dbus.MakeVariant(pid),
 		"uid": dbus.MakeVariant(uid),
@@ -91,12 +92,18 @@ func checkPolkitSelf(actionID string) error {
 	if st, ok := procStartTime(pid); ok {
 		startTime = st
 	}
+	details := polkitSubjectDetails(uint32(pid), int32(os.Getuid()), startTime)
+	slog.Info("fido2: polkit gate dispatching CheckAuthorization",
+		"action", actionID,
+		"pid_sig", details["pid"].Signature().String(),
+		"uid_sig", details["uid"].Signature().String(),
+		"start_sig", details["start-time"].Signature().String())
 	subject := struct {
 		Kind    string
 		Details map[string]dbus.Variant
 	}{
 		Kind:    "unix-process",
-		Details: polkitSubjectDetails(uint32(pid), uint32(os.Getuid()), startTime),
+		Details: details,
 	}
 
 	const allowUserInteraction uint32 = 1

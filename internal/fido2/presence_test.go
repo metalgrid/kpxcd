@@ -12,7 +12,8 @@ var _ = Describe("polkit subject details", func() {
 		details := polkitSubjectDetails(63908, 1000, 12345)
 		Expect(details["pid"].Signature().String()).To(Equal("u"),
 			"polkitd looks pid up as uint32; any other type rejects the whole subject and no prompt is routed")
-		Expect(details["uid"].Signature().String()).To(Equal("u"), "uid must be uint32")
+		Expect(details["uid"].Signature().String()).To(Equal("i"),
+			"polkitd looks uid up as int32 (polkit encodes uid as int32 with -1 for unknown)")
 		Expect(details["start-time"].Signature().String()).To(Equal("t"), "start-time must be uint64")
 	})
 
