@@ -60,6 +60,23 @@ func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) bool {
 	}
 }
 
+// polkitSubjectDetails builds the unix-process subject details for
+// CheckAuthorization. Variant types matter to polkitd: it looks each
+// key up with an exact GVariant type (pid and uid int32, start-time
+// uint64); a wrong width makes the lookup return nothing, polkitd
+// treats the subject as an unknown process, and no prompt is ever
+// routed — the call then blocks forever.
+func polkitSubjectDetails(pid, uid int32, startTime uint64) map[string]dbus.Variant {
+	details := map[string]dbus.Variant{
+		"pid": dbus.MakeVariant(pid),
+		"uid": dbus.MakeVariant(uid),
+	}
+	if startTime != 0 {
+		details["start-time"] = dbus.MakeVariant(startTime)
+	}
+	return details
+}
+
 // checkPolkitSelf asks polkit whether the daemon's own user may perform
 // actionID, allowing interactive authentication.
 func checkPolkitSelf(actionID string) error {
@@ -70,17 +87,17 @@ func checkPolkitSelf(actionID string) error {
 	defer conn.Close()
 
 	pid := os.Getpid()
-	subjectDetails := map[string]dbus.Variant{
-		"pid": dbus.MakeVariant(pid),
-		"uid": dbus.MakeVariant(int32(os.Getuid())),
-	}
-	if startTime, ok := procStartTime(pid); ok {
-		subjectDetails["start-time"] = dbus.MakeVariant(startTime)
+	var startTime uint64
+	if st, ok := procStartTime(pid); ok {
+		startTime = st
 	}
 	subject := struct {
 		Kind    string
 		Details map[string]dbus.Variant
-	}{Kind: "unix-process", Details: subjectDetails}
+	}{
+		Kind:    "unix-process",
+		Details: polkitSubjectDetails(int32(pid), int32(os.Getuid()), startTime),
+	}
 
 	const allowUserInteraction uint32 = 1
 	obj := conn.Object("org.freedesktop.PolicyKit1", dbus.ObjectPath("/org/freedesktop/PolicyKit1/Authority"))
