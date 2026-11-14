@@ -256,7 +256,8 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	}, nil
 }
 
-// FindPasskeysByRPID finds all passkeys for a given relying party ID.
+// FindPasskeysByRPID finds passkeys for a relying party ID. An empty
+// rpID lists every stored passkey across the selected databases.
 func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry, error) {
 	var results []*PasskeyEntry
 
@@ -271,7 +272,7 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 			if err != nil {
 				return nil, fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
 			}
-			if pk == nil || pk.RPID != rpID {
+			if pk == nil || (rpID != "" && pk.RPID != rpID) {
 				continue
 			}
 			pk.DBUUID = dbs[i].UUID

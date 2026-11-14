@@ -343,6 +343,29 @@ var _ = Describe("SignAssertion", func() {
 		Expect(result.AuthenticatorData[32]&FlagUV).To(Equal(byte(0)), "UV only when the gate verified")
 	})
 
+	It("lists every passkey when the RP ID filter is empty", func() {
+		// ListPasskeys calls FindPasskeysByRPID with an empty rpID to list
+		// everything; an exact-match filter would return nothing.
+		pool, _ := newTestPoolWithDB()
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		dbUUID := firstPoolUUID(pool)
+
+		for _, rp := range []string{"a.example.com", "b.example.com"} {
+			_, err := svc.CreatePasskey(dbUUID, rp, rp, "user", "User", []int{COSEAlgES256})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		found, err := svc.FindPasskeysByRPID(dbUUID, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(HaveLen(2))
+		rpIDs := []string{found[0].RPID, found[1].RPID}
+		Expect(rpIDs).To(ConsistOf("a.example.com", "b.example.com"))
+
+		one, err := svc.FindPasskeysByRPID(dbUUID, "a.example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(one).To(HaveLen(1))
+	})
+
 	It("keeps the sign counter monotonic across assertions", func() {
 		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
