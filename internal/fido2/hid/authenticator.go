@@ -292,6 +292,10 @@ func (a *Authenticator) handleCBOR(ctx context.Context, msg *hostMessage) {
 			}
 			return
 		}
+		slog.Info("hid: CTAP2 command handled",
+			"command", fmt.Sprintf("0x%02x", command),
+			"status", fmt.Sprintf("0x%02x", status),
+			"channel", fmt.Sprintf("%#08x", cid))
 		a.mu.Lock()
 		if a.inflight[cid] == op {
 			delete(a.inflight, cid)
