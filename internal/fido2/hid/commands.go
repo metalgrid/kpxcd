@@ -64,9 +64,13 @@ type getAssertionResponse struct {
 // getInfoOptions fields are declared in CBOR canonical key order
 // (byte length, then byte-wise): Chrome's CBOR reader rejects maps whose
 // keys are not strictly monotonically increasing.
+// uv=true means the device performs user verification itself: the gate
+// (zdr face via polkit) is that mechanism, and Chrome requires it for
+// username-less GetAssertion.
 type getInfoOptions struct {
 	Rk bool `cbor:"rk"`
 	Up bool `cbor:"up"`
+	UV bool `cbor:"uv"`
 }
 
 // Algorithms (key 10, CTAP 2.1 field) must be present: Chrome 157
@@ -251,13 +255,14 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 		return statusUnsupportedAlgorithm, nil
 	}
 
-	// D4: no user verification mechanism exists; a UV-required request is
-	// denied rather than silently downgraded. The options arrive at
-	// top-level key 7 as a map with text keys ("rk", "uv", ...).
-	if options, ok := req[7].(map[interface{}]interface{}); ok && boolAt(options, "uv") {
-		slog.Warn("hid: MakeCredential denied: request requires user verification",
-			"rpID", rpID, "options", fmt.Sprintf("%v", options))
-		return statusOperationDenied, nil
+	// User verification: the gate (zdr face via polkit) is the UV
+	// mechanism, so a uv-flagged request runs the gate and sets the UV
+	// flag on approval. Options arrive at top-level key 7 as a map with
+	// text keys ("rk", "uv", ...).
+	options, _ := req[7].(map[interface{}]interface{})
+	uvRequested := boolAt(options, "uv")
+	if uvRequested {
+		slog.Info("hid: MakeCredential requests user verification", "rpID", rpID)
 	}
 
 	// shortcut: the gate is invoked with no per-site attribution because
@@ -281,7 +286,11 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	if err != nil {
 		return statusInvalidCBOR, nil
 	}
-	authData := authenticatorData(rpID, FlagUP|FlagAT, 0, attested)
+	flags := FlagUP | FlagAT
+	if uvRequested {
+		flags |= FlagUV // the gate's face verification performed UV
+	}
+	authData := authenticatorData(rpID, byte(flags), 0, attested)
 
 	resp, err := cbor.Marshal(makeCredentialResponse{
 		Fmt:      "none",
@@ -306,11 +315,11 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		return statusMissingParam, nil
 	}
 
-	// D4: no user verification mechanism exists. Options arrive at
+	// UV requests are satisfied by the gate's face verification; the
+	// flag is set on the signed assertion below. Options arrive at
 	// top-level key 7 as a map with text keys ("rk", "uv", ...).
-	if options, ok := req[7].(map[interface{}]interface{}); ok && boolAt(options, "uv") {
-		return statusOperationDenied, nil
-	}
+	options, _ := req[7].(map[interface{}]interface{})
+	uvRequested := boolAt(options, "uv")
 
 	// Consult availability before the gate: a site the user has no
 	// credentials for must not trigger a prompt (0x22 without waiting).
@@ -341,7 +350,7 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		return statusOperationDenied, nil
 	}
 
-	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, false)
+	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, uvRequested)
 	if err != nil {
 		if errors.Is(err, ErrNoCredentials) {
 			return statusNoCredentials, nil

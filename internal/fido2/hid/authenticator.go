@@ -332,7 +332,7 @@ func (a *Authenticator) getInfo() (byte, []byte) {
 		Versions:   []string{"FIDO_2_0"},
 		Extensions: []string{},
 		AAGUID:     aaguid[:],
-		Options:    getInfoOptions{Rk: true, Up: true},
+		Options:    getInfoOptions{Rk: true, Up: true, UV: true},
 		MaxMsgSize: maxMessageLen,
 		Algorithms: getInfoAlgorithms,
 	})

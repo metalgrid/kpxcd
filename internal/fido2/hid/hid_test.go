@@ -281,8 +281,8 @@ var _ = Describe("CTAP2 commands", func() {
 		// (byte length, then byte-wise). The options map must appear
 		// canonically ordered: rk, up (clientPin omitted = not supported).
 		bodyHex := hex.EncodeToString(body)
-		Expect(bodyHex).To(ContainSubstring("04a262726bf5627570f5"),
-			"options map must be canonically ordered (rk, up)")
+		Expect(bodyHex).To(ContainSubstring("04a362726bf5627570f5627576f5"),
+			"options map must be canonically ordered (rk, up, uv)")
 
 		// Chrome 157 classifies candidate authenticators by the
 		// algorithms field (key 10); a device without it never receives
@@ -437,7 +437,7 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(store.createCalls).To(Equal(1))
 	})
 
-	It("denies MakeCredential requests that require user verification", func() {
+	It("sets the UV flag when the request requires user verification", func() {
 		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, allowGate{})
 		defer stop()
 		cid := allocate(writer, feeds)
@@ -452,8 +452,14 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdMakeCredential, req)
 
-		status, _ := firstCBORReply(writer)
-		Expect(status).To(Equal(statusOperationDenied))
+		status, body := firstCBORReply(writer)
+		Expect(status).To(Equal(statusOK))
+		var resp map[interface{}]interface{}
+		Expect(cbor.Unmarshal(body, &resp)).To(Succeed())
+		resp = normalizeMap(resp)
+		authData, _ := resp[2].([]byte)
+		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)),
+			"the gate's face verification performs UV for uv-flagged requests")
 	})
 
 	It("refuses unknown CTAP2 commands", func() {
