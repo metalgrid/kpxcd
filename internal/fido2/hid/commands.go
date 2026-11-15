@@ -64,9 +64,9 @@ type getAssertionResponse struct {
 // getInfoOptions fields are declared in CBOR canonical key order
 // (byte length, then byte-wise): Chrome's CBOR reader rejects maps whose
 // keys are not strictly monotonically increasing.
-// uv=true means the device performs user verification itself: the gate
-// (zdr face via polkit) is that mechanism, and Chrome requires it for
-// username-less GetAssertion.
+// uv=true advertises user verification through the polkit gate.
+// Chrome requires it for username-less GetAssertion.
+// The system authentication configuration determines the method.
 type getInfoOptions struct {
 	Rk bool `cbor:"rk"`
 	Up bool `cbor:"up"`
@@ -262,9 +262,9 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 		return statusUnsupportedAlgorithm, nil
 	}
 
-	// User verification: the gate (zdr face via polkit) is the UV
-	// mechanism, so a uv-flagged request runs the gate and sets the UV
-	// flag on approval. Options arrive at top-level key 7 as a map with
+	// User verification uses the polkit gate, without requiring a specific
+	// agent or authentication method. A uv-flagged request sets the UV
+	// flag after approval. Options arrive at top-level key 7 as a map with
 	// text keys ("rk", "uv", ...); excludeList entries at key 5 are
 	// descriptor maps with text keys too.
 	options, _ := req[7].(map[interface{}]interface{})
@@ -317,7 +317,7 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	}
 	flags := FlagUP | FlagAT
 	if uvRequested {
-		flags |= FlagUV // the gate's face verification performed UV
+		flags |= FlagUV // Polkit authorization establishes user verification.
 	}
 	authData := authenticatorData(rpID, byte(flags), 0, attested)
 
@@ -376,8 +376,8 @@ func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint3
 		}
 	}
 
-	// The gate is the user-presence touch (and, for uv-flagged requests,
-	// the face verification). Silent exclude-list signs skip it entirely.
+	// Gate approval establishes user presence and, for uv-flagged requests,
+	// user verification. Silent exclude-list signs skip the gate.
 	var approved = true
 	if !silent {
 		var timedOut bool

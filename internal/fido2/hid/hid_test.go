@@ -472,7 +472,7 @@ var _ = Describe("CTAP2 commands", func() {
 		resp = normalizeMap(resp)
 		authData, _ := resp[2].([]byte)
 		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)),
-			"the gate's face verification performs UV for uv-flagged requests")
+			"gate approval establishes user verification for uv-flagged requests")
 	})
 
 	It("signs silently for exclude-list probes without the UP flag", func() {
@@ -519,7 +519,7 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(cbor.Unmarshal(body, &resp)).To(Succeed())
 		resp = normalizeMap(resp)
 		authData, _ := resp[2].([]byte)
-		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)), "gate-performed face verification is UV")
+		Expect(authData[32]&FlagUV).NotTo(Equal(byte(0)), "gate approval establishes user verification")
 	})
 
 	It("refuses registrations whose excludeList matches a stored credential", func() {
