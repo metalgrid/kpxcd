@@ -24,11 +24,13 @@ appears.
    standard CTAP2 commands against credentials stored as KeePass
    entries: private key PKCS#8, credential ID, user handle, sign
    counter.
-3. Every credential operation is gated by polkit. The polkit agent in
-   your session decides what "touch your key" means: a zdr face scan,
-   a password prompt, whatever your desktop provides. The gate
-   performs user presence for every ceremony and user verification
-   whenever the site requires it.
+3. Interactive registration and sign-in require polkit authorization.
+   Any compatible polkit agent can handle the prompt. The system
+   authentication configuration determines the method, such as a password
+   or face authentication through [zdr](https://github.com/metalgrid/zdr).
+   zdr is an optional example, not a dependency. Gate approval establishes
+   user presence and, when requested, user verification. Silent credential
+   probes do not request approval.
 4. Assertions are signed locally with ES256 and returned over the
    same transport. The challenge, origin binding and RP hash are
    handled per the CTAP 2.0 specification; no network access happens

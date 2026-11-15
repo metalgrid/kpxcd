@@ -14,7 +14,7 @@ Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is
 - **Unlocks databases at session start** and holds them in memory
 - **Secret Service** — exposes and persists secrets for any same-user `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`), matching the GNOME Keyring/libsecret trust model
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — KeePass-backed passkeys served to any browser as a virtual CTAP2 security key, gated by polkit (face verification via [zdr](https://github.com/metalgrid/zdr), passwords via any desktop agent); Bitwarden import via `kpxcctl passkey import`. Verified end-to-end against webauthn.io and GitHub on Chrome and Firefox — see [`doc/passkeys.md`](doc/passkeys.md)
+- **FIDO2 passkeys** — KeePass-backed passkeys served to any browser as a virtual CTAP2 security key, gated by polkit. Any compatible polkit agent works; [zdr](https://github.com/metalgrid/zdr) is an optional face-authentication example, not a dependency. Bitwarden import via `kpxcctl passkey import`. Verified end-to-end against webauthn.io and GitHub on Chrome and Firefox — see [`doc/passkeys.md`](doc/passkeys.md)
 
 ## Planned / In Progress
 
