@@ -24,9 +24,10 @@ const (
 
 // PresenceGate implements hid.Gate with polkit. Every operation runs a
 // CheckAuthorization with allow-interaction against the daemon's own
-// process subject: auth_self means the desktop polkit agent prompts for
-// the user's password. No answer, an error, and a denial are all
-// refusals — the gate has no allow-by-default path.
+// process subject. The auth_self policy requires the user's authentication.
+// The system configuration determines the method; any compatible polkit
+// agent can handle the prompt. No answer, an error, or a denial refuses
+// the operation. The gate has no allow-by-default path.
 type PresenceGate struct{}
 
 // NewPresenceGate builds the polkit-backed presence gate.
