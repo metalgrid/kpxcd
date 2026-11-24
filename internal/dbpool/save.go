@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,6 +126,9 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 	}
 	if mutate != nil {
 		if err := mutate(o.Db); err != nil {
+			if errors.Is(err, ErrSkipSave) {
+				return nil // validate-only callback: no save, no rollback
+			}
 			return err
 		}
 	}
@@ -299,9 +303,16 @@ func atomicEncode(path string, db *gokeepasslib.Database, expected FileFingerpri
 
 // refreshCrypto replaces the database's per-save key material with fresh
 // randomness: MasterSeed and EncryptionIV in the header, plus the inner
-// stream key (KDBX4 InnerHeader.InnerRandomStreamKey, KDBX3
-// ProtectedStreamKey + StreamStartBytes). The KDF salt is untouched, so
-// unlock cost is unchanged. Field lengths are preserved.
+// stream key (KDBX4 InnerHeader.InnerRandomStreamKey; KDBX3
+// ProtectedStreamKey — StreamStartBytes is an integrity prefix, not key
+// material). The KDF salt is untouched, so unlock cost is unchanged.
+// Field lengths are preserved.
+// RefreshCrypto replaces the database's per-save key material with fresh
+// randomness. Exported so other encoders (e.g. rekey) rotate too.
+func RefreshCrypto(db *gokeepasslib.Database) error {
+	return refreshCrypto(db)
+}
+
 func refreshCrypto(db *gokeepasslib.Database) error {
 	if db == nil || db.Header == nil || db.Header.FileHeaders == nil {
 		return fmt.Errorf("dbpool: database has no header")
@@ -328,8 +339,8 @@ func refreshCrypto(db *gokeepasslib.Database) error {
 		}
 		return rotate(&db.Content.InnerHeader.InnerRandomStreamKey, "InnerRandomStreamKey")
 	}
-	if err := rotate(&h.ProtectedStreamKey, "ProtectedStreamKey"); err != nil {
-		return err
-	}
-	return rotate(&h.StreamStartBytes, "StreamStartBytes")
+	// KDBX3: ProtectedStreamKey is the inner Salsa20 key. StreamStartBytes is
+	// NOT key material — it is the integrity prefix the encoder prepends to
+	// the plaintext and the decoder checks; rotating it corrupts the file.
+	return rotate(&h.ProtectedStreamKey, "ProtectedStreamKey")
 }
