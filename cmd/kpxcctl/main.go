@@ -69,6 +69,8 @@ func main() {
 		cmdSetupSSH(args)
 	case "ping":
 		cmdPing()
+	case "doctor":
+		cmdDoctor(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -115,6 +117,10 @@ Commands:
   adopt-default [--replace] <source.kdbx>   Copy source DB to the PAM default store and rekey it
   setup-ssh                  Configure SSH_AUTH_SOCK for the current user
   ping                       Check if daemon is alive
+  doctor <old.kdbx>          Diagnose an old database (read-only)
+  doctor --fix <old.kdbx> <new.kdbx>
+                             Create a fresh vault at <new.kdbx> with new key
+                             material, entries copied, legacy fields migrated
   help                       Show this help message`)
 }
 
@@ -1560,6 +1566,53 @@ func normalizeBase64URL(s string) (string, error) {
 func getVariantUint32(v dbus.Variant) uint32 {
 	n, _ := v.Value().(uint32)
 	return n
+}
+
+// cmdDoctor diagnoses an old database, or with --fix writes a fresh vault.
+func cmdDoctor(args []string) {
+	fix := false
+	var pos []string
+	for _, a := range args {
+		if a == "--fix" {
+			fix = true
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	if fix {
+		if len(pos) != 2 {
+			fmt.Fprintln(os.Stderr, "kpxcctl doctor --fix: usage: doctor --fix <old.kdbx> <new.kdbx>")
+			os.Exit(1)
+		}
+		oldPw := readSecretPrompt("Old database password: ")
+		newPw := readSecretPrompt("New database password (enter to keep the old one): ")
+		if newPw == "" {
+			newPw = oldPw
+		}
+		rep, err := doctorFix(pos[0], oldPw, pos[1], newPw)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kpxcctl doctor --fix:", err)
+			os.Exit(1)
+		}
+		fmt.Print(rep.String())
+		fmt.Printf("Fresh vault written to %s (mode 0600). Verify it opens, then replace the old file yourself.\n", pos[1])
+		return
+	}
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, "kpxcctl doctor: usage: doctor <old.kdbx>")
+		os.Exit(1)
+	}
+	pw := readSecretPrompt("Database password: ")
+	rep, err := doctorCheck(pos[0], pw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl doctor:", err)
+		os.Exit(1)
+	}
+	fmt.Print(rep.String())
+	if rep.hasFixable() {
+		fmt.Println("Run `kpxcctl doctor --fix <old.kdbx> <new.kdbx>` to create a fresh vault with these fixed.")
+		os.Exit(2)
+	}
 }
 
 // cmdPing checks if the daemon is alive.

@@ -150,6 +150,18 @@ UHID cancellation or UV guarantees for it. See doc/passkeys.md.
 Check whether the daemon is running and responsive.
 
 .nf
+.B kpxcctl doctor <old.kdbx>
+Diagnose an old database read-only: legacy passkey field names, missing
+backup-flag fields, legacy KeeAgent custom data, unmarked SSH key
+attachments, KDBX version. Exits 2 when fixable issues are found.
+.TP
+.B kpxcctl doctor --fix <old.kdbx> <new.kdbx>
+Create a FRESH vault at <new.kdbx> (new MasterSeed/EncryptionIV/inner stream
+key, so old synced/backup versions can no longer be XOR-combined), with all
+entries copied and legacy metadata migrated to KeePassXC-compatible form.
+The old file is never modified; <new.kdbx> must not exist. Prompts for the
+old password and a new one (enter keeps the old). Output is 0600.
+.TP
 .B kpxcctl ping
 .fi
 
