@@ -3,8 +3,11 @@
 package sshagent
 
 import (
+	"encoding/xml"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/metalgrid/kpxcd/internal/config"
 )
@@ -238,5 +241,46 @@ var _ = Describe("Key.PublicKey", func() {
 		pub := key.PublicKey()
 		Expect(pub).NotTo(BeNil())
 		Expect(pub.Type()).To(Equal("ssh-ed25519"))
+	})
+})
+
+var _ = Describe("KeeAgent opt-in", func() {
+	makeDB := func(settings *KeeAgentSettings, recycled bool) *gokeepasslib.Database {
+		db := gokeepasslib.NewDatabase()
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values, gokeepasslib.ValueData{
+			Key: "Title", Value: gokeepasslib.V{Content: "key-entry"},
+		})
+		if settings != nil {
+			xmlBytes, err := xml.Marshal(settings)
+			Expect(err).NotTo(HaveOccurred())
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{
+				Key: "KeeAgent.settings", Value: string(xmlBytes),
+			})
+		}
+		group := &db.Content.Root.Groups[0]
+		if recycled {
+			group.Name = "Recycle Bin"
+		}
+		group.Entries = append(group.Entries, entry)
+		return db
+	}
+
+	It("refuses entries without KeeAgent settings", func() {
+		keys, err := ExtractKeysFromDatabase(makeDB(nil, false))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(keys).To(BeEmpty())
+	})
+
+	It("refuses entries with allowUseOfSshKey=false", func() {
+		keys, err := ExtractKeysFromDatabase(makeDB(&KeeAgentSettings{AllowUseOfSshKey: false}, false))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(keys).To(BeEmpty())
+	})
+
+	It("skips the recycle bin even for opted-in entries", func() {
+		keys, err := ExtractKeysFromDatabase(makeDB(&KeeAgentSettings{AllowUseOfSshKey: true}, true))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(keys).To(BeEmpty())
 	})
 })

@@ -331,7 +331,7 @@ func (s *AgentServer) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 	}
 
 	db.RLock()
-	keys, err := ExtractKeysFromDatabase(db.Db)
+	keys, err := ExtractAutoLoadKeysFromDatabase(db.Db)
 	db.RUnlock()
 	if err != nil {
 		slog.Warn("SSH agent: failed to extract keys from database", "error", err)

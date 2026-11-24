@@ -3,7 +3,6 @@
 package sshagent
 
 import (
-	"bytes"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/tobischo/gokeepasslib/v3"
+
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
 // KeeAgentSettings represents the KeeAgent settings XML stored as an
@@ -45,8 +46,20 @@ func ParseKeeAgentSettings(entry *gokeepasslib.Entry) (*KeeAgentSettings, error)
 	return nil, nil
 }
 
-// ExtractKeysFromDatabase extracts all SSH keys from a database.
+// ExtractKeysFromDatabase extracts all SSH keys from entries that opted in
+// via KeeAgent settings (allowUseOfSshKey=true), excluding the recycle bin.
+// Used by the scan command: it lists opted-in keys regardless of AddAtDatabaseOpen.
 func ExtractKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
+	return extractKeys(db, false)
+}
+
+// ExtractAutoLoadKeysFromDatabase extracts only keys whose KeeAgent settings
+// also set addAtDatabaseOpen=true. Used when a database is unlocked.
+func ExtractAutoLoadKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
+	return extractKeys(db, true)
+}
+
+func extractKeys(db *gokeepasslib.Database, autoLoadOnly bool) ([]*Key, error) {
 	var keys []*Key
 
 	if db == nil || db.Content == nil || db.Content.Root == nil {
@@ -56,8 +69,9 @@ func ExtractKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
 	groupCount := len(db.Content.Root.Groups)
 	slog.Debug("sshagent: scanning database for SSH keys", "groups", groupCount)
 
+	recycleBinUUID := dbpool.RecycleBinUUIDForDB(db)
 	for i := range db.Content.Root.Groups {
-		extractKeysFromGroup(&db.Content.Root.Groups[i], db, &keys)
+		extractKeysFromGroup(&db.Content.Root.Groups[i], db, recycleBinUUID, autoLoadOnly, &keys)
 	}
 
 	slog.Info("sshagent: SSH key extraction complete", "found", len(keys))
@@ -65,9 +79,12 @@ func ExtractKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
 }
 
 // extractKeysFromGroup recursively extracts SSH keys from entries in a group.
-func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, keys *[]*Key) {
+func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, recycleBinUUID gokeepasslib.UUID, autoLoadOnly bool, keys *[]*Key) {
+	if dbpool.IsRecycled(group, recycleBinUUID) {
+		return
+	}
 	for i := range group.Entries {
-		key, err := extractKeyFromEntryWithDB(&group.Entries[i], db)
+		key, err := extractKeyFromEntryWithDB(&group.Entries[i], db, autoLoadOnly)
 		if err != nil {
 			// Errors are already logged by the extraction function.
 			continue
@@ -77,7 +94,7 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 		}
 	}
 	for i := range group.Groups {
-		extractKeysFromGroup(&group.Groups[i], db, keys)
+		extractKeysFromGroup(&group.Groups[i], db, recycleBinUUID, autoLoadOnly, keys)
 	}
 }
 
@@ -111,14 +128,15 @@ func resolveKeeAgentSettingsFromDB(entry *gokeepasslib.Entry, db *gokeepasslib.D
 	return nil, nil
 }
 
-// extractKeyFromEntryWithDB resolves binary references using the database metadata.
 // ExtractKeyFromEntry extracts an SSH key from a single KeePass entry using
-// KeeAgent settings or attachment heuristics.
+// KeeAgent settings. It refuses entries without KeeAgent opt-in: scanning
+// arbitrary attachments for private-key-looking bytes used to load TLS and
+// code-signing keys into the agent.
 func ExtractKeyFromEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
-	return extractKeyFromEntryWithDB(entry, db)
+	return extractKeyFromEntryWithDB(entry, db, false)
 }
 
-func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
+func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database, autoLoadOnly bool) (*Key, error) {
 	// Try the full-resolution path first: parse the real KeeAgent.settings
 	// XML from the database. This gives us the actual attachment name.
 	settings, err := resolveKeeAgentSettingsFromDB(entry, db)
@@ -134,16 +152,18 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 				"entry", entry.GetTitle(), "error", err)
 			return nil, nil
 		}
-		if settings == nil {
-			// Heuristic fallback: some KeePass entries store a private key as an
-			// attachment without KeeAgent.settings metadata. This used to be a
-			// practical path for pushing keys into an already-registered agent.
-			return extractKeyFromAnyPrivateKeyAttachment(entry, db)
-		}
+	}
+	if settings == nil {
+		// No KeeAgent settings: the entry did not opt in to SSH key use.
+		return nil, nil
 	}
 
 	if !settings.AllowUseOfSshKey {
 		slog.Debug("sshagent: KeeAgent disabled for this entry", "entry", entry.GetTitle())
+		return nil, nil
+	}
+	if autoLoadOnly && !settings.AddAtDatabaseOpen {
+		slog.Debug("sshagent: entry not marked addAtDatabaseOpen", "entry", entry.GetTitle())
 		return nil, nil
 	}
 
@@ -155,14 +175,10 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 	}
 
 	attachmentName := settings.Location.Attachment
-
-	// If KeeAgent doesn't specify an attachment name, fall back to scanning all
-	// attachments for a private key. Some older/hand-written entries omit this
-	// field even though they only contain one key attachment.
 	if attachmentName == "" {
-		slog.Warn("sshagent: KeeAgent enabled but no attachment name specified; scanning attachments",
+		slog.Warn("sshagent: KeeAgent enabled but no attachment name specified",
 			"entry", entry.GetTitle())
-		return extractKeyFromAnyPrivateKeyAttachment(entry, db)
+		return nil, nil
 	}
 
 	// Resolve the named attachment.
@@ -182,7 +198,7 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 
 	slog.Warn("sshagent: KeeAgent attachment reference not found in entry",
 		"entry", entry.GetTitle(), "attachment", attachmentName)
-	return extractKeyFromAnyPrivateKeyAttachment(entry, db)
+	return nil, nil
 }
 
 func attachmentNameMatches(got, want string) bool {
@@ -190,32 +206,6 @@ func attachmentNameMatches(got, want string) bool {
 		return true
 	}
 	return strings.EqualFold(filepath.Base(got), filepath.Base(want))
-}
-
-func extractKeyFromAnyPrivateKeyAttachment(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
-	for _, ref := range entry.Binaries {
-		if strings.EqualFold(ref.Name, "KeeAgent.settings") {
-			continue
-		}
-		content, err := attachmentContent(db, ref.Name, ref.Value.ID)
-		if err != nil {
-			slog.Debug("sshagent: failed to inspect attachment",
-				"entry", entry.GetTitle(), "attachment", ref.Name, "error", err)
-			continue
-		}
-		if !looksLikePrivateKey(content) {
-			continue
-		}
-		key, err := parseKeyBytes(entry, content)
-		if err != nil {
-			slog.Warn("sshagent: private-key-looking attachment did not parse",
-				"entry", entry.GetTitle(), "attachment", ref.Name, "error", err)
-			continue
-		}
-		logExtractedKey(entry, ref.Name, key)
-		return key, nil
-	}
-	return nil, nil
 }
 
 func parseKeyAttachment(entry *gokeepasslib.Entry, db *gokeepasslib.Database, attachmentName string) (*Key, error) {
@@ -265,16 +255,6 @@ func parseKeyBytes(entry *gokeepasslib.Entry, content []byte) (*Key, error) {
 	key.SetComment(entry.GetTitle())
 	key.SetEntryUUID(string(uuid))
 	return key, nil
-}
-
-func looksLikePrivateKey(content []byte) bool {
-	trimmed := bytes.TrimSpace(content)
-	return bytes.Contains(trimmed, []byte("BEGIN OPENSSH PRIVATE KEY")) ||
-		bytes.Contains(trimmed, []byte("BEGIN RSA PRIVATE KEY")) ||
-		bytes.Contains(trimmed, []byte("BEGIN EC PRIVATE KEY")) ||
-		bytes.Contains(trimmed, []byte("BEGIN DSA PRIVATE KEY")) ||
-		bytes.Contains(trimmed, []byte("BEGIN PRIVATE KEY")) ||
-		bytes.HasPrefix(trimmed, []byte("openssh-key-v1\x00"))
 }
 
 func logExtractedKey(entry *gokeepasslib.Entry, attachmentName string, key *Key) {
