@@ -331,7 +331,24 @@ func (ss *SecretService) aliasPath(alias string) dbus.ObjectPath {
 // to a remaining collection (or removed when none remain). Emits the spec
 // CollectionDeleted signal. Must be called with ss.mu held.
 func (ss *SecretService) removeCollectionLocked(path dbus.ObjectPath) {
+	coll, existed := ss.collections[path]
 	delete(ss.collections, path)
+
+	if existed && ss.conn != nil {
+		// Unexport the collection and every exported item under it, so no
+		// stale object remains reachable on the bus after removal.
+		_ = ss.conn.Export(nil, path, InterfaceCollection)
+		_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Introspectable")
+		_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Properties")
+		coll.db.RLock()
+		for _, entry := range ss.collectEntriesForDB(coll.db) {
+			itemPath := itemPathForDB(coll.db, entry)
+			_ = ss.conn.Export(nil, itemPath, InterfaceItem)
+			_ = ss.conn.Export(nil, itemPath, "org.freedesktop.DBus.Introspectable")
+			_ = ss.conn.Export(nil, itemPath, "org.freedesktop.DBus.Properties")
+		}
+		coll.db.RUnlock()
+	}
 
 	for alias, target := range ss.aliases {
 		if target != path {

@@ -3,6 +3,7 @@
 package secretservice
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -235,14 +236,16 @@ func entryUUIDString(entry gokeepasslib.Entry) string {
 }
 
 // collectionPathFor builds the collection object path from the database
-// name plus a short UUID suffix, so two databases with the same file basename
-// do not collide on one path.
+// name plus a UUID suffix, so two databases with the same file basename do
+// not collide on one path. The UUID is hex-encoded first: the pool's UUID
+// text form is base64 and contains '+', '/', '=', which are not valid in a
+// D-Bus object path element.
 func collectionPathFor(name, uuid string) dbus.ObjectPath {
-	short := uuid
-	if len(short) > 8 {
-		short = short[:8]
+	suffix := hex.EncodeToString([]byte(uuid))
+	if len(suffix) > 16 {
+		suffix = suffix[:16]
 	}
-	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(name) + "-" + short)
+	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(name) + "-" + suffix)
 }
 
 // itemPathForDB builds the item object path inside the database's collection.
