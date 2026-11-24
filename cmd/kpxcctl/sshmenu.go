@@ -4,12 +4,15 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // parseMenuSelection parses "1,3-5" / "a"|"all" into 0-based indices.
@@ -84,4 +87,54 @@ func scanSSHDir(dir string) ([]string, error) {
 		files = append(files, filepath.Join(dir, e.Name()))
 	}
 	return files, nil
+}
+
+// needsPassphrase reports whether data is an encrypted private key,
+// detected directly via ssh.ParseRawPrivateKey (our ParsePrivateKey returns
+// a public-only key with a nil error for encrypted OpenSSH keys, which hid
+// this before).
+func needsPassphrase(data []byte) bool {
+	_, err := ssh.ParseRawPrivateKey(data)
+	var missing *ssh.PassphraseMissingError
+	return errors.As(err, &missing)
+}
+
+// writeExportFile writes a private key to outFile as a fresh 0600 file:
+// without force it hard-links over the target and fails if it exists; with
+// force it renames over it. Never O_TRUNC (would keep the old mode), never
+// through a symlink.
+func writeExportFile(outFile string, data []byte, force bool) error {
+	if fi, err := os.Lstat(outFile); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write through a symlink")
+	}
+	dir := filepath.Dir(outFile)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outFile)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if force {
+		return os.Rename(tmpName, outFile)
+	}
+	// Fail if the target appeared meanwhile (e.g. during the polkit prompt).
+	if err := os.Link(tmpName, outFile); err != nil {
+		return err
+	}
+	return nil
 }

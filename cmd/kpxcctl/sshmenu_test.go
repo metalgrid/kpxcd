@@ -53,7 +53,7 @@ func TestWriteExportFile(t *testing.T) {
 	dir := t.TempDir()
 	// fresh file is 0600
 	p := dir + "/key"
-	if err := writeExportFile(p, []byte("data")); err != nil {
+	if err := writeExportFile(p, []byte("data"), false); err != nil {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(p)
@@ -63,7 +63,7 @@ func TestWriteExportFile(t *testing.T) {
 	// existing 0644 file is replaced with a 0600 file, not truncated in place
 	p2 := dir + "/key2"
 	os.WriteFile(p2, []byte("old"), 0o644)
-	if err := writeExportFile(p2, []byte("new")); err != nil {
+	if err := writeExportFile(p2, []byte("new"), true); err != nil {
 		t.Fatal(err)
 	}
 	fi2, _ := os.Stat(p2)
@@ -79,7 +79,7 @@ func TestWriteExportFile(t *testing.T) {
 	os.WriteFile(real, []byte("x"), 0o600)
 	link := dir + "/link"
 	os.Symlink(real, link)
-	if err := writeExportFile(link, []byte("evil")); err == nil {
+	if err := writeExportFile(link, []byte("evil"), false); err == nil {
 		t.Error("expected symlink refusal")
 	}
 }

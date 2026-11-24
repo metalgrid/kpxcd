@@ -115,7 +115,7 @@ Show a menu of stored keys and export one (polkit-gated).
 Export one stored key to OpenSSH format. Gated by polkit auth_self per call.
 Output is created 0600 with O_EXCL (never stdout), encrypted with a passphrase
 unless --no-passphrase.
-Disabled. kpxcd does not export loaded SSH private key material over D-Bus.
+Export is polkit-gated (auth_self per call); output is 0600 and never stdout.
 
 .TP
 .B kpxcctl ssh diag

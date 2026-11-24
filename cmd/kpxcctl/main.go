@@ -638,10 +638,8 @@ func cmdSSH(args []string) {
 		}
 		// Passphrase is prompted, never taken from argv (visible in ps).
 		passphrase := ""
-		if _, perr := sshagent.ParsePrivateKey(keyData, ""); perr != nil {
-			if _, ok := perr.(*ssh.PassphraseMissingError); ok {
-				passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", keyFile))
-			}
+		if needsPassphrase(keyData) {
+			passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", keyFile))
 		}
 		result := obj.Call(iface+".SshImportKey", 0, uuid, entryPath, keyData, passphrase)
 		if result.Err != nil {
@@ -765,6 +763,9 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 		} else if len(dbs) > 1 {
 			fmt.Fprintln(os.Stderr, "kpxcctl ssh import: multiple databases unlocked; pass the uuid")
 			os.Exit(1)
+		} else {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh import: no unlocked database")
+			os.Exit(1)
 		}
 	}
 
@@ -813,6 +814,7 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 			skipped++
 			continue
 		}
+		encrypted := needsPassphrase(data)
 		// M7: sk- is a filename prefix, not a substring of the full path.
 		if strings.HasPrefix(filepath.Base(f), "sk-") {
 			fmt.Printf("  skip %s: security-key (sk-*) keys are not supported\n", filepath.Base(f))
@@ -824,9 +826,9 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 			skipped++
 			continue
 		}
-		// B7: an encrypted key parses to a public-only key (Signer == nil);
+		// B7/N6: an encrypted key parses to a public-only key (Signer == nil);
 		// keep it as a candidate and prompt for the passphrase only if selected.
-		candidates = append(candidates, candidate{path: f, key: key, data: data, encrypted: key.Signer == nil})
+		candidates = append(candidates, candidate{path: f, key: key, data: data, encrypted: encrypted || key.Signer == nil})
 	}
 	if len(candidates) == 0 {
 		fmt.Printf("no importable keys in ~/.ssh (%d skipped)\n", skipped)
@@ -937,6 +939,9 @@ func cmdSSHAutoload(obj dbus.BusObject, args []string) {
 		} else if len(dbs) > 1 {
 			fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload: multiple databases unlocked; pass the uuid")
 			os.Exit(1)
+		} else {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload: no unlocked database")
+			os.Exit(1)
 		}
 	}
 	if !stdinIsInteractive() {
@@ -980,7 +985,16 @@ func cmdSSHAutoload(obj dbus.BusObject, args []string) {
 	for _, idx := range picked {
 		e := entries[idx]
 		on := !getVariantBool(e["autoload"])
-		override := getVariantBool(e["denied"]) && on
+		override := false
+		if getVariantBool(e["denied"]) && on {
+			fmt.Printf("  %s is KeeAgent-denied; override the deny and auto-load it? [y/N] ", getVariantString(e["title"]))
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.TrimSpace(strings.ToLower(line)) != "y" {
+				fmt.Println("  skipped (deny kept)")
+				continue
+			}
+			override = true
+		}
 		set := obj.Call(iface+".SshSetAutoload", 0, uuid, getVariantString(e["uuid"]), on, override)
 		if set.Err != nil {
 			fmt.Fprintf(os.Stderr, "  fail %s: %v\n", getVariantString(e["title"]), set.Err)
@@ -1135,43 +1149,11 @@ func cmdSSHExport(obj dbus.BusObject, args []string) {
 		fmt.Fprintln(os.Stderr, "WARNING: exporting an UNENCRYPTED private key; the file is 0600 but anyone who can read it can use the key.")
 	}
 
-	if err := writeExportFile(outFile, out); err != nil {
+	if err := writeExportFile(outFile, out, force); err != nil {
 		fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("exported %s to %s (mode 0600)\n", entryRef, outFile)
-}
-
-// writeExportFile writes a private key to outFile as a fresh 0600 file
-// renamed over the target: never O_TRUNC (would keep the old mode), never
-// through a symlink.
-func writeExportFile(outFile string, data []byte) error {
-	if fi, err := os.Lstat(outFile); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to write through a symlink")
-	}
-	dir := filepath.Dir(outFile)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outFile)+".tmp-")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, outFile)
 }
 
 // cmdPasskey handles passkey subcommands: list, create, remove, import.
