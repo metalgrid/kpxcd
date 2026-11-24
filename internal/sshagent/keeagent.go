@@ -3,8 +3,10 @@
 package sshagent
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -66,12 +68,18 @@ type legacyKeeLocation struct {
 // The KeePass2 KeeAgent plugin is believed to write UTF-16 settings.
 func stripBOM(b []byte) []byte {
 	if len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF {
-		return utf16BEToUTF8(b[2:])
+		return neutralizeDecl(utf16BEToUTF8(b[2:]))
 	}
 	if len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE {
-		return utf16LEToUTF8(b[2:])
+		return neutralizeDecl(utf16LEToUTF8(b[2:]))
 	}
 	return b
+}
+
+// neutralizeDecl rewrites a UTF-16 encoding declaration to UTF-8 after the
+// bytes were transcoded, so the XML decoder does not transcode again.
+func neutralizeDecl(b []byte) []byte {
+	return bytes.Replace(b, []byte(`encoding="UTF-16"`), []byte(`encoding="UTF-8"`), 1)
 }
 
 func utf16BEToUTF8(b []byte) []byte {
@@ -90,10 +98,36 @@ func utf16LEToUTF8(b []byte) []byte {
 	return []byte(string(utf16.Decode(u16)))
 }
 
-// ParseEntrySettings parses KeePassXC-format EntrySettings XML.
+// ParseEntrySettings parses KeePassXC-format EntrySettings XML, including
+// UTF-16 (with BOM, or without one via a null-byte heuristic — encoding/xml
+// cannot detect BOM-less UTF-16 itself).
 func ParseEntrySettings(data []byte) (*EntrySettings, error) {
+	data = stripBOM(data)
+	if len(data) >= 4 && data[0] != 0 && data[1] == 0 {
+		data = neutralizeDecl(utf16LEToUTF8(data)) // BOM-less UTF-16LE
+	} else if len(data) >= 4 && data[0] == 0 && data[1] != 0 {
+		data = neutralizeDecl(utf16BEToUTF8(data)) // BOM-less UTF-16BE
+	}
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+		switch strings.ToLower(charset) {
+		case "utf-16le":
+			b, err := io.ReadAll(input)
+			if err != nil {
+				return nil, err
+			}
+			return bytes.NewReader(utf16LEToUTF8(b)), nil
+		case "utf-16be", "utf-16":
+			b, err := io.ReadAll(input)
+			if err != nil {
+				return nil, err
+			}
+			return bytes.NewReader(utf16BEToUTF8(b)), nil
+		}
+		return input, nil
+	}
 	var s EntrySettings
-	if err := xml.Unmarshal(stripBOM(data), &s); err != nil {
+	if err := dec.Decode(&s); err != nil {
 		return nil, fmt.Errorf("sshagent: parse EntrySettings: %w", err)
 	}
 	return &s, nil
@@ -162,11 +196,15 @@ type keyRef struct {
 // resolveKeyRef applies the read order: a valid KeeAgent deny wins; valid
 // KeeAgent allow is authoritative for auto-load; otherwise our own marker;
 // otherwise legacy custom data; otherwise nothing. KeePassXC is never
-// required — the marker alone is sufficient.
+// required — the marker alone is sufficient. Settings that exist but are
+// unreadable fail CLOSED for auto-load (we cannot rule out a deny): ref has
+// source "keeagent-unreadable" and autoLoad=false; explicit add may still
+// proceed via the marker.
 func resolveKeyRef(entry *gokeepasslib.Entry, db *gokeepasslib.Database) keyRef {
 	settings, err := resolveEntrySettings(entry, db)
 	if err != nil {
-		slog.Warn("sshagent: KeeAgent.settings unreadable, falling back to marker", "entry", entry.GetTitle(), "error", err)
+		slog.Warn("sshagent: KeeAgent.settings unreadable; not auto-loading", "entry", entry.GetTitle(), "error", err)
+		return keyRef{source: "keeagent-unreadable"}
 	}
 	if settings != nil {
 		if !settings.AllowUseOfSshKey {
@@ -259,37 +297,17 @@ func ExtractKeyFromEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (
 	if ref.denied {
 		return nil, fmt.Errorf("sshagent: entry is denied by KeeAgent settings")
 	}
-	if ref.attachment != "" {
-		key, err := parseKeyAttachment(entry, db, ref.attachment)
-		if err != nil {
-			return nil, err
-		}
-		logExtractedKey(entry, ref.attachment, key)
-		return key, nil
-	}
-	// Bare entry: exactly one parseable private-key attachment may be added
-	// explicitly; zero or several is ambiguous.
-	var candidates []string
-	for _, ref := range entry.Binaries {
-		if strings.EqualFold(ref.Name, KeeAgentSettingsAttachment) {
-			continue
-		}
-		content, err := attachmentContent(db, ref.Name, ref.Value.ID)
-		if err != nil {
-			continue
-		}
-		if _, err := parseKeyBytes(entry, content); err == nil {
-			candidates = append(candidates, ref.Name)
-		}
-	}
-	if len(candidates) != 1 {
-		return nil, fmt.Errorf("sshagent: entry has %d parseable key attachments; mark one with %s or KeeAgent settings", len(candidates), MarkerSSHKey)
-	}
-	key, err := parseKeyAttachment(entry, db, candidates[0])
+	name, err := ChooseKeyAttachment(entry, db)
 	if err != nil {
 		return nil, err
 	}
-	logExtractedKey(entry, candidates[0], key)
+	key, err := parseKeyAttachment(entry, db, name)
+	if err != nil {
+		return nil, err
+	}
+	key.Confirm = ref.confirm
+	key.Lifetime = ref.lifetime
+	logExtractedKey(entry, name, key)
 	return key, nil
 }
 
@@ -309,12 +327,6 @@ func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Datab
 	key.Lifetime = ref.lifetime
 	logExtractedKey(entry, ref.attachment, key)
 	return key, nil
-}
-
-// KeyRefForEntry exposes the resolved governance of an entry (for scan output).
-func KeyRefForEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (attachment, source string, autoLoad, denied bool) {
-	ref := resolveKeyRef(entry, db)
-	return ref.attachment, ref.source, ref.autoLoad, ref.denied
 }
 
 func attachmentNameMatches(got, want string) bool {
@@ -382,4 +394,109 @@ func logExtractedKey(entry *gokeepasslib.Entry, attachmentName string, key *Key)
 		"attachment", attachmentName,
 		"type", key.Format,
 		"fingerprint", key.Fingerprint())
+}
+
+// ChooseKeyAttachment picks the attachment holding an entry's private key:
+// the valid KeeAgent settings' attachment name, else the KPXCD_SSH_KEY
+// marker, else the legacy form, else the single parseable candidate. When
+// several bare candidates exist the error lists them.
+func ChooseKeyAttachment(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (string, error) {
+	ref := resolveKeyRef(entry, db)
+	if ref.source == "keeagent" || ref.source == "legacy" {
+		if ref.attachment != "" {
+			return ref.attachment, nil
+		}
+	}
+	if ref.source == "marker" && ref.attachment != "" {
+		return ref.attachment, nil
+	}
+	// Bare entry: exactly one parseable private-key attachment.
+	var candidates []string
+	for _, b := range entry.Binaries {
+		if strings.EqualFold(b.Name, KeeAgentSettingsAttachment) {
+			continue
+		}
+		content, err := attachmentContent(db, b.Name, b.Value.ID)
+		if err != nil {
+			continue
+		}
+		if _, err := parseKeyBytes(entry, content); err == nil {
+			candidates = append(candidates, b.Name)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("sshagent: no parseable private-key attachment in entry %q", entry.GetTitle())
+	}
+	return "", fmt.Errorf("sshagent: %d parseable key attachments %v; mark one with %s", len(candidates), candidates, MarkerSSHKey)
+}
+
+// ScannedKey is one parseable key found by ScanKeys, with its governance.
+type ScannedKey struct {
+	Key        *Key
+	EntryUUID  string
+	Title      string
+	Attachment string
+	Source     string
+	AutoLoad   bool
+	Denied     bool
+}
+
+// ScanKeys lists every parseable private-key attachment in the database
+// (any group except the recycle bin), governed or not — used by ssh scan,
+// reload reconcile, and export. Agent loading uses the stricter extractors.
+func ScanKeys(db *gokeepasslib.Database) []ScannedKey {
+	var out []ScannedKey
+	if db == nil || db.Content == nil || db.Content.Root == nil {
+		return nil
+	}
+	recycleBinUUID := dbpool.RecycleBinUUIDForDB(db)
+	var visit func(groups []gokeepasslib.Group)
+	visit = func(groups []gokeepasslib.Group) {
+		for i := range groups {
+			g := &groups[i]
+			if dbpool.IsRecycled(g, recycleBinUUID) {
+				continue
+			}
+			for j := range g.Entries {
+				entry := &g.Entries[j]
+				ref := resolveKeyRef(entry, db)
+				uuid, _ := entry.UUID.MarshalText()
+				attachments := []string{ref.attachment}
+				if ref.attachment == "" || ref.source == "keeagent-unreadable" {
+					attachments = nil
+					for _, b := range entry.Binaries {
+						if strings.EqualFold(b.Name, KeeAgentSettingsAttachment) {
+							continue
+						}
+						attachments = append(attachments, b.Name)
+					}
+				}
+				for _, name := range attachments {
+					if name == "" {
+						continue
+					}
+					key, err := parseKeyAttachment(entry, db, name)
+					if err != nil || key == nil {
+						continue
+					}
+					out = append(out, ScannedKey{
+						Key:        key,
+						EntryUUID:  string(uuid),
+						Title:      entry.GetTitle(),
+						Attachment: name,
+						Source:     ref.source,
+						AutoLoad:   ref.autoLoad && !ref.denied,
+						Denied:     ref.denied,
+					})
+					break // one key per entry for scan purposes
+				}
+			}
+			visit(g.Groups)
+		}
+	}
+	visit(db.Content.Root.Groups)
+	return out
 }

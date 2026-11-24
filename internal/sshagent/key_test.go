@@ -381,3 +381,49 @@ var _ = Describe("EntrySettings parsing", func() {
 		Expect(back.Location.AttachmentName).To(Equal("ssh-key"))
 	})
 })
+
+var _ = Describe("ChooseKeyAttachment and fail-closed unreadable settings", func() {
+	It("chooses the marker attachment even when not named ssh-key", func() {
+		db := gokeepasslib.NewDatabase()
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values,
+			gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}},
+			gokeepasslib.ValueData{Key: MarkerSSHKey, Value: gokeepasslib.V{Content: "id_ed25519"}})
+		db.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		e := &db.Content.Root.Groups[0].Entries[0]
+		bin := db.AddBinary([]byte("x"))
+		e.Binaries = append(e.Binaries, bin.CreateReference("id_ed25519"))
+		name, err := ChooseKeyAttachment(e, db)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(name).To(Equal("id_ed25519"))
+	})
+
+	It("fails closed on unreadable KeeAgent settings (no auto-load, no marker fallback for loading)", func() {
+		db := gokeepasslib.NewDatabase()
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values,
+			gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}},
+			gokeepasslib.ValueData{Key: MarkerSSHKey, Value: gokeepasslib.V{Content: "ssh-key"}})
+		db.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		e := &db.Content.Root.Groups[0].Entries[0]
+		bin := db.AddBinary([]byte("garbage <<<"))
+		e.Binaries = append(e.Binaries, bin.CreateReference(KeeAgentSettingsAttachment))
+		ref := resolveKeyRef(e, db)
+		Expect(ref.source).To(Equal("keeagent-unreadable"))
+		Expect(ref.autoLoad).To(BeFalse())
+		keys, err := ExtractAutoLoadKeysFromDatabase(db)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(keys).To(BeEmpty(), "unreadable settings must not auto-load even with a marker present")
+	})
+
+	It("parses UTF-16 with an XML declaration", func() {
+		xml := `<?xml version="1.0" encoding="UTF-16"?><EntrySettings><AllowUseOfSshKey>true</AllowUseOfSshKey></EntrySettings>`
+		u16 := make([]byte, 0, len(xml)*2)
+		for _, c := range []byte(xml) {
+			u16 = append(u16, c, 0) // LE, no BOM: declaration drives decoding
+		}
+		s, err := ParseEntrySettings(u16)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.AllowUseOfSshKey).To(BeTrue())
+	})
+})
