@@ -30,9 +30,9 @@ Listens on \fB$XDG_RUNTIME_DIR/kpxcd/ssh.sock\fR and speaks the OpenSSH
 agent protocol, allowing \fBssh\fR to use keys stored in the unlocked
 databases.
 .TP
-.B Unix domain socket (control)
-Listens on \fB$XDG_RUNTIME_DIR/kpxcd/control.sock\fR for local CLI
-communication via \fBkpxcctl\fR(1).
+.B Native FIDO2 (optional)
+Registers a virtual CTAP2 HID authenticator through /dev/uhid. Browsers use the
+kernel HID transport without extensions. Local CLI management uses D-Bus.
 
 All sensitive data (master passwords, derived keys, decrypted entries) is held
 in \fBmlock\fR(2)-ed pages and processed within secure memory scopes that zero
@@ -70,7 +70,8 @@ confirmation.
 SSH agent settings: enable/disable and parsed-but-unenforced lifetime/confirm-on-use.
 .TP
 .B [fido2]
-Reserved FIDO2 / passkey settings; the API currently returns not implemented.
+Native UHID authenticator and implemented local passkey APIs; disabled by default.
+Browser generation is ES256; existing local ES256/EdDSA signing remains available.
 .RE
 
 .SH FILES
@@ -83,8 +84,9 @@ Default configuration file. See \fBkpxcd.toml\fR(5).
 Unix domain socket for the SSH agent protocol. Permissions: 0600.
 
 .TP
-.I $XDG_RUNTIME_DIR/kpxcd/control.sock
-Unix domain socket for the control (JSON-RPC) protocol. Permissions: 0600.
+.I /dev/uhid
+Kernel interface for the optional native FIDO2 device; requires module and device
+permissions in an approved deployment.
 
 .TP
 .I /usr/share/polkit-1/actions/org.keepassxc.daemon.policy
@@ -142,9 +144,29 @@ Report bugs at the project repository.
 Known limitations:
 .RS
 .TP
-.B No database write support
-\fBkpxcd\fR reads databases but never modifies them. Concurrent writes by
-KeePassXC are detected via file watchers, which cause a database re-read.
+.B Passkey persistence and compatibility
+Registration and signing write credentials/counters. Explicit resident
+same-account replacement is selected-destination-only, checks unlocked databases,
+and refuses multiple or cross-database matches. Unrelated entry fields are retained;
+there is no migration. Locked/unopened matches are invisible. Optimistic external
+file conflict detection is not a cross-process transaction guarantee.
+Historical wrong user handles generally cannot be repaired; only affected
+credentials may need separately approved re-registration. Imported transport hints
+excluding USB cannot be changed by local import. Amazon diagnosis is unconfirmed.
+.TP
+.B Native identity and approval
+The fixed product AAGUID is ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e.
+Deprecated aaguid, algorithms and user_verification config keys load but warn and
+are ignored. Native approval assumes fresh auth_self authentication; cached or
+locally overridden policy can invalidate UP/UV claims. zdr is only an optional
+agent example. One unix:path or unix:abstract system-bus address is supported.
+Cancellation attempts same-connection polkit cleanup but cannot recall an entered
+output write or roll back completed persistence. See doc/passkeys.md.
+.TP
+.B Verification status
+Current live kernel, host polkit security and Chrome/Firefox browser checks are
+NOT RUN/awaiting approval. Synthetic envelopes and fake authorization tests are
+not live compatibility/security evidence. No FIDO certification is claimed.
 
 .TP
 .B Cold boot attacks

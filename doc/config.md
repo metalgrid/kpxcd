@@ -105,22 +105,14 @@ lifetime = 0
 security_key_provider = "internal"
 
 [fido2]
-# Reserved. Current D-Bus/CLI passkey methods return not implemented even if true.
+# Enable the native UHID browser authenticator and local passkey service.
+# Requires /dev/uhid access and a compatible polkit authentication agent.
 enabled = false
 
-# AAGUID to report in attestation objects
-# (KeePassXC uses a fixed AAGUID for software authenticator)
-aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
-
-# Supported algorithms
-# -7  = ES256 (ECDSA P-256 with SHA-256)
-# -25 = ES256K (ECDSA secp256k1 with SHA-256)  
-# -37 = PS256 (RSASSA-PSS with SHA-256)
-# -8  = EdDSA (Ed25519)
-algorithms = [-7, -8]
-
-# Reserved user verification preference for future passkey operations.
-user_verification = "preferred"  # "required" | "preferred" | "discouraged"
+# Identity is fixed; algorithms and verification are not config preferences.
+# Browser generation: ES256 (-7, ECDSA P-256/SHA-256).
+# Explicit service/D-Bus generation supports ES256 and EdDSA (-8, Ed25519).
+# CLI create requests ES256 only.
 ```
 
 ## Section Reference
@@ -192,10 +184,33 @@ Secret Service mode follows the GNOME Keyring/libsecret trust model: any same-us
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Reserved; current D-Bus/CLI passkey methods return not implemented even if true. |
-| `aaguid` | string | KeePassXC AAGUID | AAGUID reported in attestation objects. |
-| `algorithms` | int[] | `[-7, -8]` | COSE algorithm IDs supported by the software authenticator. |
-| `user_verification` | string | `"preferred"` | User verification requirement. |
+| `enabled` | bool | `false` | Enable the native UHID authenticator and local passkey service. |
+
+The product AAGUID is **ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e**, identical
+in GetInfo and new attested credential data. It is not configurable and does not
+rotate on installation or release. Existing keys, IDs, handles and assertion
+formats are unchanged; loading configuration never migrates credentials.
+
+Legacy `aaguid` (string), `algorithms` (integer array), and `user_verification`
+(string) still parse, including empty or unsupported legacy values. Every
+explicit occurrence logs a deprecation warning naming the ignored key, never its
+value. These fields have no runtime effect and no new defaults. Remove them
+manually when convenient; files are not rewritten. Wrong TOML types still fail
+parsing, and unknown keys in `[fido2]` fail loading instead of silently selecting
+a default. Other sections retain their existing unknown-key behavior.
+
+Browser credential generation advertises only ES256 (-7); a legacy list cannot
+enable other algorithms or filter the service/D-Bus API's ES256 and EdDSA
+support. CLI create hardcodes ES256 only. COSE -25 is ECDH-ES + HKDF-256, **not** ES256K (which is -47);
+neither is supported for generation. PS256 (-37) is also unsupported.
+
+UP/UV follow the actual request and checks established by the approval gate;
+legacy verification preferences cannot weaken requested UV or fabricate it.
+The successful generic polkit gate establishes both properties only under the
+shipped fresh `auth_self` authentication assumption. Local policy overrides,
+`yes` and cached/retained authorization can invalidate that assumption; see
+[Threat Model](threat-model.md#native-fido2-approval-assumptions).
+No particular authentication method or agent implementation is required.
 
 ## Path Expansion
 

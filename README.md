@@ -14,7 +14,7 @@ Written in Go. Single static binary. No Qt. No Botan. The optional PAM helper is
 - **Unlocks databases at session start** and holds them in memory
 - **Secret Service** — exposes and persists secrets for any same-user `org.freedesktop.secrets` client (`secret-tool`, Python `keyring`, browsers, `git-credential-libsecret`), matching the GNOME Keyring/libsecret trust model
 - **SSH agent** — serves OpenSSH keys stored in KeePass entries via the agent protocol
-- **FIDO2 passkeys** — KeePass-backed passkeys served to any browser as a virtual CTAP2 security key, gated by polkit. Any compatible polkit agent works; [zdr](https://github.com/metalgrid/zdr) is an optional face-authentication example, not a dependency. Bitwarden import via `kpxcctl passkey import`. Verified end-to-end against webauthn.io and GitHub on Chrome and Firefox — see [`doc/passkeys.md`](doc/passkeys.md)
+- **FIDO2 passkeys** — KeePass-backed passkeys exposed through native Linux UHID as a virtual CTAP2 security key, gated by polkit; candidate browser compatibility remains unverified. Any compatible polkit agent works; [zdr](https://github.com/metalgrid/zdr) is an optional face-authentication example, not a dependency. Bitwarden import via `kpxcctl passkey import`. The current candidate has offline regression evidence; Chrome/Firefox and live kernel verification remain NOT RUN/awaiting approval — see [`doc/passkeys.md`](doc/passkeys.md) and the [conformance matrix](doc/fido2-conformance.md)
 
 ## Planned / In Progress
 
@@ -63,15 +63,11 @@ secret-tool lookup kpxcd:dbname Default  # retrieve a password from an exposed, 
 ### Passkeys
 
 ```bash
-# Requires the uhid kernel module and a polkit agent in your session.
-# See doc/passkeys.md for the full setup and limitations.
-
-# Enable (off by default; one line in the generated config)
-sed -i 's/enabled = false/enabled = true/' ~/.config/kpxcd/config.toml
-systemctl --user restart kpxcd
-
-# Register and sign in on any site that supports passkeys.
-# Each ceremony asks for one approval through your polkit agent.
+# Reference only: deployment/restarts and account changes require separate approval.
+# Native Linux UHID needs the uhid module, device permissions and a polkit agent.
+# FIDO2 is off by default; an approved deployment sets enabled=true in [fido2].
+# See doc/passkeys.md for policy assumptions, replacement rules and recovery limits.
+# Do not infer universal site compatibility from offline tests.
 ```
 
 ## Documentation

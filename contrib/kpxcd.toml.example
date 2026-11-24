@@ -142,27 +142,19 @@ security_key_provider = "internal"
 # ──────────────────────────────────────────────────────────────
 # FIDO2 / Passkeys
 #
-# Experimental: credential creation plumbing exists, but database
-# storage and assertion signing are incomplete.
-# The D-Bus/CLI passkey methods currently return not implemented.
+# Native UHID browser authenticator; requires /dev/uhid access and a polkit agent.
+# Browser creation supports ES256 (-7, ECDSA P-256/SHA-256) only.
+# Service/D-Bus creation supports ES256 and EdDSA (-8, Ed25519).
+# CLI create requests ES256 only.
 # ──────────────────────────────────────────────────────────────
 
 [fido2]
 enabled = false
 
-# AAGUID identifies this authenticator in attestation objects.
-# This is the same AAGUID KeePassXC uses for software passkeys.
-aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
-
-# Supported COSE algorithms:
-#   -7  = ES256  (ECDSA P-256 with SHA-256)  — universally supported
-#   -8  = EdDSA  (Ed25519)                   — fast, modern
-#   -25 = ES256K (secp256k1 + SHA-256)       — Bitcoin/Ethereum
-#   -37 = PS256  (RSA-PSS with SHA-256)       — legacy RSA
-algorithms = [-7, -8]
-
-# Reserved user verification preference for future passkey operations.
-#   "required"    — always require user verification (PIN, biometric)
-#   "preferred"   — request verification but allow without
-#   "discouraged"  — never request verification
-user_verification = "preferred"
+# Product AAGUID is fixed: ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e.
+# Verification follows each browser request; the polkit gate requires fresh
+# auth_self authentication under the shipped policy (see doc/threat-model.md).
+# Legacy aaguid, algorithms and user_verification fields load with warnings
+# but are ignored. They cannot change identity, add algorithms or weaken UV.
+# COSE reference: -25 is ECDH-ES + HKDF-256, not ES256K (-47).
+# Neither is a supported browser-generation algorithm.

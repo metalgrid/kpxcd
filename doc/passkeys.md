@@ -1,122 +1,134 @@
-# FIDO2 Passkeys
+# Native FIDO2 passkeys
 
-kpxcd serves FIDO2 passkeys to browsers as a virtual CTAP2 security
-key. The credentials live in the KeePass database, the signing happens
-locally, and nothing ever leaves the machine.
+kpxcd implements a Linux UHID CTAP2 authenticator backed by KeePass entries.
+Browsers discover the FIDO HID usage page through the kernel, without an extension
+or KeePassXC GUI. Private keys stay local; browsers receive public keys and signed
+assertions and communicate with the relying party over their own network connection.
+The browser validates origins and constructs clientDataHash; kpxcd binds credentials
+and authenticator data to the supplied RP ID. This is not origin verification by
+the daemon or a claim of universal site compatibility.
 
-To our knowledge, kpxcd is the only free and open-source way to get
-fully offline, extensionless passkeys on Linux that every major browser
-uses as a plain hardware security key. Browser passkey features elsewhere
-are bound to a vendor cloud (Chrome/Google Password Manager, iCloud
-Keychain) or require a proprietary app plus a browser extension
-(1Password, Bitwarden). KeePassXC supports passkeys but needs its GUI
-running and the KeePassXC-Browser extension. kpxcd needs neither: the
-browser discovers a standard CTAP2 HID device, the same way a YubiKey
-appears.
+## Status and deployment prerequisites
 
-## How It Works
+The current candidate has offline regression evidence, not completed live browser
+verification. Earlier reports of Chrome/Firefox working on webauthn.io and GitHub
+predate these repairs and are not validation of this candidate. See the explicit
+[verification matrix](fido2-conformance.md#browser-verification-matrix-awaiting-approval).
+Amazon's server rejection reason remains unconfirmed.
 
-1. The daemon opens `/dev/uhid` and registers a virtual HID device
-   with the FIDO Alliance usage page. Browsers enumerate it through
-   the kernel's normal CTAP2 HID transport — no extension, no
-   configuration in the browser.
-2. Register (MakeCredential) and sign-in (GetAssertion) run as
-   standard CTAP2 commands against credentials stored as KeePass
-   entries: private key PKCS#8, credential ID, user handle, sign
-   counter.
-3. Interactive registration and sign-in require polkit authorization.
-   Any compatible polkit agent can handle the prompt. The system
-   authentication configuration determines the method, such as a password
-   or face authentication through [zdr](https://github.com/metalgrid/zdr).
-   zdr is an optional example, not a dependency. Gate approval establishes
-   user presence and, when requested, user verification. Silent credential
-   probes do not request approval.
-4. Assertions are signed locally with ES256 and returned over the
-   same transport. The challenge, origin binding and RP hash are
-   handled per the CTAP 2.0 specification; no network access happens
-   at any point.
-
-Both Chrome and Firefox have been verified against webauthn.io and
-GitHub: registration, username-less sign-in, sign-in with
-`allowCredentials`, and user verification.
-
-## Requirements
-
-- Linux with `/dev/uhid` (kernel module `uhid`; the package loads it
-  via `modules-load.d`)
-- The packaged udev rule grants the seated user access to `/dev/uhid`
-- A polkit authentication agent running in your session (GNOME and
-  KDE provide one; on bare window managers start any agent, for
-  example `polkit-kde-authentication-agent-1`)
-- `fido2.enabled = true` in the configuration (off by default)
-
-## Enabling Passkeys
+Deployment and account changes need separate approval. The following configuration
+is a reference, not an instruction to change a running service in this review:
 
 ```toml
 [fido2]
 enabled = true
 ```
 
-Then restart the daemon:
+FIDO2 is disabled by default. An approved deployment needs Linux's `uhid` module,
+access to `/dev/uhid` (packaged module-load/udev rules), an available selected
+registration database, a system polkit service and a session authentication agent.
+Any compatible polkit agent can be used; [zdr](https://github.com/metalgrid/zdr) is
+only an optional authentication example, never a requirement.
 
-```sh
-systemctl --user restart kpxcd
-```
+The native gate supports one system-bus address: `unix:path=...` or
+`unix:abstract=...`, with an optional GUID. Address lists, other transports and
+ambiguous keys fail closed. Successful authorization is treated as actual UP and
+UV together **only under the shipped fresh `auth_self` authentication assumption**.
+Local `yes`, retained/cached authorization, `auth_self_keep`, or agent bypass can
+invalidate that assumption. Fake authorization tests are not policy-security
+evidence; see [the threat model](threat-model.md).
 
-The journal confirms the device came up:
-
-```
-hid: virtual FIDO device created
-```
-
-## Credential Model
+## Implemented credential and protocol behavior
 
 | Property | Behavior |
 |---|---|
-| Storage | KeePass entry in the default database, Passkeys group |
-| Keys | ECDSA P-256 (ES256), PKCS#8 inside the entry |
-| Discoverability | Resident-style: the credential is looked up by RP ID, username-less sign-in works |
-| User presence | Gate approval per ceremony |
-| User verification | Gate approval per ceremony when the site requires UV (`uv` advertised) |
-| Sign counter | Persisted and monotonically increasing |
-| AAGUID | KeePassXC's AAGUID by default, configurable |
+| Browser generation | ES256 (COSE -7), ECDSA P-256; `none` attestation |
+| Existing local capability | Service/D-Bus generation supports ES256 and EdDSA (-8); signing retains both. Bitwarden import accepts ES256 only |
+| Storage | PKCS#8 key, credential ID, exact RP-supplied 1–64-byte user handle and counter in ordinary KeePass entries; new browser entries go to the selected registration database's Passkeys group |
+| Identity | Fixed product AAGUID **ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e** in GetInfo and registration; not vendor certification or hardware attestation |
+| Assertion selection | Complete supported allow-list search bound to RP/type/ID; absent/empty lists enumerate discoverable accounts |
+| Multiple accounts | `numberOfCredentials` and GetNextAssertion with channel-bound, 30-second continuation state; candidates revalidated on each signature |
+| Presence/verification | Standard `up` default true, `uv` independent. Requested checks must succeed; flags report actual checks. Combined native approval can establish both |
+| Silent probes | `up=false, uv=false` assertions need no prompt and set neither flag. Required UV is never suppressed by false UP |
+| Exclusions | Type/RP/ID-bound; consent before exclusion disclosure; no silent exclusion bypass |
+| Account privacy | Opaque user ID returned; identifying names/display names only after actual UV |
+| Counters | Persisted on successful signing; exhaustion fails closed, not wraparound. Restoring backups can roll counters back |
+| Transport | Strict 64-byte framing, 7,609-byte HID payload ceiling; CTAP advertises 1,024-byte command limit; ownership, timeout, INIT/CANCEL and stale-output suppression |
 
-Because credentials are ordinary KeePass entries, they inherit vault
-semantics: locking the database locks the passkeys, backups back up
-the passkeys, and the Bitwarden import writes regular entries.
+### Registration replacement and preservation
 
-## Bitwarden Import
+For explicit resident registration (`rk=true`), a unique complete same-RP/exact
+user-ID match is replaced **only in the selected destination**. Any visible match
+in another unlocked database or multiple visible matches refuses registration
+without mutation. Missing/locked selected destinations fail; there is no arbitrary
+fallback. Only unlocked databases are inspected: hidden matches in locked/unopened
+vaults do not block registration. Names are not account identity.
 
-Passkeys created in Bitwarden can be moved to kpxcd:
+Replacement retains the existing entry UUID and original creation time, title,
+password, notes, URL, unrelated custom fields, attachments and history. Only
+credential fields and normal modification metadata change. False/absent `rk`
+and local creation remain append-only; imports remain append-only with duplicate-ID
+refusal. There is no schema migration, background rewrite, inferred-handle repair,
+automatic unlock or cross-database deletion. Existing keys/IDs/handles remain
+unchanged outside explicit eligible replacement and ordinary assertion counters.
+External writers use optimistic file-conflict detection, not cross-process locking;
+a post-rename save error can mean disk changed despite a failed operation.
 
-```sh
-kpxcctl passkey import <db-uuid> bitwarden-export.json --dry-run
-kpxcctl passkey import <db-uuid> bitwarden-export.json
+### Cancellation limits
+
+CANCEL, timeout, INIT/resync and shutdown cancel native pending work and attempt
+`CancelCheckAuthorization` on the same polkit connection. Setup and writes are
+bounded by two seconds; cancellation during a stalled dispatch can add up to two
+seconds before independently bounded two-second cleanup. Cleanup failure or late
+success never approves. An already-entered sink write cannot be recalled, and a
+storage write already begun may finish. Cancellation suppresses stale responses,
+not completed mutation rollback. The local D-Bus management API has a separate
+polkit path; native ceremony cancellation guarantees must not be inferred for it.
+
+## Local APIs and import
+
+`CreatePasskey` and `AssertPasskey` are implemented D-Bus methods, not stubs.
+The former creates a local random handle rather than registering a browser's
+RP user ID; the latter accepts an explicit clientDataHash and establishes UP,
+not the native gate's UV contract. The CLI exposes `passkey list`, `create`,
+`remove`, and `import`; there is **no `passkey assert` CLI command**. Local creation
+alone does not register a key with a website.
+
+For a separately approved import, the CLI accepts:
+
+```text
+kpxcctl passkey import <db-uuid> <bitwarden-export.json> [--dry-run] [--all | --rp=<rpID> | --cred=<credentialID>]
 ```
 
-The importer reads the decrypted Bitwarden JSON export
-(`login.fido2Credentials`), carries over credential ID, user handle,
-RP ID and sign counter, and converts the ES256 private key. Notes:
+It reads decrypted `login.fido2Credentials`, preserving credential ID, user handle,
+RP ID and initial counter while converting the P-256 private key. UUID-shaped IDs
+use their 16 wire bytes. Exports contain live private keys: protect and dispose of
+them under an approved secret-handling procedure. Independent signer copies and
+old backups can diverge in counters; do not delete or retire a working copy without
+user approval and a verified recovery/sign-in path.
 
-- UUID-shaped credential IDs (GitHub, Amazon) are stored as their
-  16 wire bytes.
-- Only ECDSA P-256 keys can be imported.
-- The credential replaces Bitwarden as the signer: both apps track
-  independent sign counters, so retire the Bitwarden copy after
-  importing or sites that enforce monotonic counters will reject the
-  stale one.
-- The export file contains live private keys. Delete it after
-  importing.
+**Transport hints are not local key material.** Original imported registrations
+may have server/browser transport hints excluding USB. Local import cannot change
+those hints or force a site to offer this native USB authenticator. A site/account
+change or re-registration may be necessary, only after approval.
 
-## Limitations
+Historical browser registrations created with incorrect random user handles
+cannot generally be repaired from local metadata: the RP's original opaque ID is
+not recoverable from a username. Only affected credentials may need user-approved
+re-registration after preserving a working recovery method. Neither an AAGUID
+change nor importing the same key repairs that binding. No bulk re-registration
+or Amazon-specific diagnosis/resolution is claimed.
 
-- Linux only.
-- One assertion per ceremony: every sign-in asks for one approval.
-  This is required by WebAuthn and is not negotiable.
-- No clientPin (user verification is the gate instead), no
-  credProtect, no largeBlob, no caBLE, no hmac-secret/prf.
-- A polkit agent must be running in the session, or ceremonies time
-  out without a prompt.
-- Passkeys are only as available as the vault: locking the database
-  locks the passkeys, and an offline vault is an offline
-  authenticator.
+## Remaining limits
+
+- Linux only; no CTAP1/U2F, client PIN, credential management, hybrid/caBLE,
+  credProtect, largeBlob or hmac-secret/PRF. Destructive CTAP Reset is not implemented.
+- Vault locking makes credentials unavailable and invalidates pending account
+  continuation. One approved resident series may return multiple assertions;
+  unrelated ceremonies require fresh approval. Silent probes are deliberately
+  different from interactive ceremonies.
+- Strict CBOR decoder recommendations are recorded separately from mandatory
+  requirements in [conformance evidence](fido2-conformance.md).
+- Synthetic UHID envelopes are not live kernel tests; fake polkit tests are not
+  authentication-policy security evidence. Current browser/live kernel tests
+  remain NOT RUN/awaiting approval. No FIDO certification is claimed.

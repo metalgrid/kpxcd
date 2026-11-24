@@ -12,7 +12,7 @@ kpxcctl \- command-line client for the KeePassXC daemon
 .B kpxcctl
 is the command-line interface to \fBkpxcd\fR(8), the KeePassXC headless daemon.
 It communicates with the daemon over the D-Bus session bus to manage databases,
-retrieve entries, perform SSH operations, and show reserved passkey commands.
+retrieve entries, perform SSH operations, and manage local passkeys.
 
 All operations require that \fBkpxcd\fR is running and reachable on the D-Bus
 session bus.
@@ -109,15 +109,29 @@ Sign a test challenge with the specified loaded key to verify it works.
 Print SSH agent diagnostics: mode, socket path, and loaded key summary.
 
 .SS passkey
-Reserved FIDO2 / WebAuthn passkey commands. The daemon currently returns not implemented.
+Local passkey management, available when the FIDO2 service is enabled.
+Mutations require authorization. These commands do not register a key with a site.
 
 .TP
-.B kpxcctl passkey create <uuid> <rpID> <username>
-Disabled. The passkey API currently returns not implemented.
-
+.B kpxcctl passkey list
+List stored passkey metadata.
 .TP
-.B kpxcctl passkey assert <rpID> <credentialID>
-Disabled. The passkey API currently returns not implemented.
+.B kpxcctl passkey create <uuid> <rpID> <username> [displayName]
+Create an append-only local credential with a generated handle. Browser native
+registration instead preserves the RP-supplied user ID.
+.TP
+.B kpxcctl passkey remove <credentialID>
+Remove a stored credential. Obtain approval and a recovery path before deletion.
+.TP
+.B kpxcctl passkey import <uuid> <bitwarden.json> [\-\-dry-run] [\-\-all | \-\-rp=<rpID> | \-\-cred=<credentialID>]
+Import selected ECDSA P-256 credentials from a decrypted Bitwarden export.
+Protect the export as private key material. Local import cannot change original
+server/browser transport hints excluding USB. Import/account changes require
+separate approval.
+.PP
+There is no passkey assert CLI command. The implemented D-Bus AssertPasskey method
+accepts a caller-supplied hash and uses a separate polkit path; do not infer native
+UHID cancellation or UV guarantees for it. See doc/passkeys.md.
 
 .SS ping
 Check whether the daemon is running and responsive.

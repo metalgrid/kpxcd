@@ -195,50 +195,36 @@ String. Security key provider for \fBsk-ssh-*\fR key types.
 Default: \fB"internal"\fR.
 
 .SH "[fido2]" SECTION
-Reserved FIDO2 / passkey settings. The D-Bus methods currently return not implemented.
+Native UHID browser authenticator and local passkey service settings.
 
 .TP
 .B enabled
-Boolean. Reserved; even when set true, current D-Bus methods return not implemented.
+Boolean. Enable the native authenticator and local passkey service.
 Default: \fBfalse\fR.
 .TP
 .B aaguid
-String. AAGUID (Authenticator Attestation GUID) reported in attestation
-objects. Default: \fB"f8a011f3-8c0a-4d15-8006-17111f9edc7d"\fR
-(the KeePassXC software authenticator AAGUID).
+Deprecated string, accepted but ignored with a warning. The product AAGUID is
+fixed at ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e; no default override is supplied.
 .TP
 .B algorithms
-Array of integers. COSE algorithm IDs supported by the software authenticator:
-.RS
-.TP
-.B \-7
-ES256 (ECDSA P-256 with SHA-256)
-.TP
-.B \-25
-ES256K (ECDSA secp256k1 with SHA-256)
-.TP
-.B \-37
-PS256 (RSASSA-PSS with SHA-256)
-.TP
-.B \-8
-EdDSA (Ed25519)
-.RE
-Default: \fB[\-7, \-8]\fR.
+Deprecated integer array, accepted but ignored with a warning; no default.
+Browser generation supports ES256 (COSE \-7) only. Explicit local creation also
+supports EdDSA (\-8). COSE \-25 is ECDH-ES + HKDF-256, not ES256K (\-47);
+neither is supported for generation.
 .TP
 .B user_verification
-String. Reserved user verification preference for future passkey operations. One of:
-.RS
-.TP
-.B "required"
-Always require user verification.
-.TP
-.B "preferred"
-Request user verification if available.
-.TP
-.B "discouraged"
-Do not request user verification.
-.RE
-Default: \fB"preferred"\fR.
+Deprecated string, accepted but ignored with a warning; no default.
+Verification follows each request and actual checks, never this preference.
+The native polkit approval assumes fresh auth_self authentication under the
+shipped policy. Cached authorization and local policy overrides can invalidate
+this assumption. See doc/threat-model.md. Existing files are not rewritten.
+Unknown [fido2] keys fail loading rather than silently selecting defaults.
+The native gate supports one unix:path or unix:abstract system-bus address,
+optionally with GUID; address lists and other transports fail closed. Cancellation
+attempts bounded same-connection polkit cleanup, not rollback of completed writes.
+zdr is an optional agent example, never a requirement. Current host policy security
+and browser/kernel verification are NOT RUN/awaiting approval; fake tests do not
+establish fresh authentication.
 
 .SH EXAMPLES
 .TP
@@ -305,9 +291,6 @@ security_key_provider = "internal"
 
 [fido2]
 enabled = false
-aaguid = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
-algorithms = [-7, -8]
-user_verification = "preferred"
 .fi
 
 .SH FILES

@@ -67,22 +67,28 @@
 
 ## FIDO2 / Passkeys
 
-Verified end-to-end against webauthn.io and GitHub on Chrome 157 and
-Firefox. See [`doc/passkeys.md`](passkeys.md).
+Implemented means source plus isolated regression evidence, not live compatibility
+or certification. Current Chrome/Firefox, live UHID and host polkit security checks
+are NOT RUN/awaiting approval. Earlier browser reports predate this candidate.
+See [passkey limits](passkeys.md) and [conformance evidence](fido2-conformance.md).
 
 | Feature | Status | Notes |
 |---|---|---|
-| CTAP2 registration (MakeCredential) | ✅ | Chrome 157 + Firefox against webauthn.io and GitHub |
-| CTAP2 assertion (GetAssertion) | ✅ | Username-less and `allowCredentials` sign-in |
-| GetInfo conformance | ✅ | versions, algorithms (ES256/Ed25519), options, aaguid, maxMsgSize; canonical CBOR pinned by regression specs |
-| User verification (UV) | ✅ | `uv` advertised; the polkit gate performs verification and sets the UV flag |
-| User presence | ✅ | Gate approval per ceremony; silent exclude-list probes sign without UP |
-| excludeList enforcement | ✅ | Matching stored credential returns `CTAP2_ERR_CREDENTIAL_EXCLUDED` |
-| Configurable AAGUID | ✅ | Defaults to KeePassXC's AAGUID |
+| CTAP2 registration (MakeCredential) | ✅ offline | ES256; exact RP user handle persisted; live browser test pending |
+| CTAP2 assertion (GetAssertion) | ✅ offline | RP/type/ID-bound full allow list and discoverable selection |
+| Multiple accounts / GetNextAssertion | ✅ offline | Channel-bound 30s continuation; revalidated on lock/reopen/replacement |
+| Resident same-account replacement | ✅ offline | Explicit rk=true; selected destination only; multiple/cross-unlocked-DB matches refuse; hidden locked matches not inspected |
+| Existing credentials | ✅ offline | No migration; unrelated KeePass fields retained; historical wrong handles generally need approved affected-only re-registration |
+| GetInfo conformance | ✅ | versions, browser-generation algorithms (ES256 only), options, fixed product AAGUID, maxMsgSize; isolated regression evidence in fido2-conformance.md |
+| User verification (UV) | ✅ offline | Independent of UP; actual verdicts, assuming shipped fresh auth_self policy; host security unverified |
+| User presence | ✅ offline | Standard up default; silent assertion probes with up=false/uv=false bypass gate, not exclusions |
+| excludeList enforcement | ✅ offline | RP/type/ID-bound disclosure only after required consent |
+| Native authorization cancellation | ✅ offline | Same-connection polkit Cancel; bounded cleanup, no rollback of completed writes; single Unix bus address only |
+| Fixed product AAGUID | ✅ | ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e; legacy override loads with a warning and is ignored |
 | Bitwarden import | ✅ | base64url keys, UUID-shaped credential IDs, sign counter carried |
 | clientPin | ❌ | UV is the gate instead; pinUvAuth protocols not implemented |
 | credProtect / largeBlob / caBLE / hmac-secret | ❌ | Not implemented |
-| D-Bus CreatePasskey / AssertPasskey | ❌ | Passkey management over D-Bus is list/remove/import only |
+| D-Bus CreatePasskey / AssertPasskey | ✅ | Active local APIs; local random handle / caller hash, separate polkit path; CLI has no assert command |
 
 ## D-Bus API (`org.keepassxc.Daemon`)
 
@@ -94,8 +100,8 @@ Firefox. See [`doc/passkeys.md`](passkeys.md).
 | `LockAll` | ✅ | |
 | `GetEntry` | ✅ | By UUID + entry path; returns safe metadata only |
 | `SearchEntries` | ✅ | By UUID + query |
-| `CreatePasskey` | ❌ | D-Bus method returns not implemented |
-| `AssertPasskey` | ❌ | D-Bus method returns not implemented |
+| `CreatePasskey` | ✅ | Local append-only ES256/EdDSA creation; not website registration |
+| `AssertPasskey` | ✅ | Caller supplies hash; UP set after separate polkit gate, not native UV contract |
 | `GetTotp` | ❌ | Returns "not yet implemented" |
 | `GeneratePassword` / `GeneratePassphrase` | ❌ | Return "not yet implemented" |
 
@@ -133,9 +139,9 @@ Firefox. See [`doc/passkeys.md`](passkeys.md).
 | TOTP generation | ❌ | D-Bus method currently returns "not yet implemented" |
 | Password/passphrase generation | ❌ | D-Bus methods currently return "not yet implemented" |
 | FIDO2/passkey storage and signing | ✅ | KeePass-backed credentials, PKCS#8 keys, persisted counters |
-| FIDO2 virtual CTAP2 device (browsers) | ✅ | /dev/uhid transport; verified against Chrome 157 and Firefox |
-| FIDO2 UV via gate | ✅ | `uv` advertised; gate approval sets the UV flag |
-| FIDO2 presence gate | ✅ | polkit auth_self per register/assert; deny-by-default |
+| FIDO2 virtual CTAP2 device (browsers) | ✅ offline | Synthetic production-envelope/framing tests; current live kernel/browser checks pending |
+| FIDO2 UV via gate | ✅ offline | Actual checks; fresh-auth policy assumption, not fake-test security proof |
+| FIDO2 presence gate | ✅ offline | Interactive approval, silent assertion distinction; deny-by-default |
 | Bitwarden passkey import | ✅ | `kpxcctl passkey import` on decrypted JSON exports (ECDSA P-256) |
 | FIDO2 clientPin, credProtect, largeBlob, caBLE, hmac-secret | ❌ | Out of scope for v0.2 (see doc/threat-model.md) |
 | Secret Service credential source | ❌ | Removed — circular dependency with kpxcd's own Secret Service server |
