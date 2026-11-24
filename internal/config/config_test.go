@@ -3,6 +3,8 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -122,6 +124,77 @@ algorithms = [-7]
 		Expect(cfg.Databases[0].Default).To(BeTrue())
 		Expect(cfg.Databases[0].UnlockCredential).To(Equal("pam"))
 		Expect(cfg.Databases[0].Path).To(Equal(filepath.Join(dir, "data", "kpxcd", "default.kdbx")))
+	})
+})
+
+var _ = Describe("Step 6 FIDO2 configuration compatibility", func() {
+	var logs bytes.Buffer
+	BeforeEach(func() {
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		DeferCleanup(func() { slog.SetDefault(previous) })
+		logs.Reset()
+	})
+	load := func(content string) (*Config, error) {
+		path := filepath.Join(GinkgoT().TempDir(), "config.toml")
+		Expect(os.WriteFile(path, []byte(content), 0o600)).To(Succeed())
+		cfg, err := Load(path)
+		after, readErr := os.ReadFile(path)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(after)).To(Equal(content), "loading never rewrites legacy configuration")
+		return cfg, err
+	}
+	It("loads explicit legacy settings with a diagnostic for every ignored field", func() {
+		cfg, err := load(`[fido2]
+enabled = true
+aaguid = "vendor-or-invalid-identity"
+algorithms = [-25, -8]
+user_verification = "discouraged"
+`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Validate()).To(Succeed())
+		Expect(cfg.Fido2.Enabled).To(BeTrue())
+		Expect(cfg.Fido2.AAGUID).To(Equal("vendor-or-invalid-identity"))
+		Expect(cfg.Fido2.Algorithms).To(Equal([]int{-25, -8}))
+		Expect(cfg.Fido2.UserVerification).To(Equal("discouraged"))
+		for _, key := range []string{"aaguid", "algorithms", "user_verification"} {
+			Expect(logs.String()).To(ContainSubstring("key=fido2." + key))
+		}
+		Expect(logs.String()).To(ContainSubstring("deprecated FIDO2 setting is ignored"))
+		Expect(logs.String()).NotTo(ContainSubstring("vendor-or-invalid-identity"))
+	})
+	It("diagnoses explicitly empty legacy settings too", func() {
+		_, err := load("[fido2]\naaguid = \"\"\nalgorithms = []\nuser_verification = \"\"\n")
+		Expect(err).NotTo(HaveOccurred())
+		for _, key := range []string{"aaguid", "algorithms", "user_verification"} {
+			Expect(logs.String()).To(ContainSubstring("key=fido2." + key))
+		}
+	})
+	It("keeps new defaults and examples free of retired assignments and diagnostics", func() {
+		Expect(DefaultConfig().Fido2).To(Equal(Fido2Config{}))
+		for _, path := range []string{"defaults/config.toml", "../../contrib/kpxcd.toml.example"} {
+			data, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			cfg, err := load(string(data))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Validate()).To(Succeed())
+			Expect(cfg.Fido2).To(Equal(Fido2Config{}))
+		}
+		Expect(logs.String()).To(BeEmpty())
+	})
+	It("loads enabled-only new configuration without legacy defaults or warnings", func() {
+		cfg, err := load("[fido2]\nenabled = true\n")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Fido2).To(Equal(Fido2Config{Enabled: true}))
+		Expect(logs.String()).To(BeEmpty())
+	})
+	It("refuses misspelled FIDO2 keys rather than silently using defaults", func() {
+		_, err := load("[fido2]\nuser_verificaton = \"required\"\n")
+		Expect(err).To(MatchError(ContainSubstring("unknown FIDO2 key fido2.user_verificaton")))
+	})
+	It("preserves typed legacy parsing rather than treating malformed values as unknown", func() {
+		_, err := load("[fido2]\nalgorithms = \"ES256\"\n")
+		Expect(err).To(MatchError(ContainSubstring("parse error")))
 	})
 })
 

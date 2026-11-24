@@ -65,9 +65,12 @@ type SSHAgentConfig struct {
 
 // Fido2Config holds settings for the FIDO2 / passkey interface.
 type Fido2Config struct {
-	Enabled          bool   `toml:"enabled"`
-	AAGUID           string `toml:"aaguid"`
-	Algorithms       []int  `toml:"algorithms"`
+	Enabled bool `toml:"enabled"`
+	// Deprecated: accepted only for legacy TOML compatibility; ignored at runtime.
+	AAGUID string `toml:"aaguid"`
+	// Deprecated: browser generation is ES256; local API algorithms are explicit.
+	Algorithms []int `toml:"algorithms"`
+	// Deprecated: verification is determined by each request, never this preference.
 	UserVerification string `toml:"user_verification"`
 }
 
@@ -120,17 +123,18 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse error in %s:\n%w", path, err)
 	}
 
-	// Report unknown keys as warnings (not errors) for user feedback.
-	// Struct keys are the ones defined in our Config type.
-	structKeys := meta.Keys()
-	unknownKeys := make(map[string][]string) // section -> keys
-	for _, k := range structKeys {
-		// toml.Decode preserves all keys; we check for ones that
-		// might be typos or deprecated options.
-		// This is informational only — we don't fail on unknown keys.
-		_ = k
+	// FIDO settings must not silently fall back after a typo. Legacy keys
+	// remain typed, decoded fields rather than becoming unknown-key exceptions.
+	for _, key := range meta.Undecoded() {
+		if len(key) > 0 && key[0] == "fido2" {
+			return nil, fmt.Errorf("config: unknown FIDO2 key %s", key)
+		}
 	}
-	_ = unknownKeys // silence unused warning for now
+	for _, key := range []string{"aaguid", "algorithms", "user_verification"} {
+		if meta.IsDefined("fido2", key) {
+			slog.Warn("config: deprecated FIDO2 setting is ignored; fixed product identity, ES256 browser generation and request-driven verification apply", "key", "fido2."+key)
+		}
+	}
 
 	// Post-process: expand paths and derive names.
 	for i := range cfg.Databases {
@@ -170,12 +174,7 @@ func DefaultConfig() *Config {
 			Lifetime:            0,
 			SecurityKeyProvider: "internal",
 		},
-		Fido2: Fido2Config{
-			Enabled:          false,
-			AAGUID:           "f8a011f3-8c0a-4d15-8006-17111f9edc7d",
-			Algorithms:       []int{-7, -8},
-			UserVerification: "preferred",
-		},
+		Fido2: Fido2Config{Enabled: false},
 	}
 }
 
