@@ -24,6 +24,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/metalgrid/kpxcd/internal/config"
+	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2"
 	"github.com/metalgrid/kpxcd/internal/pamcred"
 	"github.com/metalgrid/kpxcd/internal/security"
@@ -1766,6 +1767,10 @@ func copyAndRekeyDatabase(sourcePath, destPath, sourcePassword, destPassword str
 	defer os.Remove(tmpName)
 
 	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := dbpool.RefreshCrypto(db); err != nil {
 		_ = tmp.Close()
 		return err
 	}
