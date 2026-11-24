@@ -220,7 +220,9 @@ func NewDatabasePool(eventChan chan Event) *DatabasePool {
 		stopCh: make(chan struct{}),
 	}
 	if eventChan != nil {
-		go p.dispatchEvents()
+		// The channel is captured by value: Close nils p.event under the
+		// lock, and the dispatcher must not read that field.
+		go p.dispatchEvents(eventChan)
 	}
 	return p
 }
@@ -241,7 +243,7 @@ func (p *DatabasePool) enqueue(ev Event) {
 }
 
 // dispatchEvents forwards queued events to the consumer until Close.
-func (p *DatabasePool) dispatchEvents() {
+func (p *DatabasePool) dispatchEvents(eventCh chan Event) {
 	for {
 		select {
 		case <-p.stopCh:
@@ -253,7 +255,7 @@ func (p *DatabasePool) dispatchEvents() {
 		p.queue = nil
 		p.mu.Unlock()
 		for _, ev := range queue {
-			p.event <- ev
+			eventCh <- ev
 		}
 	}
 }
