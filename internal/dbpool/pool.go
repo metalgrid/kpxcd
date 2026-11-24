@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -189,6 +190,10 @@ type DatabasePool struct {
 	stopCh  chan struct{}
 	stopped bool
 }
+
+// ErrSkipSave can be returned from an UpdateAndSave callback to validate
+// under the locks without persisting anything (no save, no rollback).
+var ErrSkipSave = errors.New("dbpool: skip save")
 
 // Event represents a database pool event.
 type Event struct {

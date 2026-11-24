@@ -3,6 +3,7 @@
 package dbpool
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -176,6 +177,15 @@ func (o *OpenDatabase) saveLocked() error {
 		return fmt.Errorf("dbpool: refusing to save %s: database changed on disk", o.Path)
 	}
 
+	// Rotate the per-save key material BEFORE locking protected entries
+	// (they must still be unlocked for the inner stream). The library never
+	// regenerates these, so without this every save reuses the same outer
+	// cipher key+nonce and inner stream key — two file versions XOR to cancel
+	// the keystream without the password.
+	if err := refreshCrypto(o.Db); err != nil {
+		return fmt.Errorf("dbpool: rotate crypto material: %w", err)
+	}
+
 	// gokeepasslib's Encoder expects protected values to be in locked form: it
 	// unlocks them to establish stream order, then locks them again for XML
 	// output. kpxcd keeps entries unlocked while serving clients, so convert to
@@ -285,4 +295,41 @@ func atomicEncode(path string, db *gokeepasslib.Database, expected FileFingerpri
 		_ = dirFD.Close()
 	}
 	return nil
+}
+
+// refreshCrypto replaces the database's per-save key material with fresh
+// randomness: MasterSeed and EncryptionIV in the header, plus the inner
+// stream key (KDBX4 InnerHeader.InnerRandomStreamKey, KDBX3
+// ProtectedStreamKey + StreamStartBytes). The KDF salt is untouched, so
+// unlock cost is unchanged. Field lengths are preserved.
+func refreshCrypto(db *gokeepasslib.Database) error {
+	if db == nil || db.Header == nil || db.Header.FileHeaders == nil {
+		return fmt.Errorf("dbpool: database has no header")
+	}
+	h := db.Header.FileHeaders
+	rotate := func(dst *[]byte, name string) error {
+		if len(*dst) == 0 {
+			return fmt.Errorf("dbpool: %s is empty", name)
+		}
+		if _, err := rand.Read(*dst); err != nil {
+			return fmt.Errorf("dbpool: rotate %s: %w", name, err)
+		}
+		return nil
+	}
+	if err := rotate(&h.MasterSeed, "MasterSeed"); err != nil {
+		return err
+	}
+	if err := rotate(&h.EncryptionIV, "EncryptionIV"); err != nil {
+		return err
+	}
+	if db.Header.IsKdbx4() {
+		if db.Content == nil || db.Content.InnerHeader == nil {
+			return fmt.Errorf("dbpool: KDBX4 database has no inner header")
+		}
+		return rotate(&db.Content.InnerHeader.InnerRandomStreamKey, "InnerRandomStreamKey")
+	}
+	if err := rotate(&h.ProtectedStreamKey, "ProtectedStreamKey"); err != nil {
+		return err
+	}
+	return rotate(&h.StreamStartBytes, "StreamStartBytes")
 }
