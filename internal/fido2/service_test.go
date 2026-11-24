@@ -529,3 +529,45 @@ var _ = Describe("COSE public key encoding", func() {
 		}
 	})
 })
+
+var _ = Describe("passkey entry field names", func() {
+	pk := &PasskeyEntry{
+		RPID:         "example.com",
+		RPName:       "Example",
+		Username:     "user",
+		DisplayName:  "User",
+		UserHandle:   "aGFuZGxl",
+		CredentialID: "Y3JlZA",
+		PrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+		PublicKeyCOSE: []byte{0xa5},
+	}
+
+	It("writes KeePassXC attribute names", func() {
+		entry := newPasskeyEntry(pk)
+		Expect(entry.GetContent("KPEX_PASSKEY_RELYING_PARTY")).To(Equal("example.com"))
+		Expect(entry.GetContent("KPEX_PASSKEY_USERNAME")).To(Equal("user"))
+		Expect(entry.GetContent("KPEX_PASSKEY_USER_HANDLE")).To(Equal("aGFuZGxl"))
+		Expect(entry.GetContent("KPEX_PASSKEY_CREDENTIAL_ID")).To(Equal("Y3JlZA"))
+		Expect(entry.GetContent("KPEX_PASSKEY_PRIVATE_KEY_PEM")).To(Equal(pk.PrivateKeyPEM))
+		// Legacy names are not written.
+		Expect(entry.GetContent("KPEX_PASSKEY_RPID")).To(BeEmpty())
+		Expect(entry.GetContent("KPEX_PASSKEY_CRED_ID")).To(BeEmpty())
+	})
+
+	It("reads legacy kpxcd field names as a fallback", func() {
+		entry := gokeepasslib.NewEntry()
+		setEntryValue(&entry, "KPEX_PASSKEY_RPID", "example.com", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_HANDLE", "aGFuZGxl", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_CRED_ID", "Y3JlZA", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_PRIV_KEY", "pem", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_PUB_KEY", base64.StdEncoding.EncodeToString([]byte{0xa5}), false)
+		setEntryValue(&entry, KPEXPasskeyCounter, "7", false)
+
+		got, err := extractPasskeyFromEntry(&entry)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil())
+		Expect(got.RPID).To(Equal("example.com"))
+		Expect(got.CredentialID).To(Equal("Y3JlZA"))
+		Expect(got.SignCount).To(Equal(uint32(7)))
+	})
+})

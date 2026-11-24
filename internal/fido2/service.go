@@ -57,21 +57,48 @@ const (
 	passkeyGroupName = "Passkeys"
 )
 
-// Custom data field keys matching the KeePassXC convention, plus the
-// kpxcd sign counter (KPEX_PASSKEY_COUNTER), a kpxcd extension.
+// Custom data field keys. New entries use the KeePassXC attribute names
+// (KPEX_PASSKEY_RELYING_PARTY etc., see KeePassXC EntryAttributes.cpp) so
+// KeePassXC recognizes and reads them. The legacy kpxcd names are still
+// accepted on read for entries created before this change; they are never
+// written. RP name, display name, creation time, and the sign counter are
+// kpxcd extensions under the KPXCD_PASSKEY_* prefix.
 const (
-	KPEXPrefix             = "KPEX_"
-	KPEXPasskeyRPID        = "KPEX_PASSKEY_RPID"
-	KPEXPasskeyRPName      = "KPEX_PASSKEY_RPNAME"
-	KPEXPasskeyUser        = "KPEX_PASSKEY_USER"
-	KPEXPasskeyHandle      = "KPEX_PASSKEY_HANDLE"
-	KPEXPasskeyCredID      = "KPEX_PASSKEY_CRED_ID"
-	KPEXPasskeyPrivKey     = "KPEX_PASSKEY_PRIV_KEY"
+	KPEXPrefix = "KPEX_"
+
+	// KeePassXC-compatible field names (written).
+	KPEXPasskeyRPID        = "KPEX_PASSKEY_RELYING_PARTY"
+	KPEXPasskeyUser        = "KPEX_PASSKEY_USERNAME"
+	KPEXPasskeyHandle      = "KPEX_PASSKEY_USER_HANDLE"
+	KPEXPasskeyCredID      = "KPEX_PASSKEY_CREDENTIAL_ID"
+	KPEXPasskeyPrivKey     = "KPEX_PASSKEY_PRIVATE_KEY_PEM"
 	KPEXPasskeyPubKey      = "KPEX_PASSKEY_PUB_KEY"
-	KPEXPasskeyCounter     = "KPEX_PASSKEY_COUNTER"
+
+	// Legacy kpxcd names (read-only fallback).
+	legacyPasskeyRPID    = "KPEX_PASSKEY_RPID"
+	legacyPasskeyRPName  = "KPEX_PASSKEY_RPNAME"
+	legacyPasskeyUser    = "KPEX_PASSKEY_USER"
+	legacyPasskeyHandle  = "KPEX_PASSKEY_HANDLE"
+	legacyPasskeyCredID  = "KPEX_PASSKEY_CRED_ID"
+	legacyPasskeyPrivKey = "KPEX_PASSKEY_PRIV_KEY"
+
+	// kpxcd extensions.
+	KPXCDPasskeyRPName     = "KPXCD_PASSKEY_RPNAME"
 	KPEXPasskeyDisplayName = "KPXCD_PASSKEY_DISPLAY_NAME"
 	KPEXPasskeyCreated     = "KPXCD_PASSKEY_CREATED"
+	KPEXPasskeyCounter     = "KPEX_PASSKEY_COUNTER"
 )
+
+// entryContent returns the first non-empty value among keys (new name first,
+// legacy fallback second).
+func entryContent(entry gokeepasslib.Entry, keys ...string) string {
+	for _, k := range keys {
+		if v := entry.GetContent(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // PasskeyEntry represents a stored passkey in a KeePass entry.
 type PasskeyEntry struct {
@@ -598,28 +625,29 @@ func readSignCount(entry *gokeepasslib.Entry) (uint32, error) {
 // fields. It returns (nil, nil) for entries without passkey data and a
 // hard error for entries with partial data.
 func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
-	rpID := entry.GetContent(KPEXPasskeyRPID)
+	rpID := entryContent(*entry, KPEXPasskeyRPID, legacyPasskeyRPID)
 	if rpID == "" {
 		return nil, nil // not a passkey entry
 	}
 
 	pk := &PasskeyEntry{
 		RPID:        rpID,
-		RPName:      entry.GetContent(KPEXPasskeyRPName),
-		Username:    entry.GetContent(KPEXPasskeyUser),
+		RPName:      entryContent(*entry, KPXCDPasskeyRPName, legacyPasskeyRPName),
+		Username:    entryContent(*entry, KPEXPasskeyUser, legacyPasskeyUser),
 		DisplayName: entry.GetContent(KPEXPasskeyDisplayName),
 	}
 	for _, field := range []struct {
-		key string
-		dst *string
+		keys []string
+		name string
+		dst  *string
 	}{
-		{KPEXPasskeyHandle, &pk.UserHandle},
-		{KPEXPasskeyCredID, &pk.CredentialID},
-		{KPEXPasskeyPrivKey, &pk.PrivateKeyPEM},
+		{[]string{KPEXPasskeyHandle, legacyPasskeyHandle}, "user handle", &pk.UserHandle},
+		{[]string{KPEXPasskeyCredID, legacyPasskeyCredID}, "credential ID", &pk.CredentialID},
+		{[]string{KPEXPasskeyPrivKey, legacyPasskeyPrivKey}, "private key", &pk.PrivateKeyPEM},
 	} {
-		*field.dst = entry.GetContent(field.key)
+		*field.dst = entryContent(*entry, field.keys...)
 		if *field.dst == "" {
-			return nil, fmt.Errorf("passkey entry %q is missing %s", entry.GetTitle(), field.key)
+			return nil, fmt.Errorf("passkey entry %q is missing %s", entry.GetTitle(), field.name)
 		}
 	}
 
@@ -658,7 +686,7 @@ func newPasskeyEntry(pk *PasskeyEntry) gokeepasslib.Entry {
 	set("URL", "https://"+pk.RPID, false)
 	set("Password", "", false)
 	set(KPEXPasskeyRPID, pk.RPID, false)
-	set(KPEXPasskeyRPName, pk.RPName, false)
+	set(KPXCDPasskeyRPName, pk.RPName, false)
 	set(KPEXPasskeyUser, pk.Username, false)
 	set(KPEXPasskeyDisplayName, pk.DisplayName, false)
 	// Credential creation is separate from the KeePass entry's original age.

@@ -71,10 +71,10 @@ func (s *Fido2Service) persistRegistration(target *dbpool.OpenDatabase, pk *Pass
 				continue
 			}
 			for _, entry := range s.passkeySnapshotLocked(kdb) {
-				if entry.GetContent(KPEXPasskeyRPID) != pk.RPID {
+				if entryContent(entry, KPEXPasskeyRPID, legacyPasskeyRPID) != pk.RPID {
 					continue
 				}
-				existing, err := base64.RawURLEncoding.DecodeString(entry.GetContent(KPEXPasskeyHandle))
+				existing, err := base64.RawURLEncoding.DecodeString(entryContent(entry, KPEXPasskeyHandle, legacyPasskeyHandle))
 				if err != nil || len(existing) == 0 || !bytes.Equal(existing, handle) {
 					continue
 				}
@@ -143,7 +143,7 @@ func (s *Fido2Service) residentCredentials(rpID string) ([]hid.CredentialReferen
 	err := s.pool.WithUnlockedDatabases(func(dbs []*dbpool.OpenDatabase) error {
 		for _, db := range dbs {
 			for _, entry := range s.passkeySnapshot(db) {
-				if entry.GetContent(KPEXPasskeyRPID) != rpID {
+				if entryContent(entry, KPEXPasskeyRPID, legacyPasskeyRPID) != rpID {
 					continue
 				}
 				pk, err := extractPasskeyFromEntry(&entry)
