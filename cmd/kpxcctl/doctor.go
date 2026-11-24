@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func doctorCheck(oldPath, password string) (*doctorReport, error) {
 
 	r := &doctorReport{path: oldPath, kdbx4: db.Header.IsKdbx4()}
 	if !r.kdbx4 {
-		r.issues = append(r.issues, doctorIssue{kind: "crypto", detail: "KDBX 3.1 vault; --fix preserves the format and rotates its key material", fixable: true})
+		r.issues = append(r.issues, doctorIssue{kind: "crypto", detail: "KDBX 3.1 vault (kept as-is by --fix; KDBX4 upgrade is a KeePassXC choice)", fixable: false})
 	}
 	// KDF strength advisory: weak Argon2 memory makes a typed master password
 	// cheap to brute-force from any file copy.
@@ -90,15 +91,16 @@ func doctorCheck(oldPath, password string) (*doctorReport, error) {
 				// legacy passkey field names (read-only report; the daemon migrates on use)
 				for _, legacy := range []string{"KPEX_PASSKEY_RPID", "KPEX_PASSKEY_CRED_ID", "KPEX_PASSKEY_HANDLE", "KPEX_PASSKEY_PRIV_KEY"} {
 					if e.GetContent(legacy) != "" {
-						r.issues = append(r.issues, doctorIssue{kind: "passkey-fields", entry: title, detail: fmt.Sprintf("legacy field %s (read compatibly; renamed on next save)", legacy), fixable: false})
+						r.issues = append(r.issues, doctorIssue{kind: "passkey-fields", entry: title, detail: fmt.Sprintf("legacy field %s (read compatibly by the daemon)", legacy), fixable: false})
 						break
 					}
 				}
 				// passkey entry missing BE/BS flag fields
-				if e.GetContent("KPEX_PASSKEY_RELYING_PARTY") != "" || e.GetContent("KPEX_PASSKEY_RPID") != "" {
-					if e.GetContent(fido2.KPEXPasskeyFlagBE) == "" {
-						r.issues = append(r.issues, doctorIssue{kind: "passkey-flags", entry: title, detail: "no KPEX_PASSKEY_FLAG_BE/BS; backfilled on next kpxcd sign", fixable: false})
-					}
+				// Only kpxcd-made entries (they carry KPEX_PASSKEY_PUB_KEY)
+				// get flags backfilled on sign; foreign entries' absent flags
+				// are correct as-is.
+				if e.GetContent("KPEX_PASSKEY_PUB_KEY") != "" && e.GetContent(fido2.KPEXPasskeyFlagBE) == "" {
+					r.issues = append(r.issues, doctorIssue{kind: "passkey-flags", entry: title, detail: "kpxcd-made passkey without KPEX_PASSKEY_FLAG_BE/BS; backfilled on next sign", fixable: false})
 				}
 				// legacy <KeeAgent> custom data
 				for _, cd := range e.CustomData {
@@ -142,10 +144,29 @@ func doctorCheck(oldPath, password string) (*doctorReport, error) {
 	return r, nil
 }
 
+// decodeVault opens and unlocks a vault file.
+func decodeVault(path, password string) (*gokeepasslib.Database, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	db := gokeepasslib.NewDatabase()
+	db.Credentials = gokeepasslib.NewPasswordCredentials(password)
+	if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
+		return nil, fmt.Errorf("cannot decode %s: %w", path, err)
+	}
+	if err := db.UnlockProtectedEntries(); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
 // doctorFix rewrites oldPath into newPath preserving the vault header
 // (KDF parameters, cipher, compression, KDBX version, metadata), rotating the
-// per-save key material (MasterSeed/EncryptionIV/inner stream key) so old
-// file versions can no longer be XOR-combined, optionally changing the
+// per-save key material (MasterSeed/EncryptionIV/inner stream key) so versions
+// of the NEW file cannot be XOR-combined with each other (old copies of the
+// source remain combinable — purge those separately), optionally changing the
 // password. No entry metadata is migrated — the daemon reads legacy forms and
 // backfills flags on use. newPath must not exist; its directory must exist and
 // is never chmodded.
@@ -176,10 +197,23 @@ func doctorFix(oldPath, oldPassword, newPath, newPassword string) (*doctorReport
 		return nil, err
 	}
 
+	// Decode the source a second time into `want`: it stays untouched for
+	// verification, while `old` gets mutated by encoding.
+	want, err := decodeVault(oldPath, oldPassword)
+	if err != nil {
+		return nil, err
+	}
+
 	// Keep the source header wholesale (KDF, cipher, version); rotate the
 	// per-save key material.
 	newDB := gokeepasslib.NewDatabase()
 	*newDB.Header = *old.Header
+	fh := *old.Header.FileHeaders
+	fh.MasterSeed = append([]byte{}, fh.MasterSeed...)
+	fh.EncryptionIV = append([]byte{}, fh.EncryptionIV...)
+	fh.ProtectedStreamKey = append([]byte{}, fh.ProtectedStreamKey...)
+	fh.StreamStartBytes = append([]byte{}, fh.StreamStartBytes...)
+	newDB.Header.FileHeaders = &fh
 	newDB.Content = old.Content
 	newDB.Credentials = gokeepasslib.NewPasswordCredentials(newPassword)
 	if err := dbpool.RefreshCrypto(newDB); err != nil {
@@ -213,7 +247,7 @@ func doctorFix(oldPath, oldPassword, newPath, newPassword string) (*doctorReport
 
 	// Verify before publishing: reopen the temp file with the new password
 	// and compare structure with the source.
-	if err := verifyRekey(tmpName, newPassword, old); err != nil {
+	if err := verifyRekey(tmpName, newPassword, want); err != nil {
 		return nil, err
 	}
 	// Publish without clobbering: hard-link fails if the target appeared.
@@ -225,50 +259,70 @@ func doctorFix(oldPath, oldPassword, newPath, newPassword string) (*doctorReport
 	return rep, nil
 }
 
-// verifyRekey reopens path with password and compares entry UUIDs, protected
-// values, binaries and history counts against src.
-func verifyRekey(path, password string, src *gokeepasslib.Database) error {
-	f, err := os.Open(path)
+// verifyRekey reopens path with password and compares a canonical dump of it
+// against want: group/entry UUIDs, every value's key+content+Protected flag,
+// attachment names and bytes, custom data, history, deleted objects, recycle
+// bin UUID. Any difference is an error; differing values are not printed.
+func verifyRekey(path, password string, want *gokeepasslib.Database) error {
+	chk, err := decodeVault(path, password)
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-	chk := gokeepasslib.NewDatabase()
-	chk.Credentials = gokeepasslib.NewPasswordCredentials(password)
-	if err := gokeepasslib.NewDecoder(f).Decode(chk); err != nil {
 		return fmt.Errorf("verify: fresh vault does not open with the new password: %w", err)
 	}
-	if err := chk.UnlockProtectedEntries(); err != nil {
-		return fmt.Errorf("verify: %w", err)
-	}
-	countEntries := func(db *gokeepasslib.Database) (entries int, protOK bool, bins int) {
-		protOK = true
-		var visit func(groups []gokeepasslib.Group)
-		visit = func(groups []gokeepasslib.Group) {
-			for gi := range groups {
-				bins += len(db.Content.Meta.Binaries)
-				for ei := range groups[gi].Entries {
-					e := &groups[gi].Entries[ei]
-					entries++
-					if e.GetPassword() == "" {
-						for _, v := range e.Values {
-							if v.Value.Protected.Bool && v.Value.Content == "" {
-								protOK = false
-							}
-						}
-					}
-					bins += len(e.Binaries)
-				}
-				visit(groups[gi].Groups)
-			}
-		}
-		visit(db.Content.Root.Groups)
-		return
-	}
-	e1, p1, b1 := countEntries(src)
-	e2, p2, b2 := countEntries(chk)
-	if e1 != e2 || b1 != b2 || !p1 || !p2 {
-		return fmt.Errorf("verify: structure mismatch (entries %d->%d, binaries %d->%d, protected ok %v->%v)", e1, e2, b1, b2, p1, p2)
+	a, b := dumpVault(want), dumpVault(chk)
+	if a != b {
+		return fmt.Errorf("verify: content mismatch between source and rewritten vault")
 	}
 	return nil
+}
+
+func dumpVault(db *gokeepasslib.Database) string {
+	var b strings.Builder
+	if db.Content == nil || db.Content.Meta == nil || db.Content.Root == nil {
+		return "<empty>"
+	}
+	// Compared: recycle-bin UUID, deleted objects, per group: UUID, name,
+	// notes, custom data; per entry (current and history): UUID, every value's
+	// key+content+Protected flag, attachment name+bytes (sha), custom data.
+	fmt.Fprintf(&b, "recycle=%x\n", db.Content.Meta.RecycleBinUUID[:])
+	for i := range db.Content.Root.DeletedObjects {
+		fmt.Fprintf(&b, "del=%x\n", db.Content.Root.DeletedObjects[i].UUID[:])
+	}
+	dumpEntry := func(e *gokeepasslib.Entry) {
+		fmt.Fprintf(&b, "entry=%x\n", e.UUID[:])
+		for _, v := range e.Values {
+			fmt.Fprintf(&b, "  v %q %q prot=%v\n", v.Key, v.Value.Content, v.Value.Protected.Bool)
+		}
+		for _, bn := range e.Binaries {
+			content := []byte("<missing>")
+			if bin := db.FindBinary(bn.Value.ID); bin != nil {
+				if c, err := bin.GetContentBytes(); err == nil {
+					content = c
+				}
+			}
+			fmt.Fprintf(&b, "  bin %q len=%d sha=%x\n", bn.Name, len(content), sha256.Sum256(content))
+		}
+		for _, cd := range e.CustomData {
+			fmt.Fprintf(&b, "  cd %q %q\n", cd.Key, cd.Value)
+		}
+	}
+	var visit func(g *gokeepasslib.Group)
+	visit = func(g *gokeepasslib.Group) {
+		fmt.Fprintf(&b, "group=%x name=%q notes=%q\n", g.UUID[:], g.Name, g.Notes)
+		for ei := range g.Entries {
+			e := &g.Entries[ei]
+			dumpEntry(e)
+			for hi := range e.Histories {
+				for _, he := range e.Histories[hi].Entries {
+					dumpEntry(&he)
+				}
+			}
+		}
+		for gi := range g.Groups {
+			visit(&g.Groups[gi])
+		}
+	}
+	for i := range db.Content.Root.Groups {
+		visit(&db.Content.Root.Groups[i])
+	}
+	return b.String()
 }

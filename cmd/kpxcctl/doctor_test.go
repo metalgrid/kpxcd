@@ -193,3 +193,120 @@ func TestDoctorFixKDBX3(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorFixEmptyProtectedPassword(t *testing.T) {
+	// V1: an entry with an empty protected Password is ordinary (passkeys,
+	// notes) and must not fail verification.
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.kdbx")
+	newPath := filepath.Join(dir, "new.kdbx")
+	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
+	db.Credentials = gokeepasslib.NewPasswordCredentials("pw")
+	e := gokeepasslib.NewEntry()
+	e.Values = append(e.Values,
+		gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "note"}},
+		gokeepasslib.ValueData{Key: "Password", Value: gokeepasslib.V{Content: "", Protected: wrappers.BoolWrapper{Bool: true}}})
+	db.Content.Root.Groups[0].Entries = append(db.Content.Root.Groups[0].Entries, e)
+	if err := db.LockProtectedEntries(); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Create(oldPath)
+	if err := gokeepasslib.NewEncoder(f).Encode(db); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, err := doctorFix(oldPath, "pw", newPath, "pw"); err != nil {
+		t.Fatalf("V1: empty protected password must not fail: %v", err)
+	}
+}
+
+func targetEntry(d *gokeepasslib.Database) *gokeepasslib.Entry {
+	for gi := range d.Content.Root.Groups {
+		for ei := range d.Content.Root.Groups[gi].Entries {
+			if d.Content.Root.Groups[gi].Entries[ei].GetTitle() == "t" {
+				return &d.Content.Root.Groups[gi].Entries[ei]
+			}
+		}
+	}
+	return nil
+}
+
+func TestVerifyRekeyDetectsTampering(t *testing.T) {
+	// T1: encode ONE vault, then decode-mutate-reencode per case so only the
+	// mutation differs (UUIDs stay identical).
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.kdbx")
+	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
+	db.Credentials = gokeepasslib.NewPasswordCredentials("pw")
+	e := gokeepasslib.NewEntry()
+	e.Values = append(e.Values, gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "t"}})
+	h := gokeepasslib.History{}
+	he := gokeepasslib.NewEntry()
+	he.Values = append(he.Values, gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "t-old"}})
+	h.Entries = append(h.Entries, he)
+	e.Histories = append(e.Histories, h)
+	e.Binaries = append(e.Binaries, db.AddBinary([]byte("attachment-bytes")).CreateReference("a"))
+	db.Content.Root.Groups[0].Entries = append(db.Content.Root.Groups[0].Entries, e)
+	if err := db.LockProtectedEntries(); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Create(base)
+	if err := gokeepasslib.NewEncoder(f).Encode(db); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	want, err := decodeVault(base, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRekey(base, "pw", want); err != nil {
+		t.Fatalf("identical vault must verify: %v", err)
+	}
+
+	cases := map[string]func(*gokeepasslib.Database){
+		"changed entry UUID": func(d *gokeepasslib.Database) { targetEntry(d).UUID = gokeepasslib.NewUUID() },
+		"changed attachment byte": func(d *gokeepasslib.Database) {
+			targetEntry(d).Binaries[0] = d.AddBinary([]byte("tampered")).CreateReference("a")
+		},
+		"dropped history": func(d *gokeepasslib.Database) { targetEntry(d).Histories = nil },
+		"changed value":   func(d *gokeepasslib.Database) { targetEntry(d).Values[0].Value.Content = "changed" },
+		"changed history value": func(d *gokeepasslib.Database) {
+			targetEntry(d).Histories[0].Entries[0].Values[0].Value.Content = "changed-old"
+		},
+	}
+	for name, mutate := range cases {
+		d, err := decodeVault(base, "pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// find our entry by title (the root group has a placeholder entry)
+		var target *gokeepasslib.Entry
+		for gi := range d.Content.Root.Groups {
+			for ei := range d.Content.Root.Groups[gi].Entries {
+				if d.Content.Root.Groups[gi].Entries[ei].GetTitle() == "t" {
+					target = &d.Content.Root.Groups[gi].Entries[ei]
+				}
+			}
+		}
+		if target == nil {
+			t.Fatal("entry not found")
+		}
+		mutate(d)
+		if err := d.LockProtectedEntries(); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "tampered.kdbx")
+		of, _ := os.Create(out)
+		if err := gokeepasslib.NewEncoder(of).Encode(d); err != nil {
+			t.Fatal(err)
+		}
+		of.Close()
+		if err := verifyRekey(out, "pw", want); err == nil {
+			t.Errorf("verifyRekey accepted tampered vault: %s", name)
+		}
+	}
+	if err := verifyRekey(base, "wrong", want); err == nil {
+		t.Error("verifyRekey accepted wrong password")
+	}
+}

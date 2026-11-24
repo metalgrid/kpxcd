@@ -146,10 +146,10 @@ There is no passkey assert CLI command. The implemented D-Bus AssertPasskey meth
 accepts a caller-supplied hash and uses a separate polkit path; do not infer native
 UHID cancellation or UV guarantees for it. See doc/passkeys.md.
 
-.SS ping
-Check whether the daemon is running and responsive.
+.SS doctor
+Check or rewrite an old database vault.
 
-.nf
+.TP
 .B kpxcctl doctor <old.kdbx>
 Diagnose an old database read-only: legacy passkey field names, missing
 backup-flag fields, legacy KeeAgent custom data, unmarked SSH key
@@ -165,9 +165,12 @@ separately. The old file is never modified; <new.kdbx> must not exist and its
 directory is not chmodded. Prompts for the old password twice-verified new
 password (enter keeps the old). Output is 0600, verified by reopening before
 publish. No entry metadata is migrated; legacy fields are handled at runtime.
+
+.SS ping
+Check whether the daemon is running and responsive.
+
 .TP
 .B kpxcctl ping
-.fi
 
 Prints \fIpong\fR if the daemon is alive. Exits with an error otherwise.
 
