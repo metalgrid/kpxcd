@@ -5,7 +5,6 @@ package dbusapi
 
 import (
 	"encoding/pem"
-	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/tobischo/gokeepasslib/v3"
+	"github.com/tobischo/gokeepasslib/v3/wrappers"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -456,7 +456,8 @@ func (d *DaemonDBus) SshScanDatabase(sender dbus.Sender, uuid string) ([]map[str
 }
 
 // SshGenerateKey generates a new SSH key pair, stores it as an attachment in
-// the specified database entry, and sets KeeAgent metadata.
+// the specified database entry, and writes both the kpxcd marker and real
+// KeeAgent.settings so shared vaults also work in KeePassXC's agent.
 func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath string, keyType string, bits uint32, comment string) (bool, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return false, dbus.MakeFailedError(err)
@@ -478,100 +479,11 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 	}
 
 	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
-		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
-			return fmt.Errorf("dbusapi: database has no root group")
-		}
-
-		// Find existing entry by title or create a new one in the root group.
-		var entry *gokeepasslib.Entry
-		var group *gokeepasslib.Group
-		for gi := range kdb.Content.Root.Groups {
-			g := &kdb.Content.Root.Groups[gi]
-			for ei := range g.Entries {
-				if g.Entries[ei].GetTitle() == entryPath {
-					entry = &g.Entries[ei]
-					group = g
-					break
-				}
-			}
-			if entry != nil {
-				break
-			}
-		}
-		if entry == nil {
-			group = &kdb.Content.Root.Groups[0]
-			newEntry := gokeepasslib.NewEntry()
-			newEntry.Values = append(newEntry.Values, gokeepasslib.ValueData{
-				Key:   "Title",
-				Value: gokeepasslib.V{Content: entryPath},
-			})
-			group.Entries = append(group.Entries, newEntry)
-			entry = &group.Entries[len(group.Entries)-1]
-		}
-
-		// Add private key as a binary attachment.
-		binary := kdb.AddBinary(pemBytes)
-		ref := binary.CreateReference("ssh-key")
-		found := false
-		for i := range entry.Binaries {
-			if entry.Binaries[i].Name == "ssh-key" {
-				entry.Binaries[i] = ref
-				found = true
-				break
-			}
-		}
-		if !found {
-			entry.Binaries = append(entry.Binaries, ref)
-		}
-
-		// Set KeeAgent settings.
-		settings := sshagent.KeeAgentSettings{
-			AllowUseOfSshKey:      true,
-			AddAtDatabaseOpen:     true,
-			RemoveAtDatabaseClose: true,
-			Location: sshagent.Location{
-				SelectedType: "attachment",
-				Attachment:   "ssh-key",
-			},
-		}
-		settingsXML, err := xml.Marshal(settings)
+		entry, err := findOrCreateEntry(kdb, entryPath)
 		if err != nil {
-			return fmt.Errorf("dbusapi: marshal KeeAgent settings: %w", err)
+			return err
 		}
-		cdFound := false
-		for i := range entry.CustomData {
-			if strings.EqualFold(entry.CustomData[i].Key, "KeeAgent.settings") {
-				entry.CustomData[i].Value = string(settingsXML)
-				cdFound = true
-				break
-			}
-		}
-		if !cdFound {
-			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{
-				Key:   "KeeAgent.settings",
-				Value: string(settingsXML),
-			})
-		}
-
-		// Store comment in Notes if provided.
-		if comment != "" {
-			notesFound := false
-			for i := range entry.Values {
-				if entry.Values[i].Key == "Notes" {
-					entry.Values[i].Value.Content = comment
-					notesFound = true
-					break
-				}
-			}
-			if !notesFound {
-				entry.Values = append(entry.Values, gokeepasslib.ValueData{
-					Key:   "Notes",
-					Value: gokeepasslib.V{Content: comment},
-				})
-			}
-		}
-
-		return nil
+		return attachSSHKey(kdb, entry, pemBytes)
 	}); err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to save database: %w", err))
 	}
@@ -605,86 +517,185 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to re-encode key: %w", err))
 	}
-	keyData = pem.EncodeToMemory(plainBlock)
+	pemBytes := pem.EncodeToMemory(plainBlock)
 
 	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
-		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
-			return fmt.Errorf("dbusapi: database has no root group")
-		}
-
-		var entry *gokeepasslib.Entry
-		for gi := range kdb.Content.Root.Groups {
-			g := &kdb.Content.Root.Groups[gi]
-			for ei := range g.Entries {
-				if g.Entries[ei].GetTitle() == entryPath {
-					entry = &g.Entries[ei]
-					break
-				}
-			}
-			if entry != nil {
-				break
-			}
-		}
-		if entry == nil {
-			group := &kdb.Content.Root.Groups[0]
-			newEntry := gokeepasslib.NewEntry()
-			newEntry.Values = append(newEntry.Values, gokeepasslib.ValueData{
-				Key:   "Title",
-				Value: gokeepasslib.V{Content: entryPath},
-			})
-			group.Entries = append(group.Entries, newEntry)
-			entry = &group.Entries[len(group.Entries)-1]
-		}
-
-		binary := kdb.AddBinary(keyData)
-		ref := binary.CreateReference("ssh-key")
-		found := false
-		for i := range entry.Binaries {
-			if entry.Binaries[i].Name == "ssh-key" {
-				entry.Binaries[i] = ref
-				found = true
-				break
-			}
-		}
-		if !found {
-			entry.Binaries = append(entry.Binaries, ref)
-		}
-
-		settings := sshagent.KeeAgentSettings{
-			AllowUseOfSshKey:      true,
-			AddAtDatabaseOpen:     true,
-			RemoveAtDatabaseClose: true,
-			Location: sshagent.Location{
-				SelectedType: "attachment",
-				Attachment:   "ssh-key",
-			},
-		}
-		settingsXML, err := xml.Marshal(settings)
+		entry, err := findOrCreateEntry(kdb, entryPath)
 		if err != nil {
-			return fmt.Errorf("dbusapi: marshal KeeAgent settings: %w", err)
+			return err
 		}
-		cdFound := false
-		for i := range entry.CustomData {
-			if strings.EqualFold(entry.CustomData[i].Key, "KeeAgent.settings") {
-				entry.CustomData[i].Value = string(settingsXML)
-				cdFound = true
-				break
-			}
-		}
-		if !cdFound {
-			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{
-				Key:   "KeeAgent.settings",
-				Value: string(settingsXML),
-			})
-		}
-
-		return nil
+		return attachSSHKey(kdb, entry, pemBytes)
 	}); err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to save database: %w", err))
 	}
 
 	slog.Info("DBus: SSH key imported", "db", db.Name, "entry", entryPath, "fingerprint", key.Fingerprint())
 	return true, nil
+}
+
+// findOrCreateEntry finds an entry by title across all groups (not only
+// top-level) or creates it in the root group.
+func findOrCreateEntry(kdb *gokeepasslib.Database, title string) (*gokeepasslib.Entry, error) {
+	if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
+		return nil, fmt.Errorf("dbusapi: database has no root group")
+	}
+	if entry := findEntryByTitleRecursive(&kdb.Content.Root.Groups, title); entry != nil {
+		return entry, nil
+	}
+	group := &kdb.Content.Root.Groups[0]
+	newEntry := gokeepasslib.NewEntry()
+	newEntry.Values = append(newEntry.Values, gokeepasslib.ValueData{
+		Key:   "Title",
+		Value: gokeepasslib.V{Content: title},
+	})
+	group.Entries = append(group.Entries, newEntry)
+	return &group.Entries[len(group.Entries)-1], nil
+}
+
+func findEntryByTitleRecursive(groups *[]gokeepasslib.Group, title string) *gokeepasslib.Entry {
+	for gi := range *groups {
+		g := &(*groups)[gi]
+		for ei := range g.Entries {
+			if g.Entries[ei].GetTitle() == title {
+				return &g.Entries[ei]
+			}
+		}
+		if found := findEntryByTitleRecursive(&g.Groups, title); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// attachSSHKey stores pemBytes as the entry's "ssh-key" attachment and writes
+// both governance markers: the kpxcd KPXCD_SSH_KEY field and a real
+// KeeAgent.settings attachment (EntrySettings XML) for KeePassXC interop.
+// It refuses to replace an existing key with a different fingerprint —
+// overwriting silently would destroy the old private key.
+func attachSSHKey(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry, pemBytes []byte) error {
+	newKey, err := sshagent.ParsePrivateKey(pemBytes, "")
+	if err != nil {
+		return fmt.Errorf("dbusapi: new key does not parse: %w", err)
+	}
+	for _, ref := range entry.Binaries {
+		if !strings.EqualFold(ref.Name, "ssh-key") {
+			continue
+		}
+		binary := kdb.FindBinary(ref.Value.ID)
+		if binary == nil {
+			return fmt.Errorf("dbusapi: existing ssh-key attachment not found in database")
+		}
+		old, err := binary.GetContentBytes()
+		if err != nil {
+			return fmt.Errorf("dbusapi: decode existing key: %w", err)
+		}
+		existing, err := sshagent.ParsePrivateKey(old, entry.GetPassword())
+		if err != nil {
+			existing, err = sshagent.ParsePrivateKey(old, "")
+		}
+		if err == nil && existing.Fingerprint() != newKey.Fingerprint() {
+			return fmt.Errorf("dbusapi: entry already has a different SSH key (%s); refusing to overwrite", existing.Fingerprint())
+		}
+	}
+
+	binary := kdb.AddBinary(pemBytes)
+	ref := binary.CreateReference("ssh-key")
+	found := false
+	for i := range entry.Binaries {
+		if strings.EqualFold(entry.Binaries[i].Name, "ssh-key") {
+			entry.Binaries[i] = ref
+			found = true
+			break
+		}
+	}
+	if !found {
+		entry.Binaries = append(entry.Binaries, ref)
+	}
+
+	// kpxcd marker.
+	setEntryValue(entry, sshagent.MarkerSSHKey, "ssh-key", false)
+
+	// Real KeeAgent.settings attachment (KeePassXC interop), preserving
+	// existing field values where the entry already has settings.
+	settings := &sshagent.EntrySettings{
+		AllowUseOfSshKey:      true,
+		AddAtDatabaseOpen:     true,
+		RemoveAtDatabaseClose: true,
+		Location:              sshagent.EntryLocation{SelectedType: "attachment", AttachmentName: "ssh-key"},
+	}
+	if old := existingEntrySettings(kdb, entry); old != nil {
+		settings.RemoveAtDatabaseClose = old.RemoveAtDatabaseClose
+		settings.UseConfirmConstraintWhenAdding = old.UseConfirmConstraintWhenAdding
+		settings.UseLifetimeConstraintWhenAdding = old.UseLifetimeConstraintWhenAdding
+		settings.LifetimeConstraintDuration = old.LifetimeConstraintDuration
+	}
+	settingsXML, err := sshagent.MarshalEntrySettings(settings)
+	if err != nil {
+		return err
+	}
+	settingsBin := kdb.AddBinary(settingsXML)
+	settingsRef := settingsBin.CreateReference(sshagent.KeeAgentSettingsAttachment)
+	found = false
+	for i := range entry.Binaries {
+		if strings.EqualFold(entry.Binaries[i].Name, sshagent.KeeAgentSettingsAttachment) {
+			entry.Binaries[i] = settingsRef
+			found = true
+			break
+		}
+	}
+	if !found {
+		entry.Binaries = append(entry.Binaries, settingsRef)
+	}
+
+	// Drop the legacy kpxcd <KeeAgent> custom-data form if present.
+	for i := range entry.CustomData {
+		if strings.EqualFold(entry.CustomData[i].Key, sshagent.KeeAgentSettingsAttachment) {
+			entry.CustomData = append(entry.CustomData[:i], entry.CustomData[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+// existingEntrySettings parses the entry's current KeeAgent.settings
+// attachment, if any.
+func existingEntrySettings(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry) *sshagent.EntrySettings {
+	for _, ref := range entry.Binaries {
+		if !strings.EqualFold(ref.Name, sshagent.KeeAgentSettingsAttachment) {
+			continue
+		}
+		binary := kdb.FindBinary(ref.Value.ID)
+		if binary == nil {
+			return nil
+		}
+		content, err := binary.GetContentBytes()
+		if err != nil {
+			return nil
+		}
+		s, err := sshagent.ParseEntrySettings(content)
+		if err != nil {
+			return nil
+		}
+		return s
+	}
+	return nil
+}
+
+// setEntryValue sets an entry value field, replacing an existing one.
+func setEntryValue(entry *gokeepasslib.Entry, key, value string, protected bool) {
+	idx := entry.GetIndex(key)
+	v := gokeepasslib.ValueData{
+		Key: key,
+		Value: gokeepasslib.V{
+			Content:   value,
+			Protected: wrappers.BoolWrapper{Bool: protected},
+		},
+	}
+	if idx >= 0 {
+		entry.Values[idx] = v
+		return
+	}
+	entry.Values = append(entry.Values, v)
 }
 
 // SshExportKey is intentionally disabled: kpxcd exposes SSH keys for signing,

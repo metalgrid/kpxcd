@@ -160,8 +160,11 @@ func (c *AgentClient) AddKey(key *Key) error {
 	added := agent.AddedKey{
 		PrivateKey:       key.PrivateKey,
 		Comment:          key.Comment,
-		LifetimeSecs:     uint32(c.config.Lifetime),
-		ConfirmBeforeUse: c.config.ConfirmOnUse,
+		LifetimeSecs:     key.Lifetime,
+		ConfirmBeforeUse: key.Confirm || c.config.ConfirmOnUse,
+	}
+	if added.LifetimeSecs == 0 {
+		added.LifetimeSecs = uint32(c.config.Lifetime)
 	}
 	extAgent := agent.NewClient(conn)
 	if err := extAgent.Add(added); err != nil {

@@ -341,8 +341,19 @@ func (s *AgentServer) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 	for _, key := range keys {
 		key.SetDBUUID(db.UUID)
 
-		lifetime := uint32(s.config.Lifetime)
-		if err := s.manager.AddIdentity(key, lifetime, s.config.ConfirmOnUse,
+		// The built-in agent does not enforce the confirm constraint; do not
+		// auto-load such a key (the user can still add it explicitly).
+		confirm := key.Confirm || s.config.ConfirmOnUse
+		if key.Confirm {
+			slog.Warn("SSH agent: entry requests confirm constraint, not enforced in agent mode; not auto-loading",
+				"fingerprint", key.Fingerprint())
+			continue
+		}
+		lifetime := key.Lifetime
+		if lifetime == 0 {
+			lifetime = uint32(s.config.Lifetime)
+		}
+		if err := s.manager.AddIdentity(key, lifetime, confirm,
 			s.config.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
 			slog.Warn("SSH agent: failed to add identity",
 				"fingerprint", key.Fingerprint(), "error", err)
@@ -391,8 +402,16 @@ func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		if loaded[key.Fingerprint()] {
 			continue
 		}
+		if key.Confirm {
+			slog.Warn("SSH agent: entry requests confirm constraint, not enforced in agent mode; not auto-loading",
+				"fingerprint", key.Fingerprint())
+			continue
+		}
 		key.SetDBUUID(db.UUID)
-		lifetime := uint32(s.config.Lifetime)
+		lifetime := key.Lifetime
+		if lifetime == 0 {
+			lifetime = uint32(s.config.Lifetime)
+		}
 		if err := s.manager.AddIdentity(key, lifetime, s.config.ConfirmOnUse,
 			s.config.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
 			slog.Warn("SSH agent: failed to re-add identity after reload",

@@ -28,8 +28,11 @@ type Key struct {
 	SKApplication string
 	SKFlags       byte
 	SKKeyHandle   []byte
-	entryUUID     string
-	dbUUID        string
+	// Confirm/Lifetime come from the entry's KeeAgent settings when present.
+	Confirm  bool
+	Lifetime uint32
+	entryUUID string
+	dbUUID    string
 }
 
 // NewKey creates a Key from a crypto.Signer with the given comment.

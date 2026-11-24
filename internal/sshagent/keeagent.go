@@ -8,53 +8,210 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/tobischo/gokeepasslib/v3"
 
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 )
 
-// KeeAgentSettings represents the KeeAgent settings XML stored as an
-// entry attachment. These settings control how SSH keys are handled.
-type KeeAgentSettings struct {
-	XMLName               xml.Name `xml:"KeeAgent"`
-	AllowUseOfSshKey      bool     `xml:"allowUseOfSshKey"`
-	AddAtDatabaseOpen     bool     `xml:"addAtDatabaseOpen"`
-	RemoveAtDatabaseClose bool     `xml:"removeAtDatabaseClose"`
-	Location              Location `xml:"location"`
+// MarkerSSHKey is the kpxcd-owned entry field naming the attachment that
+// holds the entry's SSH private key. Presence means usable and auto-load.
+// Written by generate/import/autoload; any KeePass editor can set it as a
+// custom attribute, so KeePassXC is never required.
+const MarkerSSHKey = "KPXCD_SSH_KEY"
+
+// KeeAgentSettingsAttachment is the attachment name KeePassXC uses for its
+// per-entry SSH agent settings.
+const KeeAgentSettingsAttachment = "KeeAgent.settings"
+
+// EntrySettings mirrors KeePassXC's KeeAgentSettings XML (root
+// <EntrySettings>, PascalCase fields), as written by KeePassXC's toXml().
+type EntrySettings struct {
+	XMLName                        xml.Name      `xml:"EntrySettings"`
+	AllowUseOfSshKey               bool          `xml:"AllowUseOfSshKey"`
+	AddAtDatabaseOpen              bool          `xml:"AddAtDatabaseOpen"`
+	RemoveAtDatabaseClose          bool          `xml:"RemoveAtDatabaseClose"`
+	UseConfirmConstraintWhenAdding bool          `xml:"UseConfirmConstraintWhenAdding"`
+	UseLifetimeConstraintWhenAdding bool         `xml:"UseLifetimeConstraintWhenAdding"`
+	LifetimeConstraintDuration     int           `xml:"LifetimeConstraintDuration"`
+	Location                       EntryLocation `xml:"Location"`
 }
 
-// Location describes where the SSH key data is stored.
-type Location struct {
-	SelectedType string `xml:"selectedType"` // "attachment" or "file"
-	Attachment   string `xml:"attachment"`   // attachment name
-	FileName     string `xml:"fileName"`     // file path (for "file" type)
+// EntryLocation is the <Location> element of EntrySettings.
+type EntryLocation struct {
+	SelectedType           string `xml:"SelectedType"` // "attachment" or "file"
+	AttachmentName         string `xml:"AttachmentName"`
+	SaveAttachmentToTempFile bool `xml:"SaveAttachmentToTempFile"`
+	FileName               string `xml:"FileName"`
 }
 
-// ParseKeeAgentSettings parses KeeAgent.settings XML from entry custom data.
-// Returns nil if no KeeAgent settings are found.
-func ParseKeeAgentSettings(entry *gokeepasslib.Entry) (*KeeAgentSettings, error) {
+// legacyKeeAgentSettings is the old kpxcd <KeeAgent> custom-data form.
+// Read-only: never written anymore.
+type legacyKeeAgentSettings struct {
+	XMLName               xml.Name          `xml:"KeeAgent"`
+	AllowUseOfSshKey      bool              `xml:"allowUseOfSshKey"`
+	AddAtDatabaseOpen     bool              `xml:"addAtDatabaseOpen"`
+	RemoveAtDatabaseClose bool              `xml:"removeAtDatabaseClose"`
+	Location              legacyKeeLocation  `xml:"location"`
+}
+
+type legacyKeeLocation struct {
+	SelectedType string `xml:"selectedType"`
+	Attachment   string `xml:"attachment"`
+	FileName     string `xml:"fileName"`
+}
+
+// stripBOM removes a UTF-16 BOM and, if present, transcodes UTF-16 to UTF-8.
+// The KeePass2 KeeAgent plugin is believed to write UTF-16 settings.
+func stripBOM(b []byte) []byte {
+	if len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF {
+		return utf16BEToUTF8(b[2:])
+	}
+	if len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE {
+		return utf16LEToUTF8(b[2:])
+	}
+	return b
+}
+
+func utf16BEToUTF8(b []byte) []byte {
+	u16 := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		u16 = append(u16, uint16(b[i])<<8|uint16(b[i+1]))
+	}
+	return []byte(string(utf16.Decode(u16)))
+}
+
+func utf16LEToUTF8(b []byte) []byte {
+	u16 := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		u16 = append(u16, uint16(b[i])|uint16(b[i+1])<<8)
+	}
+	return []byte(string(utf16.Decode(u16)))
+}
+
+// ParseEntrySettings parses KeePassXC-format EntrySettings XML.
+func ParseEntrySettings(data []byte) (*EntrySettings, error) {
+	var s EntrySettings
+	if err := xml.Unmarshal(stripBOM(data), &s); err != nil {
+		return nil, fmt.Errorf("sshagent: parse EntrySettings: %w", err)
+	}
+	return &s, nil
+}
+
+// MarshalEntrySettings encodes settings in KeePassXC's writer shape.
+func MarshalEntrySettings(s *EntrySettings) ([]byte, error) {
+	body, err := xml.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	// Inject the xmlns attributes into the root element, matching
+	// KeePassXC's toXml() output.
+	root := "<EntrySettings>"
+	withNS := `<EntrySettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">`
+	if !strings.HasPrefix(string(body), root) {
+		return nil, fmt.Errorf("sshagent: unexpected encoder output root")
+	}
+	header := `<?xml version="1.0" encoding="UTF-8"?>` + "\n"
+	return []byte(header + strings.Replace(string(body), root, withNS, 1)), nil
+}
+
+// parseLegacyKeeAgentSettings reads the old kpxcd <KeeAgent> custom-data
+// form. Read-only compatibility.
+func parseLegacyKeeAgentSettings(entry *gokeepasslib.Entry) *legacyKeeAgentSettings {
 	for _, cd := range entry.CustomData {
-		if strings.EqualFold(cd.Key, "KeeAgent.settings") {
-			var settings KeeAgentSettings
-			if err := xml.Unmarshal([]byte(cd.Value), &settings); err != nil {
-				return nil, fmt.Errorf("sshagent: failed to parse KeeAgent custom data: %w", err)
+		if strings.EqualFold(cd.Key, KeeAgentSettingsAttachment) {
+			var s legacyKeeAgentSettings
+			if err := xml.Unmarshal(stripBOM([]byte(cd.Value)), &s); err != nil {
+				slog.Warn("sshagent: unreadable legacy KeeAgent custom data", "entry", entry.GetTitle(), "error", err)
+				return nil
 			}
-			return &settings, nil
+			return &s
 		}
+	}
+	return nil
+}
+
+// resolveEntrySettings reads the KeeAgent.settings attachment from the
+// database. Returns (nil, nil) when absent; (nil, err) when present but
+// unreadable — callers must Warn and treat as absent, never as allowed.
+func resolveEntrySettings(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*EntrySettings, error) {
+	for _, ref := range entry.Binaries {
+		if !strings.EqualFold(ref.Name, KeeAgentSettingsAttachment) {
+			continue
+		}
+		content, err := attachmentContent(db, ref.Name, ref.Value.ID)
+		if err != nil {
+			return nil, err
+		}
+		return ParseEntrySettings(content)
 	}
 	return nil, nil
 }
 
-// ExtractKeysFromDatabase extracts all SSH keys from entries that opted in
-// via KeeAgent settings (allowUseOfSshKey=true), excluding the recycle bin.
-// Used by the scan command: it lists opted-in keys regardless of AddAtDatabaseOpen.
+// keyRef describes how an entry's SSH key is governed.
+type keyRef struct {
+	attachment string // attachment holding the private key
+	source     string // "keeagent" | "marker" | "legacy"
+	autoLoad   bool
+	denied     bool
+	confirm    bool
+	lifetime   uint32
+}
+
+// resolveKeyRef applies the read order: a valid KeeAgent deny wins; valid
+// KeeAgent allow is authoritative for auto-load; otherwise our own marker;
+// otherwise legacy custom data; otherwise nothing. KeePassXC is never
+// required — the marker alone is sufficient.
+func resolveKeyRef(entry *gokeepasslib.Entry, db *gokeepasslib.Database) keyRef {
+	settings, err := resolveEntrySettings(entry, db)
+	if err != nil {
+		slog.Warn("sshagent: KeeAgent.settings unreadable, falling back to marker", "entry", entry.GetTitle(), "error", err)
+	}
+	if settings != nil {
+		if !settings.AllowUseOfSshKey {
+			return keyRef{denied: true, source: "keeagent"}
+		}
+		ref := keyRef{
+			attachment: settings.Location.AttachmentName,
+			source:     "keeagent",
+			autoLoad:   settings.AddAtDatabaseOpen,
+			confirm:    settings.UseConfirmConstraintWhenAdding,
+		}
+		if settings.UseLifetimeConstraintWhenAdding {
+			ref.lifetime = uint32(settings.LifetimeConstraintDuration)
+		}
+		if settings.Location.SelectedType == "file" {
+			slog.Warn("sshagent: file-based SSH key locations not supported", "entry", entry.GetTitle(), "file", settings.Location.FileName)
+			ref.attachment = ""
+		}
+		return ref
+	}
+	if marker := entry.GetContent(MarkerSSHKey); marker != "" {
+		return keyRef{attachment: marker, source: "marker", autoLoad: true}
+	}
+	if legacy := parseLegacyKeeAgentSettings(entry); legacy != nil {
+		if !legacy.AllowUseOfSshKey {
+			return keyRef{denied: true, source: "legacy"}
+		}
+		return keyRef{
+			attachment: legacy.Location.Attachment,
+			source:     "legacy",
+			autoLoad:   legacy.AddAtDatabaseOpen,
+		}
+	}
+	return keyRef{}
+}
+
+// ExtractKeysFromDatabase extracts every parseable, non-denied SSH key in
+// the database (any group except the recycle bin), regardless of auto-load.
+// Used by ssh scan and by reload reconcile.
 func ExtractKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
 	return extractKeys(db, false)
 }
 
-// ExtractAutoLoadKeysFromDatabase extracts only keys whose KeeAgent settings
-// also set addAtDatabaseOpen=true. Used when a database is unlocked.
+// ExtractAutoLoadKeysFromDatabase extracts only keys marked auto-load.
+// Used when a database is unlocked.
 func ExtractAutoLoadKeysFromDatabase(db *gokeepasslib.Database) ([]*Key, error) {
 	return extractKeys(db, true)
 }
@@ -66,9 +223,6 @@ func extractKeys(db *gokeepasslib.Database, autoLoadOnly bool) ([]*Key, error) {
 		return nil, nil
 	}
 
-	groupCount := len(db.Content.Root.Groups)
-	slog.Debug("sshagent: scanning database for SSH keys", "groups", groupCount)
-
 	recycleBinUUID := dbpool.RecycleBinUUIDForDB(db)
 	for i := range db.Content.Root.Groups {
 		extractKeysFromGroup(&db.Content.Root.Groups[i], db, recycleBinUUID, autoLoadOnly, &keys)
@@ -78,7 +232,6 @@ func extractKeys(db *gokeepasslib.Database, autoLoadOnly bool) ([]*Key, error) {
 	return keys, nil
 }
 
-// extractKeysFromGroup recursively extracts SSH keys from entries in a group.
 func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, recycleBinUUID gokeepasslib.UUID, autoLoadOnly bool, keys *[]*Key) {
 	if dbpool.IsRecycled(group, recycleBinUUID) {
 		return
@@ -86,7 +239,7 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 	for i := range group.Entries {
 		key, err := extractKeyFromEntryWithDB(&group.Entries[i], db, autoLoadOnly)
 		if err != nil {
-			// Errors are already logged by the extraction function.
+			slog.Warn("sshagent: skipping entry with unusable key", "entry", group.Entries[i].GetTitle(), "error", err)
 			continue
 		}
 		if key != nil {
@@ -98,107 +251,70 @@ func extractKeysFromGroup(group *gokeepasslib.Group, db *gokeepasslib.Database, 
 	}
 }
 
-// resolveKeeAgentSettingsFromDB looks up the KeeAgent.settings binary
-// attachment in the database, decodes it, and parses the XML to get the
-// real attachment name and settings.
-func resolveKeeAgentSettingsFromDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*KeeAgentSettings, error) {
+// ExtractKeyFromEntry extracts one entry's SSH key for an explicit
+// `ssh add`: the governed attachment when metadata exists, otherwise the
+// single parseable private-key attachment of a bare entry.
+func ExtractKeyFromEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
+	ref := resolveKeyRef(entry, db)
+	if ref.denied {
+		return nil, fmt.Errorf("sshagent: entry is denied by KeeAgent settings")
+	}
+	if ref.attachment != "" {
+		key, err := parseKeyAttachment(entry, db, ref.attachment)
+		if err != nil {
+			return nil, err
+		}
+		logExtractedKey(entry, ref.attachment, key)
+		return key, nil
+	}
+	// Bare entry: exactly one parseable private-key attachment may be added
+	// explicitly; zero or several is ambiguous.
+	var candidates []string
 	for _, ref := range entry.Binaries {
-		if !strings.EqualFold(ref.Name, "KeeAgent.settings") {
+		if strings.EqualFold(ref.Name, KeeAgentSettingsAttachment) {
 			continue
 		}
-		binary := db.FindBinary(ref.Value.ID)
-		if binary == nil {
-			return nil, fmt.Errorf("KeeAgent.settings binary not found in database")
-		}
-		content, err := binary.GetContentBytes()
+		content, err := attachmentContent(db, ref.Name, ref.Value.ID)
 		if err != nil {
-			return nil, fmt.Errorf("decode KeeAgent.settings: %w", err)
+			continue
 		}
-		var settings KeeAgentSettings
-		if err := xml.Unmarshal(content, &settings); err != nil {
-			return nil, fmt.Errorf("parse KeeAgent.settings XML: %w", err)
+		if _, err := parseKeyBytes(entry, content); err == nil {
+			candidates = append(candidates, ref.Name)
 		}
-		slog.Debug("sshagent: resolved KeeAgent.settings from database",
-			"entry", entry.GetTitle(),
-			"allow", settings.AllowUseOfSshKey,
-			"location_type", settings.Location.SelectedType,
-			"attachment", settings.Location.Attachment)
-		return &settings, nil
 	}
-	return nil, nil
-}
-
-// ExtractKeyFromEntry extracts an SSH key from a single KeePass entry using
-// KeeAgent settings. It refuses entries without KeeAgent opt-in: scanning
-// arbitrary attachments for private-key-looking bytes used to load TLS and
-// code-signing keys into the agent.
-func ExtractKeyFromEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
-	return extractKeyFromEntryWithDB(entry, db, false)
+	if len(candidates) != 1 {
+		return nil, fmt.Errorf("sshagent: entry has %d parseable key attachments; mark one with %s or KeeAgent settings", len(candidates), MarkerSSHKey)
+	}
+	key, err := parseKeyAttachment(entry, db, candidates[0])
+	if err != nil {
+		return nil, err
+	}
+	logExtractedKey(entry, candidates[0], key)
+	return key, nil
 }
 
 func extractKeyFromEntryWithDB(entry *gokeepasslib.Entry, db *gokeepasslib.Database, autoLoadOnly bool) (*Key, error) {
-	// Try the full-resolution path first: parse the real KeeAgent.settings
-	// XML from the database. This gives us the actual attachment name.
-	settings, err := resolveKeeAgentSettingsFromDB(entry, db)
+	ref := resolveKeyRef(entry, db)
+	if ref.denied || ref.attachment == "" {
+		return nil, nil
+	}
+	if autoLoadOnly && !ref.autoLoad {
+		return nil, nil
+	}
+	key, err := parseKeyAttachment(entry, db, ref.attachment)
 	if err != nil {
-		slog.Debug("sshagent: KeeAgent binary resolution failed",
-			"entry", entry.GetTitle(), "error", err)
+		return nil, err
 	}
-	if settings == nil {
-		// Fallback: KeeAgent settings stored in custom data (no binary attachment).
-		settings, err = ParseKeeAgentSettings(entry)
-		if err != nil {
-			slog.Debug("sshagent: KeeAgent custom data parse failed",
-				"entry", entry.GetTitle(), "error", err)
-			return nil, nil
-		}
-	}
-	if settings == nil {
-		// No KeeAgent settings: the entry did not opt in to SSH key use.
-		return nil, nil
-	}
+	key.Confirm = ref.confirm
+	key.Lifetime = ref.lifetime
+	logExtractedKey(entry, ref.attachment, key)
+	return key, nil
+}
 
-	if !settings.AllowUseOfSshKey {
-		slog.Debug("sshagent: KeeAgent disabled for this entry", "entry", entry.GetTitle())
-		return nil, nil
-	}
-	if autoLoadOnly && !settings.AddAtDatabaseOpen {
-		slog.Debug("sshagent: entry not marked addAtDatabaseOpen", "entry", entry.GetTitle())
-		return nil, nil
-	}
-
-	if settings.Location.SelectedType == "file" {
-		slog.Warn("sshagent: file-based SSH key locations not supported",
-			"entry", entry.GetTitle(),
-			"file", settings.Location.FileName)
-		return nil, nil
-	}
-
-	attachmentName := settings.Location.Attachment
-	if attachmentName == "" {
-		slog.Warn("sshagent: KeeAgent enabled but no attachment name specified",
-			"entry", entry.GetTitle())
-		return nil, nil
-	}
-
-	// Resolve the named attachment.
-	for _, ref := range entry.Binaries {
-		if !attachmentNameMatches(ref.Name, attachmentName) {
-			continue
-		}
-		key, err := parseKeyAttachment(entry, db, ref.Name)
-		if err != nil {
-			slog.Warn("sshagent: failed to parse KeeAgent attachment as SSH key",
-				"entry", entry.GetTitle(), "attachment", attachmentName, "error", err)
-			return nil, nil
-		}
-		logExtractedKey(entry, ref.Name, key)
-		return key, nil
-	}
-
-	slog.Warn("sshagent: KeeAgent attachment reference not found in entry",
-		"entry", entry.GetTitle(), "attachment", attachmentName)
-	return nil, nil
+// KeyRefForEntry exposes the resolved governance of an entry (for scan output).
+func KeyRefForEntry(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (attachment, source string, autoLoad, denied bool) {
+	ref := resolveKeyRef(entry, db)
+	return ref.attachment, ref.source, ref.autoLoad, ref.denied
 }
 
 func attachmentNameMatches(got, want string) bool {
@@ -250,6 +366,9 @@ func parseKeyBytes(entry *gokeepasslib.Entry, content []byte) (*Key, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if key.Signer == nil {
+		return nil, fmt.Errorf("sshagent: encrypted key without passphrase cannot be loaded; set the entry password to the key passphrase")
 	}
 	uuid, _ := entry.UUID.MarshalText()
 	key.SetComment(entry.GetTitle())
