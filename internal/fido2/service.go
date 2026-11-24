@@ -6,8 +6,8 @@
 // extension) and persist through the dbpool atomic write path.
 //
 // The package does not speak to browsers itself; a CTAP2 transport drives
-// it. Every assertion requires the caller to present an established user
-// presence: this package refuses to sign on its own authority.
+// it. The caller supplies independently established presence and verification
+// verdicts; both may be false for a protocol-authorized silent probe.
 package fido2
 
 import (
@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/tobischo/gokeepasslib/v3"
@@ -34,9 +36,6 @@ import (
 
 // Constants for WebAuthn/FIDO2.
 const (
-	// AAGUID for kpxcd software authenticator (matches KeePassXC convention).
-	DefaultAAGUID = "f8a011f3-8c0a-4d15-8006-17111f9edc7d"
-
 	// COSE algorithm identifiers.
 	COSEAlgES256  = -7  // ECDSA w/ SHA-256
 	COSEAlgES256K = -25 // ECDSA w/ secp256k1
@@ -61,15 +60,17 @@ const (
 // Custom data field keys matching the KeePassXC convention, plus the
 // kpxcd sign counter (KPEX_PASSKEY_COUNTER), a kpxcd extension.
 const (
-	KPEXPrefix         = "KPEX_"
-	KPEXPasskeyRPID    = "KPEX_PASSKEY_RPID"
-	KPEXPasskeyRPName  = "KPEX_PASSKEY_RPNAME"
-	KPEXPasskeyUser    = "KPEX_PASSKEY_USER"
-	KPEXPasskeyHandle  = "KPEX_PASSKEY_HANDLE"
-	KPEXPasskeyCredID  = "KPEX_PASSKEY_CRED_ID"
-	KPEXPasskeyPrivKey = "KPEX_PASSKEY_PRIV_KEY"
-	KPEXPasskeyPubKey  = "KPEX_PASSKEY_PUB_KEY"
-	KPEXPasskeyCounter = "KPEX_PASSKEY_COUNTER"
+	KPEXPrefix             = "KPEX_"
+	KPEXPasskeyRPID        = "KPEX_PASSKEY_RPID"
+	KPEXPasskeyRPName      = "KPEX_PASSKEY_RPNAME"
+	KPEXPasskeyUser        = "KPEX_PASSKEY_USER"
+	KPEXPasskeyHandle      = "KPEX_PASSKEY_HANDLE"
+	KPEXPasskeyCredID      = "KPEX_PASSKEY_CRED_ID"
+	KPEXPasskeyPrivKey     = "KPEX_PASSKEY_PRIV_KEY"
+	KPEXPasskeyPubKey      = "KPEX_PASSKEY_PUB_KEY"
+	KPEXPasskeyCounter     = "KPEX_PASSKEY_COUNTER"
+	KPEXPasskeyDisplayName = "KPXCD_PASSKEY_DISPLAY_NAME"
+	KPEXPasskeyCreated     = "KPXCD_PASSKEY_CREATED"
 )
 
 // PasskeyEntry represents a stored passkey in a KeePass entry.
@@ -85,6 +86,7 @@ type PasskeyEntry struct {
 	Subject       string // Entry title for display
 	DBUUID        string // Database UUID
 	EntryUUID     string // KeePass entry UUID, hex
+	DisplayName   string // Explicit account display name; never inferred from the entry title.
 }
 
 // ErrNoCredentials is returned when no stored credential matches an
@@ -95,6 +97,8 @@ var ErrNoCredentials = errors.New("fido2: no matching passkey")
 type Fido2Service struct {
 	config *config.Fido2Config
 	pool   *dbpool.DatabasePool
+	// Serialize account checks with FIDO creation, imports, removal and signing.
+	mutationMu sync.Mutex
 }
 
 // NewFido2Service creates a new FIDO2 service.
@@ -105,20 +109,43 @@ func NewFido2Service(cfg *config.Fido2Config, pool *dbpool.DatabasePool) *Fido2S
 	}
 }
 
-// CreatePasskey generates a new credential, persists it as a KeePass entry,
-// and returns its metadata. The private key material is generated and
+// CreatePasskey generates a local user handle and credential, persists them as
+// a KeePass entry, and returns its metadata. The private key material is generated and
 // encoded inside security.Do so registers and stack lose it promptly.
 func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplayName string, algorithms []int) (*PasskeyEntry, error) {
+	userHandle, err := generateUserHandle()
+	if err != nil {
+		return nil, fmt.Errorf("fido2: %w", err)
+	}
+	handle, err := base64.RawURLEncoding.DecodeString(userHandle)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: generated user handle: %w", err)
+	}
+	return s.CreatePasskeyWithUserHandle(dbUUID, rpID, rpName, userName, userDisplayName, handle, algorithms)
+}
+
+// CreatePasskeyWithUserHandle appends with the supplied account identifier unchanged.
+// CTAP registrations use createPasskey directly to retain the selected open instance
+// and resident intent; the public D-Bus and CLI creation contract remains append-only.
+func (s *Fido2Service) CreatePasskeyWithUserHandle(dbUUID, rpID, rpName, userName, userDisplayName string, userHandle []byte, algorithms []int) (*PasskeyEntry, error) {
+	db, err := s.pool.Get(dbUUID)
+	if err != nil {
+		return nil, fmt.Errorf("fido2: database not found: %w", err)
+	}
+	return s.createPasskey(db, rpID, rpName, userName, userDisplayName, userHandle, algorithms, false)
+}
+
+func (s *Fido2Service) createPasskey(db *dbpool.OpenDatabase, rpID, rpName, userName, userDisplayName string, userHandle []byte, algorithms []int, residentRegistration bool) (*PasskeyEntry, error) {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if len(userHandle) < 1 || len(userHandle) > 64 {
+		return nil, fmt.Errorf("fido2: user handle must be 1..64 bytes, got %d", len(userHandle))
+	}
 	if !s.config.Enabled {
 		return nil, fmt.Errorf("fido2: service is disabled")
 	}
 	if rpID == "" {
 		return nil, fmt.Errorf("fido2: rpID is required")
-	}
-
-	db, err := s.pool.Get(dbUUID)
-	if err != nil {
-		return nil, fmt.Errorf("fido2: database not found: %w", err)
 	}
 
 	// Determine algorithm (default to ES256).
@@ -142,35 +169,32 @@ func (s *Fido2Service) CreatePasskey(dbUUID, rpID, rpName, userName, userDisplay
 	if err != nil {
 		return nil, fmt.Errorf("fido2: %w", err)
 	}
-	userHandle, err := generateUserHandle()
-	if err != nil {
-		return nil, fmt.Errorf("fido2: %w", err)
-	}
 
 	entry := &PasskeyEntry{
 		RPID:          rpID,
 		RPName:        rpName,
 		Username:      userName,
-		UserHandle:    userHandle,
+		UserHandle:    base64.RawURLEncoding.EncodeToString(userHandle),
 		CredentialID:  credID,
 		PrivateKeyPEM: privKeyPEM,
 		PublicKeyCOSE: pubKeyCOSE,
 		Subject:       userDisplayName,
-		DBUUID:        dbUUID,
+		DisplayName:   userDisplayName,
+		DBUUID:        db.UUID,
 		SignCount:     0,
 	}
 
-	if err := persistPasskey(db, entry); err != nil {
+	if err := s.persistRegistration(db, entry, residentRegistration); err != nil {
 		return nil, fmt.Errorf("fido2: %w", err)
 	}
 
-	slog.Info("fido2: created passkey", "rpID", rpID, "username", userName)
+	slog.Info("fido2: created passkey")
 	return entry, nil
 }
 
-// SignAssertionInput carries one assertion request. UserPresent is a gate
-// verdict (the caller must have established presence before calling);
-// false marks a silent exclude-list probe, signed without the UP flag.
+// SignAssertionInput carries one assertion request. UserPresent and UserVerified
+// are independent gate verdicts established by the caller, not inferred here.
+// Both false marks a silent probe; verification alone is also protocol-valid.
 type SignAssertionInput struct {
 	RPID           string
 	CredentialID   string // Base64url; empty selects a resident credential by RPID
@@ -192,9 +216,11 @@ type AssertionResult struct {
 }
 
 // SignAssertion signs one assertion for a stored credential and advances
-// the persisted sign counter. It refuses unless user presence is claimed:
-// without presence there is no assertion.
+// the persisted sign counter. Presence and verification are independent caller
+// verdicts, not authentication performed by this storage/signing layer.
 func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, error) {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	if !s.config.Enabled {
 		return nil, fmt.Errorf("fido2: service is disabled")
 	}
@@ -204,13 +230,6 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	if len(in.ClientDataHash) != sha256.Size {
 		return nil, fmt.Errorf("fido2: client data hash must be %d bytes, got %d", sha256.Size, len(in.ClientDataHash))
 	}
-	// Silent exclude-list probes sign without user presence: the
-	// assertion only proves the credential exists, and the flags carry
-	// no UP bit. UV without presence is incoherent and refused.
-	if in.UserVerified && !in.UserPresent {
-		return nil, fmt.Errorf("fido2: refusing to sign UV-flagged without user presence")
-	}
-
 	odb, entry, err := s.lookupCredential(in.RPID, in.CredentialID)
 	if err != nil {
 		return nil, fmt.Errorf("fido2: %w", err)
@@ -227,7 +246,7 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	if in.UserPresent {
 		flags |= FlagUP
 	}
-	if in.UserVerified && in.UserPresent {
+	if in.UserVerified {
 		flags |= FlagUV
 	}
 	if in.BackupEligible {
@@ -252,7 +271,7 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 		return nil, fmt.Errorf("fido2: stored user handle is not base64url: %w", err)
 	}
 
-	slog.Info("fido2: signed assertion", "rpID", in.RPID, "signCount", signCount)
+	slog.Debug("fido2: signed assertion")
 	return &AssertionResult{
 		CredentialID:      credID,
 		UserHandle:        userHandle,
@@ -272,7 +291,7 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 		if dbUUID != "" && dbs[i].UUID != dbUUID {
 			continue
 		}
-		entries := dbs[i].RootEntries()
+		entries := s.passkeySnapshot(dbs[i])
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
@@ -295,7 +314,7 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyEntry, error) {
 	dbs := s.pool.List()
 	for i := range dbs {
-		entries := dbs[i].RootEntries()
+		entries := s.passkeySnapshot(dbs[i])
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
@@ -328,6 +347,8 @@ type ImportPasskeyInput struct {
 // Bitwarden vault export) as a passkey entry. Only ECDSA P-256 keys are
 // accepted — the format every WebAuthn RP and Bitwarden export uses.
 func (s *Fido2Service) ImportPasskey(dbUUID string, in ImportPasskeyInput) (*PasskeyEntry, error) {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	if !s.config.Enabled {
 		return nil, fmt.Errorf("fido2: service is disabled")
 	}
@@ -388,20 +409,30 @@ func (s *Fido2Service) ImportPasskey(dbUUID string, in ImportPasskeyInput) (*Pas
 		PublicKeyCOSE: cose,
 		SignCount:     in.SignCount,
 		Subject:       in.UserDisplayName,
+		DisplayName:   in.UserDisplayName,
 		DBUUID:        dbUUID,
 	}
-	if err := persistPasskeyWithCount(db, entry); err != nil {
+	if err := s.pool.WithUnlockedDatabases(func(dbs []*dbpool.OpenDatabase) error {
+		for _, available := range dbs {
+			if available == db {
+				return persistPasskeyWithCount(db, entry)
+			}
+		}
+		return fmt.Errorf("fido2: import database is unavailable")
+	}); err != nil {
 		return nil, fmt.Errorf("fido2: %w", err)
 	}
-	slog.Info("fido2: imported passkey", "rpID", in.RPID)
+	slog.Info("fido2: imported passkey")
 	return entry, nil
 }
 
 // RemovePasskey deletes the passkey entry with the given credential ID.
 func (s *Fido2Service) RemovePasskey(credentialID string) error {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	dbs := s.pool.List()
 	for i := range dbs {
-		entries := dbs[i].RootEntries()
+		entries := s.passkeySnapshot(dbs[i])
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
@@ -420,7 +451,7 @@ func (s *Fido2Service) RemovePasskey(credentialID string) error {
 			}); err != nil {
 				return fmt.Errorf("fido2: remove passkey: %w", err)
 			}
-			slog.Info("fido2: removed passkey", "rpID", pk.RPID)
+			slog.Info("fido2: removed passkey")
 			return nil
 		}
 	}
@@ -471,7 +502,7 @@ func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.Open
 	)
 	dbs := s.pool.List()
 	for i := range dbs {
-		entries := dbs[i].RootEntries()
+		entries := s.passkeySnapshot(dbs[i])
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
@@ -523,9 +554,19 @@ func advanceSignCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) (uint32, error)
 		if entry == nil {
 			return fmt.Errorf("entry %s disappeared", pk.EntryUUID)
 		}
+		currentKey, err := extractPasskeyFromEntry(entry)
+		if err != nil {
+			return err
+		}
+		if currentKey == nil || currentKey.RPID != pk.RPID || currentKey.CredentialID != pk.CredentialID || currentKey.UserHandle != pk.UserHandle || currentKey.PrivateKeyPEM != pk.PrivateKeyPEM {
+			return ErrNoCredentials
+		}
 		current, err := readSignCount(entry)
 		if err != nil {
 			return err
+		}
+		if current == ^uint32(0) {
+			return fmt.Errorf("signature counter exhausted")
 		}
 		newCount = current + 1
 		setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", newCount), false)
@@ -563,9 +604,10 @@ func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
 	}
 
 	pk := &PasskeyEntry{
-		RPID:     rpID,
-		RPName:   entry.GetContent(KPEXPasskeyRPName),
-		Username: entry.GetContent(KPEXPasskeyUser),
+		RPID:        rpID,
+		RPName:      entry.GetContent(KPEXPasskeyRPName),
+		Username:    entry.GetContent(KPEXPasskeyUser),
+		DisplayName: entry.GetContent(KPEXPasskeyDisplayName),
 	}
 	for _, field := range []struct {
 		key string
@@ -618,6 +660,9 @@ func newPasskeyEntry(pk *PasskeyEntry) gokeepasslib.Entry {
 	set(KPEXPasskeyRPID, pk.RPID, false)
 	set(KPEXPasskeyRPName, pk.RPName, false)
 	set(KPEXPasskeyUser, pk.Username, false)
+	set(KPEXPasskeyDisplayName, pk.DisplayName, false)
+	// Credential creation is separate from the KeePass entry's original age.
+	set(KPEXPasskeyCreated, time.Now().UTC().Format(time.RFC3339Nano), false)
 	set(KPEXPasskeyHandle, pk.UserHandle, false)
 	set(KPEXPasskeyCredID, pk.CredentialID, false)
 	set(KPEXPasskeyPrivKey, pk.PrivateKeyPEM, true)

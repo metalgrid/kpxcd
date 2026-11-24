@@ -3,10 +3,12 @@
 package fido2
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"path/filepath"
+
+	"github.com/metalgrid/kpxcd/internal/xdg"
 
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2/hid"
@@ -16,8 +18,8 @@ import (
 // interface. Registrations land in the configured default database
 // (resolved lazily; the database may unlock after daemon start).
 //
-// Every transport call site is behind the presence gate, so user presence
-// is already established when these methods run.
+// The transport establishes requested UP/UV properties before creation or
+// signing. Silent assertions deliberately establish neither property.
 type CtapStore struct {
 	svc         *Fido2Service
 	pool        *dbpool.DatabasePool
@@ -25,35 +27,24 @@ type CtapStore struct {
 }
 
 // NewCtapStore builds the adapter. defaultPath selects which database
-// receives new registrations; empty falls back to the first open database.
+// receives new registrations; an empty or unavailable selection refuses creation.
 func NewCtapStore(svc *Fido2Service, pool *dbpool.DatabasePool, defaultPath string) *CtapStore {
 	return &CtapStore{svc: svc, pool: pool, defaultPath: defaultPath}
 }
 
 // Create implements hid.CredentialStore.
-func (c *CtapStore) Create(rpID, rpName, userName, userDisplayName string) ([]byte, []byte, []byte, error) {
-	// Chromium's GetTouch flash probe (rpID ".dummy") and its cousin in
-	// the request handler (rpID "make.me.blink") expect a real credential
-	// to be created so the touch counts; the client discards the response
-	// unconditionally. Generate the key and credential ephemerally —
-	// nothing persists to the vault.
-	if rpID == ".dummy" || rpID == "make.me.blink" {
-		pubKeyCOSE, _, err := generateKeyPair(COSEAlgES256)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("fido2: ephemeral touch-probe credential: %w", err)
-		}
-		credID := make([]byte, 32)
-		if _, err := rand.Read(credID); err != nil {
-			return nil, nil, nil, fmt.Errorf("fido2: ephemeral touch-probe credential: %w", err)
-		}
-		return credID, []byte{0x01}, pubKeyCOSE, nil
+func (c *CtapStore) Create(rpID, rpName, userName, userDisplayName string, userID []byte, resident bool) ([]byte, []byte, []byte, error) {
+	if len(userID) < 1 || len(userID) > 64 {
+		return nil, nil, nil, fmt.Errorf("fido2: user handle must be 1..64 bytes, got %d", len(userID))
 	}
+	// RP IDs are opaque to this adapter. No browser probe may shadow a
+	// legitimate RP credential with an unpersisted, unusable key.
 
-	dbUUID, err := c.defaultDB()
+	db, err := c.defaultDB()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	entry, err := c.svc.CreatePasskey(dbUUID, rpID, rpName, userName, userDisplayName, []int{COSEAlgES256})
+	entry, err := c.svc.createPasskey(db, rpID, rpName, userName, userDisplayName, userID, []int{COSEAlgES256}, resident)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -68,10 +59,8 @@ func (c *CtapStore) Create(rpID, rpName, userName, userDisplayName string) ([]by
 	return credID, userHandle, entry.PublicKeyCOSE, nil
 }
 
-// Assert implements hid.CredentialStore. User presence is established by
-// the gate before the transport calls this, except for silent
-// exclude-list probes (userPresence=false), which sign without the UP
-// flag so the platform can discover credential presence.
+// Assert implements hid.CredentialStore. The transport supplies independent
+// UP/UV verdicts from its gate, or neither for a silent credential probe.
 func (c *CtapStore) Assert(rpID string, credentialID, clientDataHash []byte, userPresence, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
 	credIDStr := ""
 	if credentialID != nil {
@@ -93,6 +82,20 @@ func (c *CtapStore) Assert(rpID string, credentialID, clientDataHash []byte, use
 	return res.CredentialID, res.UserHandle, res.AuthenticatorData, res.Signature, nil
 }
 
+// ResidentCredentials implements identifier-only CTAP account enumeration.
+func (c *CtapStore) ResidentCredentials(rpID string) ([]hid.CredentialReference, error) {
+	return c.svc.residentCredentials(rpID)
+}
+
+// AssertResident refuses stale or unavailable candidates without another lookup.
+func (c *CtapStore) AssertResident(ref hid.CredentialReference, original []hid.CredentialReference, hash []byte, up, uv bool) (hid.ResidentAssertion, error) {
+	result, err := c.svc.assertResident(ref, original, hash, up, uv)
+	if errors.Is(err, ErrNoCredentials) {
+		return hid.ResidentAssertion{}, hid.ErrNoCredentials
+	}
+	return result, err
+}
+
 // HasCredentialsForRPID implements hid.CredentialStore.
 func (c *CtapStore) HasCredentialsForRPID(rpID string) (bool, error) {
 	found, err := c.svc.FindPasskeysByRPID("", rpID)
@@ -103,12 +106,12 @@ func (c *CtapStore) HasCredentialsForRPID(rpID string) (bool, error) {
 }
 
 // HasCredential implements hid.CredentialStore for excludeList
-// enforcement: reports whether this exact credential ID is stored.
-func (c *CtapStore) HasCredential(credentialID []byte) (bool, error) {
+// enforcement: reports whether this exact credential ID is bound to the RP.
+func (c *CtapStore) HasCredential(rpID string, credentialID []byte) (bool, error) {
 	if len(credentialID) == 0 {
 		return false, nil
 	}
-	_, err := c.svc.FindPasskeyByCredentialID(base64.RawURLEncoding.EncodeToString(credentialID))
+	_, _, err := c.svc.lookupCredential(rpID, base64.RawURLEncoding.EncodeToString(credentialID))
 	if errors.Is(err, ErrNoCredentials) {
 		return false, nil
 	}
@@ -118,18 +121,31 @@ func (c *CtapStore) HasCredential(credentialID []byte) (bool, error) {
 	return true, nil
 }
 
-// defaultDB resolves the registration database UUID at call time.
-func (c *CtapStore) defaultDB() (string, error) {
-	dbs := c.pool.List()
-	if len(dbs) == 0 {
-		return "", errors.New("fido2: no unlocked database for passkey registration")
+// defaultDB resolves the exact registration database open instance.
+func (c *CtapStore) defaultDB() (*dbpool.OpenDatabase, error) {
+	if c.defaultPath == "" {
+		return nil, errors.New("fido2: no selected registration database")
 	}
-	if c.defaultPath != "" {
-		for i := range dbs {
-			if dbs[i].Path == c.defaultPath {
-				return dbs[i].UUID, nil
+	// Match the same expansion used by configuration, without resolving symlinks
+	// or guessing from map iteration. Availability is rechecked during mutation.
+	path := filepath.Clean(xdg.ExpandPath(c.defaultPath))
+	var selected *dbpool.OpenDatabase
+	err := c.pool.WithUnlockedDatabases(func(dbs []*dbpool.OpenDatabase) error {
+		for _, db := range dbs {
+			if filepath.Clean(xdg.ExpandPath(db.Path)) == path {
+				if selected != nil {
+					return errors.New("fido2: ambiguous registration destination")
+				}
+				selected = db
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return dbs[0].UUID, nil
+	if selected == nil {
+		return nil, errors.New("fido2: selected registration database is unavailable")
+	}
+	return selected, nil
 }

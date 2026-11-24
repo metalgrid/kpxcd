@@ -9,6 +9,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
@@ -28,37 +31,69 @@ const (
 // The system configuration determines the method; any compatible polkit
 // agent can handle the prompt. No answer, an error, or a denial refuses
 // the operation. The gate has no allow-by-default path.
-type PresenceGate struct{}
+type PresenceGate struct {
+	connect func(context.Context) (authorizationConnection, error)
+	mu      sync.Mutex
+	closed  bool
+	pending map[*approvalWait]struct{}
+	wait    sync.WaitGroup
+}
+
+type approvalWait struct{ cancel context.CancelFunc }
 
 // NewPresenceGate builds the polkit-backed presence gate.
-func NewPresenceGate() *PresenceGate { return &PresenceGate{} }
+func NewPresenceGate() *PresenceGate { return &PresenceGate{connect: connectAuthorization} }
 
 // Approve implements hid.Gate. It honors ctx cancellation: a canceled
 // wait is a refusal, and the response to the transport is denial.
-func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) bool {
+func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) hid.Approval {
 	action := ActionPasskeyAssert
 	if op.Kind == hid.OperationRegister {
 		action = ActionPasskeyCreate
 	}
 
-	// polkit CheckAuthorization cannot cancel an interactive prompt; the
-	// goroutine leaks until the prompt is answered or times out, and its
-	// late answer is discarded.
-	done := make(chan error, 1)
-	go func() { done <- checkPolkitSelf(action) }()
-
-	select {
-	case <-ctx.Done():
-		slog.Warn("fido2: presence gate canceled", "kind", op.Kind, "rpID", op.RPID)
-		return false
-	case err := <-done:
-		if err != nil {
-			slog.Warn("fido2: presence gate refused", "kind", op.Kind, "rpID", op.RPID, "err", err)
-			return false
-		}
-		slog.Info("fido2: presence gate approved", "kind", op.Kind, "rpID", op.RPID)
-		return true
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return hid.Approval{}
 	}
+	if g.pending == nil {
+		g.pending = make(map[*approvalWait]struct{})
+	}
+	pending := &approvalWait{cancel: cancel}
+	g.pending[pending] = struct{}{}
+	g.wait.Add(1)
+	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		delete(g.pending, pending)
+		g.mu.Unlock()
+		g.wait.Done()
+	}()
+	if err := g.check(ctx, action); err != nil || ctx.Err() != nil {
+		slog.Debug("fido2: presence gate refused")
+		return hid.Approval{}
+	}
+	// Under the shipped fresh-auth auth_self policy, successful interactive
+	// authentication establishes both presence and verification, regardless of
+	// the requested subset. Local policy overrides can invalidate this assumption;
+	// no particular authentication method is required or inferred.
+	return hid.Approval{Approved: true, UserPresence: true, UserVerification: true}
+}
+
+// Close cancels pending requests and waits for their bounded cleanup. Admission
+// is closed under the same mutex as registration, so Wait cannot race a new Add.
+// The daemon waits here before exiting rather than abandoning prompt cleanup.
+func (g *PresenceGate) Close() {
+	g.mu.Lock()
+	g.closed = true
+	for pending := range g.pending {
+		pending.cancel()
+	}
+	g.mu.Unlock()
+	g.wait.Wait()
 }
 
 // polkitSubjectDetails builds the unix-process subject details for
@@ -66,8 +101,7 @@ func (g *PresenceGate) Approve(ctx context.Context, op hid.Operation) bool {
 // key up with an exact GVariant type — pid uint32, uid int32,
 // start-time uint64 — mirroring polkit's own unix-process encoding.
 // Any type mismatch rejects the whole subject and the call never
-// routes a prompt. This encoding is byte-identical to the probe that
-// verified the full sandboxed flow live.
+// routes a prompt. This is a wire-format contract, not live security evidence.
 func polkitSubjectDetails(pid uint32, uid int32, startTime uint64) map[string]dbus.Variant {
 	details := map[string]dbus.Variant{
 		"pid": dbus.MakeVariant(pid),
@@ -79,14 +113,32 @@ func polkitSubjectDetails(pid uint32, uid int32, startTime uint64) map[string]db
 	return details
 }
 
-// checkPolkitSelf asks polkit whether the daemon's own user may perform
-// actionID, allowing interactive authentication.
-func checkPolkitSelf(actionID string) error {
-	conn, err := dbus.ConnectSystemBus()
+const authorityInterface = "org.freedesktop.PolicyKit1.Authority."
+
+// The fake boundary uses godbus calls unchanged, including their argument types.
+// A connection belongs to exactly one check and remains open through cancellation.
+type authorizationConnection interface {
+	GoWithContext(context.Context, string, dbus.Flags, chan *dbus.Call, ...any) *dbus.Call
+	Close() error
+}
+
+var authorizationSequence atomic.Uint64
+
+// check asks polkit about this process. Local context cancellation alone only
+// abandons a godbus reply; it does not cancel the server's interactive request.
+func (g *PresenceGate) check(ctx context.Context, actionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	conn, err := g.connect(ctx)
 	if err != nil {
-		return fmt.Errorf("polkit unavailable: connect to system bus: %w", err)
+		slog.Warn("fido2: authorization service unavailable")
+		return fmt.Errorf("fido2: connect authorization: %w", err)
 	}
 	defer conn.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	pid := os.Getpid()
 	var startTime uint64
@@ -94,11 +146,6 @@ func checkPolkitSelf(actionID string) error {
 		startTime = st
 	}
 	details := polkitSubjectDetails(uint32(pid), int32(os.Getuid()), startTime)
-	slog.Info("fido2: polkit gate dispatching CheckAuthorization",
-		"action", actionID,
-		"pid_sig", details["pid"].Signature().String(),
-		"uid_sig", details["uid"].Signature().String(),
-		"start_sig", details["start-time"].Signature().String())
 	subject := struct {
 		Kind    string
 		Details map[string]dbus.Variant
@@ -108,25 +155,66 @@ func checkPolkitSelf(actionID string) error {
 	}
 
 	const allowUserInteraction uint32 = 1
-	obj := conn.Object("org.freedesktop.PolicyKit1", dbus.ObjectPath("/org/freedesktop/PolicyKit1/Authority"))
+	id := fmt.Sprintf("kpxcd-%d", authorizationSequence.Add(1))
+	// Do not pass the operation context to dispatch: cancellation while writing
+	// must not let Cancel overtake Check. The adapter bounds each write. Once
+	// dispatch returns, cancellation is sent on this same sender connection.
+	requestCtx, finish := context.WithCancel(context.Background())
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	call := conn.GoWithContext(requestCtx, authorityInterface+"CheckAuthorization", 0, make(chan *dbus.Call, 1),
+		subject, actionID, map[string]string{}, allowUserInteraction, id)
+	select {
+	case <-ctx.Done():
+		g.cancelAuthorization(conn, id)
+		return ctx.Err()
+	case call = <-call.Done:
+		if err := ctx.Err(); err != nil {
+			g.cancelAuthorization(conn, id)
+			return err
+		}
+	}
 
 	var result struct {
 		IsAuthorized bool
 		IsChallenge  bool
 		Details      map[string]string
 	}
-	call := obj.Call("org.freedesktop.PolicyKit1.Authority.CheckAuthorization", 0,
-		subject, actionID, map[string]string{}, allowUserInteraction, "")
 	if call.Err != nil {
+		slog.Warn("fido2: authorization check failed")
 		return fmt.Errorf("polkit authorization failed: %w", call.Err)
 	}
 	if err := call.Store(&result); err != nil {
+		slog.Warn("fido2: malformed authorization response")
 		return fmt.Errorf("decode polkit response: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		g.cancelAuthorization(conn, id)
+		return err
 	}
 	if !result.IsAuthorized {
 		return fmt.Errorf("polkit denied action %s", actionID)
 	}
 	return nil
+}
+
+// cancelAuthorization uses a separate bounded context: the ceremony context is
+// already canceled. A completed check can race this call and return "not found";
+// that is not approval, and no subsequent operation shares this ID or connection.
+func (g *PresenceGate) cancelAuthorization(conn authorizationConnection, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), authorizationIOTimeout)
+	defer cancel()
+	call := conn.GoWithContext(ctx, authorityInterface+"CancelCheckAuthorization", 0, make(chan *dbus.Call, 1), id)
+	select {
+	case reply := <-call.Done:
+		if reply.Err != nil {
+			slog.Debug("fido2: authorization cancellation not acknowledged")
+		}
+	case <-ctx.Done():
+		slog.Warn("fido2: authorization cancellation timed out")
+	}
 }
 
 // procStartTime reads a process start time from /proc, used to make the

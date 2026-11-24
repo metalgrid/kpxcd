@@ -55,9 +55,9 @@ const (
 	initPayloadLen = reportSize - initHeaderLen
 	contPayloadLen = reportSize - contHeaderLen
 
-	// maxMessageLen bounds inbound CTAPHID payloads; it matches the
-	// maxMsgSize the authenticator advertises in GetInfo.
-	maxMessageLen = 1024
+	// CTAP commands are limited independently of HID framing (C20 §§6, 8.1.4).
+	maxMessageLen   = 1024
+	maxTransportLen = initPayloadLen + 128*contPayloadLen
 
 	// broadcastChannel is the CID used for CTAPHID_INIT.
 	broadcastChannel = 0xFFFFFFFF
@@ -89,11 +89,13 @@ const (
 
 // CTAPHID error codes.
 const (
-	errInvalidCmd = 0x01
-	errInvalidSeq = 0x04
-	errMsgTooLong = 0x05
-	errChanBusy   = 0x06
-	errOther      = 0x0A
+	errInvalidCmd     = 0x01
+	errInvalidLen     = 0x03
+	errInvalidSeq     = 0x04
+	errMsgTimeout     = 0x05
+	errChanBusy       = 0x06
+	errInvalidChannel = 0x0B
+	errOther          = 0x7F
 )
 
 // CTAPHID_KEEPALIVE status values (CTAP 2.0 §8.1.9.1.7): 0x01 is
@@ -129,10 +131,7 @@ func (a *Authenticator) decodeReport(report []byte) (*hostMessage, error) {
 			return nil, fmt.Errorf("hid: unexpected sequence %d on channel %#08x, want %d", seq, channelID, st.nextSeq)
 		}
 		st.nextSeq++
-		chunk := report[contHeaderLen:]
-		if len(st.payload)+len(chunk) > maxMessageLen {
-			return nil, fmt.Errorf("hid: message on channel %#08x exceeds %d bytes", channelID, maxMessageLen)
-		}
+		chunk := report[contHeaderLen : contHeaderLen+min(contPayloadLen, st.totalLen-len(st.payload))]
 		st.payload = append(st.payload, chunk...)
 		if len(st.payload) >= st.totalLen {
 			msg := &hostMessage{channelID: channelID, command: st.command, payload: st.payload[:st.totalLen]}
@@ -144,8 +143,8 @@ func (a *Authenticator) decodeReport(report []byte) (*hostMessage, error) {
 
 	command := report[4] &^ typeInit
 	totalLen := int(report[5])<<8 | int(report[6])
-	if totalLen > maxMessageLen {
-		return nil, fmt.Errorf("hid: message of %d bytes exceeds %d", totalLen, maxMessageLen)
+	if totalLen > maxTransportLen {
+		return nil, fmt.Errorf("hid: message of %d bytes exceeds %d", totalLen, maxTransportLen)
 	}
 	chunk := report[initHeaderLen:]
 	if totalLen <= len(chunk) {
@@ -172,6 +171,9 @@ type reassemblyState struct {
 // HID reports: an init frame (0x80|command, big-endian length) followed by
 // continuation frames.
 func encodeInitReply(channelID uint32, command byte, payload []byte) [][]byte {
+	if len(payload) > maxTransportLen {
+		return nil
+	}
 	var reports [][]byte
 
 	first := make([]byte, reportSize)
@@ -184,7 +186,7 @@ func encodeInitReply(channelID uint32, command byte, payload []byte) [][]byte {
 	for offset := n; offset < len(payload); {
 		cont := make([]byte, reportSize)
 		cont[0], cont[1], cont[2], cont[3] = byte(channelID>>24), byte(channelID>>16), byte(channelID>>8), byte(channelID)
-		cont[4] = byte(offset-n) / contPayloadLen // sequence number
+		cont[4] = byte((offset - n) / contPayloadLen) // sequence number
 		written := copy(cont[contHeaderLen:], payload[offset:])
 		offset += written
 		reports = append(reports, cont)

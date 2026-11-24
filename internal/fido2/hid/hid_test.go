@@ -3,7 +3,9 @@
 package hid
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"sync"
 
@@ -54,7 +56,7 @@ type stubStore struct {
 	excluded    bool
 }
 
-func (s *stubStore) Create(rpID, rpName, userName, userDisplayName string) ([]byte, []byte, []byte, error) {
+func (s *stubStore) Create(rpID, rpName, userName, userDisplayName string, userID []byte, resident bool) ([]byte, []byte, []byte, error) {
 	s.createCalls++
 	cose := s.cose
 	if cose == nil {
@@ -66,11 +68,11 @@ func (s *stubStore) Create(rpID, rpName, userName, userDisplayName string) ([]by
 			0x05, 0x01, 0x02, 0x03, 0x04, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05,
 			0x01, 0x02, 0x03, 0x04, 0x05, 0x01, 0x02, 0x03}
 	}
-	return []byte{0xAA, 0xBB}, []byte{0x01, 0x02}, cose, nil
+	return []byte{0xAA, 0xBB}, userID, cose, nil
 }
 
 func (s *stubStore) Assert(rpID string, credentialID, clientDataHash []byte, userPresence, userVerified bool) ([]byte, []byte, []byte, []byte, error) {
-	if s.denyAssert {
+	if s.denyAssert || (len(credentialID) > 0 && !bytes.Equal(credentialID, []byte{0xAA, 0xBB})) {
 		return nil, nil, nil, nil, ErrNoCredentials
 	}
 	var flags byte
@@ -85,22 +87,42 @@ func (s *stubStore) Assert(rpID string, credentialID, clientDataHash []byte, use
 	return []byte{0xAA, 0xBB}, []byte{0x01, 0x02}, authData, sig, nil
 }
 
+func (s *stubStore) ResidentCredentials(rpID string) ([]CredentialReference, error) {
+	if !s.creds {
+		return nil, nil
+	}
+	return []CredentialReference{{RPID: rpID, CredentialID: "stub"}}, nil
+}
+
+func stubResidentAssertion(s interface {
+	Assert(string, []byte, []byte, bool, bool) ([]byte, []byte, []byte, []byte, error)
+}, ref CredentialReference, hash []byte, up, uv bool) (ResidentAssertion, error) {
+	id, handle, auth, sig, err := s.Assert(ref.RPID, nil, hash, up, uv)
+	return ResidentAssertion{CredentialID: id, UserHandle: handle, AuthData: auth, Signature: sig}, err
+}
+
+func (s *stubStore) AssertResident(ref CredentialReference, original []CredentialReference, hash []byte, up, uv bool) (ResidentAssertion, error) {
+	return stubResidentAssertion(s, ref, hash, up, uv)
+}
+
 func (s *stubStore) HasCredentialsForRPID(rpID string) (bool, error) {
 	return s.creds, nil
 }
 
-func (s *stubStore) HasCredential(credentialID []byte) (bool, error) {
-	return s.excluded && len(credentialID) > 0, nil
+func (s *stubStore) HasCredential(rpID string, credentialID []byte) (bool, error) {
+	return len(credentialID) > 0 && (s.excluded || (s.creds && bytes.Equal(credentialID, []byte{0xAA, 0xBB}))), nil
 }
 
 // allowGate approves everything; denyGate refuses everything.
 type allowGate struct{}
 
-func (allowGate) Approve(context.Context, Operation) bool { return true }
+func (allowGate) Approve(context.Context, Operation) Approval {
+	return Approval{Approved: true, UserPresence: true, UserVerification: true}
+}
 
 type denyGate struct{}
 
-func (denyGate) Approve(context.Context, Operation) bool { return false }
+func (denyGate) Approve(context.Context, Operation) Approval { return Approval{} }
 
 // newTestAuthenticator wires an authenticator to fakes and starts its loop.
 func newTestAuthenticator(store CredentialStore, gate Gate) (*Authenticator, *fakeWriter, *fakeEvents, context.CancelFunc) {
@@ -116,7 +138,20 @@ func newTestAuthenticator(store CredentialStore, gate Gate) (*Authenticator, *fa
 
 // buildRequest frames a complete CTAPHID command into host reports.
 func buildRequest(channelID uint32, command byte, payload []byte) [][]byte {
-	return encodeInitReply(channelID, command, payload)
+	first := make([]byte, 64)
+	binary.BigEndian.PutUint32(first[:4], channelID)
+	first[4] = command | 0x80
+	binary.BigEndian.PutUint16(first[5:7], uint16(len(payload)))
+	n := copy(first[7:], payload)
+	reports := [][]byte{first}
+	for seq, offset := 0, n; offset < len(payload); seq++ {
+		report := make([]byte, 64)
+		binary.BigEndian.PutUint32(report[:4], channelID)
+		report[4] = byte(seq)
+		offset += copy(report[5:], payload[offset:])
+		reports = append(reports, report)
+	}
+	return reports
 }
 
 // allocateChannel drives a broadcast INIT and returns the new CID.
@@ -126,7 +161,7 @@ func allocateChannel(writer *fakeWriter, feeds *fakeEvents) uint32 {
 	}
 	Eventually(writer.all, "3s").Should(HaveLen(1))
 	reply := writer.all()[0]
-	return uint32(reply[8])<<24 | uint32(reply[9])<<16 | uint32(reply[10])<<8 | uint32(reply[11])
+	return binary.BigEndian.Uint32(reply[15:19])
 }
 
 // sendCBORRequest frames and feeds one CTAPHID_CBOR command.
@@ -142,19 +177,23 @@ func firstCBORReply(writer *fakeWriter) (byte, []byte) {
 	var reports [][]byte
 	Eventually(func() int {
 		reports = writer.all()
-		for _, r := range reports {
+		for i, r := range reports {
 			if r[4] == byte(cmdCBOR|typeInit) {
-				return 1
+				total := int(r[5])<<8 | int(r[6])
+				needed := 1 + max(0, (total-57+58)/59)
+				if len(reports)-i >= needed {
+					return 1
+				}
 			}
 		}
 		return 0
 	}, "3s").Should(BeNumerically(">", 0))
 
-	for _, r := range reports {
+	for i, r := range reports {
 		if r[4] == byte(cmdCBOR|typeInit) {
 			total := int(r[5])<<8 | int(r[6])
 			payload := append([]byte{}, r[7:]...)
-			for _, cont := range reports[1:] {
+			for _, cont := range reports[i+1:] {
 				if cont[4] < 0x80 && len(payload) < total {
 					payload = append(payload, cont[5:]...)
 				}
@@ -240,7 +279,7 @@ var _ = Describe("CTAPHID handshake", func() {
 			feeds.feedHostReport(report)
 		}
 		Eventually(writer.all, "3s").Should(HaveLen(1))
-		cid := uint32(writer.all()[0][8])<<24 | uint32(writer.all()[0][9])<<16 | uint32(writer.all()[0][10])<<8 | uint32(writer.all()[0][11])
+		cid := binary.BigEndian.Uint32(writer.all()[0][15:19])
 
 		payload := []byte("ping-data")
 		for _, report := range buildRequest(cid, cmdPing, payload) {
@@ -276,8 +315,8 @@ var _ = Describe("CTAP2 commands", func() {
 		info = normalizeMap(info)
 		versions, _ := info[1].([]interface{})
 		Expect(versions).To(ContainElement("FIDO_2_0"))
-		aaguid, _ := info[3].([]byte)
-		Expect(aaguid).To(Equal(aaguid[:]))
+		decodedAAGUID, _ := info[3].([]byte)
+		Expect(hex.EncodeToString(decodedAAGUID)).To(Equal("ab449b5ed0bf4d8d81b1de5ec1a8c00e"))
 		// Chrome parses options at key 4 and maxMsgSize at key 5 (the
 		// shipped CTAP2 layout); the options map must be there.
 		options, ok := info[4].(map[interface{}]interface{})
@@ -299,17 +338,15 @@ var _ = Describe("CTAP2 commands", func() {
 
 		// Chrome 157 classifies candidate authenticators by the
 		// algorithms field (key 10); a device without it never receives
-		// a MakeCredential. Both inner maps must be canonically ordered
+		// a MakeCredential. The inner map must be canonically ordered
 		// ("alg" sorts before "type").
 		algs, ok := info[10].([]interface{})
 		Expect(ok).To(BeTrue(), "algorithms array at key 10")
-		Expect(algs).To(HaveLen(2))
+		Expect(algs).To(HaveLen(1))
 		first, _ := algs[0].(map[interface{}]interface{})
 		Expect(normalizeMap(first)["alg"]).To(Equal(int64(-7)))
 		Expect(normalizeMap(first)["type"]).To(Equal("public-key"))
-		second, _ := algs[1].(map[interface{}]interface{})
-		Expect(normalizeMap(second)["alg"]).To(Equal(int64(-8)))
-		Expect(bodyHex).To(ContainSubstring("0a82a263616c6726"),
+		Expect(bodyHex).To(ContainSubstring("0a81a263616c6726"),
 			"algorithms entries must be canonically ordered (alg, type)")
 	})
 
@@ -319,7 +356,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32), // clientDataHash
 			2: map[string]interface{}{"id": "example.com", "name": "Example"},
 			3: map[string]interface{}{"id": []byte{9, 9}, "name": "user", "displayName": "User"},
@@ -337,7 +374,7 @@ var _ = Describe("CTAP2 commands", func() {
 		authData, _ := resp[2].([]byte)
 		Expect(authData[32] & FlagUP).NotTo(Equal(byte(0)))
 		Expect(authData[32] & FlagAT).NotTo(Equal(byte(0)))
-		Expect(authData[37 : 37+16]).To(Equal(aaguid[:]))
+		Expect(authData[37 : 37+16]).To(Equal([]byte{0xab, 0x44, 0x9b, 0x5e, 0xd0, 0xbf, 0x4d, 0x8d, 0x81, 0xb1, 0xde, 0x5e, 0xc1, 0xa8, 0xc0, 0x0e}))
 		Expect(store.createCalls).To(Equal(1))
 	})
 
@@ -346,7 +383,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32),
 			2: map[string]interface{}{"id": "example.com"},
 			3: map[string]interface{}{"id": []byte{9}},
@@ -364,7 +401,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32),
 			2: map[string]interface{}{"id": "example.com"},
 			3: map[string]interface{}{"id": []byte{9}},
@@ -377,13 +414,13 @@ var _ = Describe("CTAP2 commands", func() {
 		Expect(status).To(Equal(statusUnsupportedAlgorithm))
 	})
 
-	It("answers no-credential assertions before any gate prompt", func() {
+	It("answers no-credential assertions after required consent", func() {
 		store := &stubStore{creds: false}
 		_, writer, feeds, stop := newTestAuthenticator(store, allowGate{})
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: "unknown.example.com",
 			2: make([]byte, 32),
 		})
@@ -400,7 +437,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: "example.com",
 			2: make([]byte, 32),
 		})
@@ -434,7 +471,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32),
 			2: map[string]interface{}{"id": ".dummy"},
 			3: map[string]interface{}{"id": []byte{1}, "name": "dummy"},
@@ -455,7 +492,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32),
 			2: map[string]interface{}{"id": "example.com"},
 			3: map[string]interface{}{"id": []byte{9}, "name": "user"},
@@ -476,17 +513,17 @@ var _ = Describe("CTAP2 commands", func() {
 	})
 
 	It("signs silently for exclude-list probes without the UP flag", func() {
-		// Chrome probes excluded credentials with userPresence=false:
+		// CTAP clients probe excluded credentials with up=false:
 		// no gate may fire (denyGate proves it) and authData carries no
 		// UP bit, or the platform treats the probe as a user touch.
 		_, writer, feeds, stop := newTestAuthenticator(&stubStore{creds: true}, denyGate{})
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: "example.com",
 			2: make([]byte, 32),
-			5: map[string]interface{}{"userPresence": false},
+			5: map[string]interface{}{"up": false},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		sendCBOR(feeds, cid, cmdGetAssertion, req)
@@ -505,7 +542,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: "example.com",
 			2: make([]byte, 32),
 			5: map[string]interface{}{"uv": true},
@@ -528,7 +565,7 @@ var _ = Describe("CTAP2 commands", func() {
 		defer stop()
 		cid := allocate(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: make([]byte, 32),
 			2: map[string]interface{}{"id": "example.com"},
 			3: map[string]interface{}{"id": []byte{9}, "name": "user"},
@@ -589,12 +626,12 @@ var _ = Describe("CTAP2 status codes", func() {
 // deciding at the prompt.
 type pendingGate struct{ release chan struct{} }
 
-func (g pendingGate) Approve(ctx context.Context, _ Operation) bool {
+func (g pendingGate) Approve(ctx context.Context, _ Operation) Approval {
 	select {
 	case <-ctx.Done():
-		return false
+		return Approval{}
 	case <-g.release:
-		return true
+		return Approval{Approved: true, UserPresence: true, UserVerification: true}
 	}
 }
 
@@ -605,7 +642,7 @@ var _ = Describe("CTAPHID_CANCEL", func() {
 		defer stop()
 		cid := allocateChannel(writer, feeds)
 
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: "example.com",
 			2: make([]byte, 32),
 		})

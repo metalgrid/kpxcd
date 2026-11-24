@@ -20,6 +20,13 @@ const (
 const (
 	statusOK                   byte = 0x00
 	statusInvalidCommand       byte = 0x01 // CTAP1_ERR_INVALID_COMMAND: sent for unknown CTAP2 commands (CTAP 2.1 §8.1)
+	statusInvalidParameter     byte = 0x02
+	statusInvalidLength        byte = 0x03
+	statusUnexpectedType       byte = 0x11
+	statusInvalidOption        byte = 0x2c
+	statusPINAuthInvalid       byte = 0x33
+	statusPINNotSet            byte = 0x35
+	statusRequestTooLarge      byte = 0x39
 	statusInvalidCBOR          byte = 0x12 // CTAP2_ERR_INVALID_CBOR
 	statusMissingParam         byte = 0x14 // CTAP2_ERR_MISSING_PARAMETER
 	statusCredentialExcluded   byte = 0x19 // CTAP2_ERR_CREDENTIAL_EXCLUDED
@@ -54,8 +61,7 @@ func authenticatorData(rpID string, flags byte, signCount uint32, attested []byt
 }
 
 // attestedCredentialData builds AAGUID(16) + credIDLen(2) + credentialID +
-// COSE public key. The AAGUID matches the KeePassXC convention the service
-// stores.
+// COSE public key, using the fixed kpxcd product identity.
 func attestedCredentialData(credentialID, coseKey []byte) ([]byte, error) {
 	if len(credentialID) == 0 || len(credentialID) > 1023 {
 		return nil, fmt.Errorf("hid: credential ID length %d out of range", len(credentialID))
@@ -64,7 +70,7 @@ func attestedCredentialData(credentialID, coseKey []byte) ([]byte, error) {
 		return nil, fmt.Errorf("hid: missing COSE public key")
 	}
 	out := make([]byte, 0, aaguidLen+2+len(credentialID)+len(coseKey))
-	out = append(out, aaguid[:]...)
+	out = append(out, productAAGUID...)
 	out = append(out, byte(len(credentialID)>>8), byte(len(credentialID)))
 	out = append(out, credentialID...)
 	out = append(out, coseKey...)
@@ -73,8 +79,6 @@ func attestedCredentialData(credentialID, coseKey []byte) ([]byte, error) {
 
 const aaguidLen = 16
 
-// aaguid is the kpxcd software authenticator AAGUID (KeePassXC convention).
-var aaguid = [aaguidLen]byte{
-	0xf8, 0xa0, 0x11, 0xf3, 0x8c, 0x0a, 0x4d, 0x15,
-	0x80, 0x06, 0x17, 0x11, 0x1f, 0x9e, 0xdc, 0x7d,
-}
+// productAAGUID is the immutable wire encoding of the kpxcd model identity,
+// ab449b5e-d0bf-4d8d-81b1-de5ec1a8c00e. It is not installation configuration.
+const productAAGUID = "\xab\x44\x9b\x5e\xd0\xbf\x4d\x8d\x81\xb1\xde\x5e\xc1\xa8\xc0\x0e"

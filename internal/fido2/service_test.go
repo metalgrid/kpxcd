@@ -390,7 +390,7 @@ var _ = Describe("SignAssertion", func() {
 		Expect(second.SignCount).To(Equal(uint32(2)))
 	})
 
-	It("selects the newest resident credential when no allowList is given", func() {
+	It("retains distinct resident accounts for one relying party", func() {
 		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 		for _, name := range []string{"first", "second"} {
@@ -406,17 +406,11 @@ var _ = Describe("SignAssertion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(HaveLen(2))
 
-		// Resident flow must not error on multiple credentials.
-		_, err = svc.SignAssertion(SignAssertionInput{
-			RPID: "example.com", ClientDataHash: hash(), UserPresent: true,
-		})
-		Expect(err).NotTo(HaveOccurred())
+		// Wire-level enumeration belongs to Step 5; selecting one account
+		// here would not prove that a client can select every account.
 	})
 
-	It("signs silent exclude-list probes without the UP flag", func() {
-		// Chrome's exclude-list probe signs without user presence: the
-		// assertion only proves the credential exists, so authData
-		// carries no UP bit and the refusal above does not apply.
+	It("signs with UV independently of UP and reports the actual flags", func() {
 		pool, _ := newTestPoolWithDB()
 		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
 		created, err := svc.CreatePasskey(
@@ -433,12 +427,14 @@ var _ = Describe("SignAssertion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.AuthenticatorData[32]&FlagUP).To(Equal(byte(0)), "silent probe carries no UP flag")
 
-		_, err = svc.SignAssertion(SignAssertionInput{
+		Expect(res.AuthenticatorData[32] & FlagUV).To(Equal(byte(0)))
+		res, err = svc.SignAssertion(SignAssertionInput{
 			RPID: "example.com", CredentialID: created.CredentialID,
 			ClientDataHash: hash(), UserVerified: true,
 		})
-		Expect(err).To(MatchError(ContainSubstring("refusing to sign UV-flagged without user presence")),
-			"UV without presence is incoherent and must be refused")
+		Expect(err).NotTo(HaveOccurred(), "CTAP permits UV independently of UP")
+		Expect(res.AuthenticatorData[32] & FlagUP).To(Equal(byte(0)))
+		Expect(res.AuthenticatorData[32] & FlagUV).To(Equal(byte(FlagUV)))
 	})
 
 	It("refuses a credential ID that belongs to another RPID", func() {

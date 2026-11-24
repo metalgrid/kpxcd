@@ -149,7 +149,7 @@ var _ = Describe("live uhid transport", func() {
 		cid := allocateLiveChannel(hidraw)
 
 		clientDataHash := bytes.Repeat([]byte{0x5A}, 32)
-		req, err := cbor.Marshal(map[interface{}]interface{}{
+		req, err := marshalRequest(map[interface{}]interface{}{
 			1: clientDataHash,
 			2: map[string]interface{}{"id": "example.com", "name": "Example"},
 			3: map[string]interface{}{"id": []byte{9, 9}, "name": "user", "displayName": "User"},
@@ -173,7 +173,7 @@ var _ = Describe("live uhid transport", func() {
 		Expect(ok).To(BeTrue())
 		Expect(authData[32]&FlagUP).NotTo(Equal(byte(0)), "user presence flag set")
 		Expect(authData[32]&FlagAT).NotTo(Equal(byte(0)), "attested credential data present")
-		Expect(authData[37:53]).To(Equal(aaguid[:]))
+		Expect(authData[37:53]).To(Equal([]byte{0xab, 0x44, 0x9b, 0x5e, 0xd0, 0xbf, 0x4d, 0x8d, 0x81, 0xb1, 0xde, 0x5e, 0xc1, 0xa8, 0xc0, 0x0e}))
 		credLen := int(authData[53])<<8 | int(authData[54])
 		Expect(credLen).To(BeNumerically(">", 0))
 		coseWire := authData[55+credLen:]

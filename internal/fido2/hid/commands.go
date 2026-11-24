@@ -5,11 +5,7 @@ package hid
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"time"
-
-	"github.com/fxamacker/cbor/v2"
 )
 
 // ErrNoCredentials tells the CTAP layer that no credential matched; it is
@@ -35,27 +31,25 @@ type makeCredentialResponse struct {
 	AttStmt  map[string]interface{} `cbor:"3,keyasint"`
 }
 
-// GetAssertion response shapes. Entity maps use text keys per the
-// DOM-to-CBOR conversion, and structs pin the canonical wire order:
-// Go map iteration is randomized (swiss maps shuffle every traversal)
-// and fxamacker encodes plain maps in iteration order, so a map
-// literal here is a coin flip against Chrome's strict
-// monotonic-key validation ("id" encodes to 3 bytes and sorts before
-// "type" at 5).
+// C20 §§5.2, 6.2 require entity maps with text keys. All responses use
+// the CTAP canonical encoder independently of Go map iteration order.
 type credentialDescriptor struct {
 	ID   []byte `cbor:"id"`   // encoded key 62 6964 — sorts first
 	Type string `cbor:"type"` // encoded key 64 74797065
 }
 
 type userEntity struct {
-	ID []byte `cbor:"id"`
+	ID          []byte `cbor:"id"`
+	Name        string `cbor:"name,omitempty"`
+	DisplayName string `cbor:"displayName,omitempty"`
 }
 
 type getAssertionResponse struct {
-	Credential credentialDescriptor `cbor:"1,keyasint"`
-	AuthData   []byte               `cbor:"2,keyasint"`
-	Signature  []byte               `cbor:"3,keyasint"`
-	User       userEntity           `cbor:"4,keyasint"`
+	Credential          credentialDescriptor `cbor:"1,keyasint"`
+	AuthData            []byte               `cbor:"2,keyasint"`
+	Signature           []byte               `cbor:"3,keyasint"`
+	User                userEntity           `cbor:"4,keyasint"`
+	NumberOfCredentials int                  `cbor:"5,keyasint,omitempty"`
 }
 
 // Field order per CTAP 2.0 §5.4 authenticatorGetInfo: options at key 4,
@@ -73,11 +67,8 @@ type getInfoOptions struct {
 	UV bool `cbor:"uv"`
 }
 
-// Algorithms (key 10, CTAP 2.1 field) must be present: Chrome 157
-// classifies candidate authenticators by this field and refuses a device
-// without it as "no common algorithms" before dispatching any request.
-// Entity maps use text keys, inner algorithm maps in canonical order
-// ("alg" sorts before "type").
+// C21 §6.4 defines this optional field as credential-generation algorithms,
+// not the algorithms of every key the signing/import service can handle.
 type getInfoAlgorithm struct {
 	Alg  int64  `cbor:"alg"`
 	Type string `cbor:"type"`
@@ -85,7 +76,6 @@ type getInfoAlgorithm struct {
 
 var getInfoAlgorithms = []getInfoAlgorithm{
 	{Alg: -7, Type: "public-key"},
-	{Alg: -8, Type: "public-key"},
 }
 
 type getInfoResponse struct {
@@ -97,22 +87,11 @@ type getInfoResponse struct {
 	Algorithms []getInfoAlgorithm `cbor:"10,keyasint"`
 }
 
-// decodeRequest parses an inbound CTAP2 request body. fxamacker decodes
-// CBOR integer map keys as uint64 when targeting interface{}; keys are
-// normalized to int so the accessors below can use CTAP's key numbers.
-func decodeRequest(data []byte) (map[interface{}]interface{}, error) {
-	var raw map[interface{}]interface{}
-	if err := cbor.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	return normalizeMap(raw), nil
-}
-
 // normalizeMap converts uint64 keys to int, recursively.
 func normalizeMap(in map[interface{}]interface{}) map[interface{}]interface{} {
 	out := make(map[interface{}]interface{}, len(in))
 	for k, v := range in {
-		if key, ok := k.(uint64); ok {
+		if key, ok := k.(uint64); ok && key <= uint64(^uint(0)>>1) {
 			k = int(key)
 		}
 		switch val := v.(type) {
@@ -130,18 +109,51 @@ func normalizeMap(in map[interface{}]interface{}) map[interface{}]interface{} {
 	return out
 }
 
-// intAt reads an integer value regardless of decode width.
-func intAt(m map[interface{}]interface{}, key interface{}) (int64, bool) {
-	switch v := m[key].(type) {
-	case int:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint64:
-		return int64(v), true
-	default:
-		return 0, false
+// parseCredentialDescriptors validates restrictions before any credential lookup.
+// Unknown text credential types are extension points, not public-key aliases.
+func parseCredentialDescriptors(req map[interface{}]interface{}, key int) ([]credentialDescriptor, byte) {
+	raw, present := req[key]
+	if !present {
+		return nil, statusOK
 	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, 0x11 // CTAP2_ERR_CBOR_UNEXPECTED_TYPE.
+	}
+	descriptors := make([]credentialDescriptor, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[interface{}]interface{})
+		if !ok {
+			return nil, 0x11
+		}
+		if _, present := m["type"]; !present {
+			return nil, statusMissingParam
+		}
+		if _, present := m["id"]; !present {
+			return nil, statusMissingParam
+		}
+		kind, typeOK := m["type"].(string)
+		id, idOK := m["id"].([]byte)
+		if !typeOK || !idOK {
+			return nil, 0x11
+		}
+		if len(id) == 0 {
+			return nil, statusInvalidLength
+		}
+		if transports, present := m["transports"]; present {
+			items, ok := transports.([]any)
+			if !ok {
+				return nil, statusUnexpectedType
+			}
+			for _, item := range items {
+				if _, ok := item.(string); !ok {
+					return nil, statusUnexpectedType
+				}
+			}
+		}
+		descriptors = append(descriptors, credentialDescriptor{ID: id, Type: kind})
+	}
+	return descriptors, statusOK
 }
 
 func textAt(m map[interface{}]interface{}, key interface{}) string {
@@ -149,49 +161,22 @@ func textAt(m map[interface{}]interface{}, key interface{}) string {
 	return s
 }
 
-func bytesAt(m map[interface{}]interface{}, key interface{}) []byte {
-	b, _ := m[key].([]byte)
-	return b
-}
-
-func boolAt(m map[interface{}]interface{}, key interface{}) bool {
-	b, _ := m[key].(bool)
-	return b
-}
-
-// boolOK reports whether the key is present with a boolean value,
-// distinguishing "explicitly false" from "absent".
-func boolOK(m map[interface{}]interface{}, key string) (bool, bool) {
-	b, ok := m[key].(bool)
-	return b, ok
-}
-
-// send frames and writes a complete device message.
-func (a *Authenticator) send(channelID uint32, command byte, payload []byte) {
-	for _, report := range encodeInitReply(channelID, command, payload) {
-		if err := a.writer.writeReport(report); err != nil {
-			a.log.Warn("hid: failed writing report", "err", err)
-			return
-		}
-	}
-}
-
-func (a *Authenticator) sendCBORStatus(channelID uint32, status byte) {
-	a.send(channelID, cmdCBOR, []byte{status})
-}
-
+// sendError queues the response to a rejected request without blocking reception.
 func (a *Authenticator) sendError(channelID uint32, code byte) {
-	a.send(channelID, cmdError, []byte{code})
+	a.queueOutput(outboundMessage{cid: channelID, command: cmdError, payload: []byte{code}})
 }
 
 // waitGate asks the gate for one approval, ticking keepalives at the host
 // while the wait is pending. It returns the approval and a classification
 // of failure: timeout vs deny.
-func (a *Authenticator) waitGate(ctx context.Context, cid uint32, op Operation) (approved bool, timedOut bool) {
+func (a *Authenticator) waitGate(ctx context.Context, cid uint32, op Operation) (approval Approval, timedOut bool) {
+	if ctx.Err() != nil {
+		return Approval{}, false
+	}
 	gctx, cancel := context.WithTimeout(ctx, gateTimeout)
 	defer cancel()
 
-	approvedCh := make(chan bool, 1)
+	approvedCh := make(chan Approval, 1)
 	go func() { approvedCh <- a.gate.Approve(gctx, op) }()
 
 	ticker := time.NewTicker(keepaliveTick)
@@ -201,113 +186,130 @@ func (a *Authenticator) waitGate(ctx context.Context, cid uint32, op Operation) 
 		select {
 		case <-gctx.Done():
 			if ctx.Err() != nil {
-				return false, false // caller canceled; no response anyway
+				return Approval{}, false // caller canceled; no response anyway
 			}
-			return false, true
-		case ok := <-approvedCh:
-			return ok, false
+			return Approval{}, true
+		case result := <-approvedCh:
+			if gctx.Err() != nil || !result.Approved || (op.UserPresence && !result.UserPresence) || (op.UserVerification && !result.UserVerification) {
+				return Approval{}, false
+			}
+			return result, false
 		case <-ticker.C:
 			// Still waiting on the gate: report user-presence-needed so
 			// the host keeps its dialog in the "touch the device" state.
-			a.send(cid, cmdKeepalive, encodeKeepalive(statusUpNeeded))
+			if current, ok := ctx.Value(operationKey{}).(*inflightOp); ok {
+				a.keepalive(current)
+			}
 		}
 	}
+}
+
+// keepalive is generation-bound and coalesced if the sink is stalled.
+func (a *Authenticator) keepalive(op *inflightOp) {
+	a.queueOutput(outboundMessage{op: op, cid: op.cid, command: cmdKeepalive, payload: encodeKeepalive(statusUpNeeded)})
 }
 
 // makeCredential handles CTAP2 authenticatorMakeCredential (0x01).
 func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uint32) (byte, []byte) {
 	req, err := decodeRequest(data)
 	if err != nil {
-		return statusInvalidCBOR, nil
+		return requestError(err), nil
 	}
-	rp, _ := req[2].(map[interface{}]interface{})
-	user, _ := req[3].(map[interface{}]interface{})
-	rpID := textAt(rp, "id")
-	rpName := textAt(rp, "name")
-	userID := bytesAt(user, "id")
-	userName := textAt(user, "name")
-	userDisplayName := textAt(user, "displayName")
-	if rpID == "" || len(userID) == 0 {
-		slog.Warn("hid: MakeCredential rejected as missing parameter",
-			"req_len", len(data),
-			"req_keys", fmt.Sprintf("%v", req),
-			"rpID", rpID,
-			"user_id_len", len(userID))
-		return statusMissingParam, nil
+	fields := requestFields(req)
+	if _, status := fields.hash(1); status != statusOK {
+		return status, nil
 	}
+	rp, status := fields.entity(2, "name", "icon")
+	if status != statusOK {
+		return status, nil
+	}
+	rpID, status := rp.text("id")
+	if status != statusOK {
+		return status, nil
+	}
+	user, status := fields.entity(3, "name", "displayName", "icon")
+	if status != statusOK {
+		return status, nil
+	}
+	rawID, status := user.required("id")
+	if status != statusOK {
+		return status, nil
+	}
+	userID, ok := rawID.([]byte)
+	if !ok {
+		return statusUnexpectedType, nil
+	}
+	if len(userID) < 1 || len(userID) > 64 {
+		return statusInvalidLength, nil
+	}
+	algOK, status := fields.algorithm()
+	if status != statusOK {
+		return status, nil
+	}
+	excludeList, status := parseCredentialDescriptors(req, 5)
+	if status != statusOK {
+		return status, nil
+	}
+	if status := fields.extensions(6); status != statusOK {
+		return status, nil
+	}
+	options, status := fields.options(7)
+	if status != statusOK {
+		return status, nil
+	}
+	if status := fields.pinTypes(8, 9); status != statusOK {
+		return status, nil
+	}
+	uvRequested, _ := options["uv"].(bool)
+	op := Operation{Kind: OperationRegister, RPID: rpID, UserPresence: true, UserVerification: uvRequested}
 
-	// Chromium's FidoDeviceAuthenticator::GetTouch probes devices with a
-	// dummy MakeCredential whose RP ID is ".dummy" (its kDummyRpID) to
-	// collect a touch. The probe flows through the gate like any
-	// registration (the approval IS the touch Chrome counts), and the
-	// store answers it ephemerally — Chrome discards the response
-	// unconditionally. A real site cannot claim ".dummy": it is not a
-	// valid domain.
-	if rpID == ".dummy" {
-		slog.Info("hid: Chromium touch probe routed through gate", "rpID", rpID)
-	}
-
-	// D4: ES256 only on the CTAP surface.
-	algOK := false
-	params, _ := req[4].([]interface{})
-	for _, p := range params {
-		pm, _ := p.(map[interface{}]interface{})
-		if textAt(pm, "type") == "public-key" {
-			if alg, ok := intAt(pm, "alg"); ok && alg == -7 {
-				algOK = true
+	// C20 §5.1 processes an exclusion before algorithm/options/authentication
+	// errors, but never discloses a match without successful user presence.
+	for _, desc := range excludeList {
+		if desc.Type != "public-key" {
+			continue
+		}
+		excluded, err := a.store.HasCredential(rpID, desc.ID)
+		if err != nil {
+			return statusOperationDenied, nil
+		}
+		if excluded {
+			op.UserVerification = false
+			if _, status := a.consent(ctx, cid, op); status != statusOK {
+				return status, nil
 			}
+			return statusCredentialExcluded, nil
 		}
 	}
 	if !algOK {
 		return statusUnsupportedAlgorithm, nil
 	}
-
-	// User verification uses the polkit gate, without requiring a specific
-	// agent or authentication method. A uv-flagged request sets the UV
-	// flag after approval. Options arrive at top-level key 7 as a map with
-	// text keys ("rk", "uv", ...); excludeList entries at key 5 are
-	// descriptor maps with text keys too.
-	options, _ := req[7].(map[interface{}]interface{})
-	uvRequested := boolAt(options, "uv")
-	if uvRequested {
-		slog.Info("hid: MakeCredential requests user verification", "rpID", rpID)
+	if _, present := options["up"]; present {
+		return statusInvalidOption, nil
 	}
-
-	// Exclude list (key 5): if any listed credential is ours, the site
-	// already has this user registered — refuse before prompting so no
-	// duplicate credential is created. CTAP2_ERR_CREDENTIAL_EXCLUDED.
-	if excludeList, ok := req[5].([]interface{}); ok {
-		for _, item := range excludeList {
-			desc, _ := item.(map[interface{}]interface{})
-			id := bytesAt(desc, "id")
-			if len(id) == 0 {
-				continue
-			}
-			excluded, err := a.store.HasCredential(id)
-			if err != nil {
-				a.log.Error("hid: exclude list lookup failed", "rpID", rpID, "err", err)
-				return statusOperationDenied, nil
-			}
-			if excluded {
-				return statusCredentialExcluded, nil
+	if status := fields.pinStatus(8, 9); status != statusOK {
+		if status == statusPINNotSet {
+			op.UserVerification = false
+			if _, denied := a.consent(ctx, cid, op); denied != statusOK {
+				return denied, nil
 			}
 		}
+		return status, nil
 	}
+	approval, status := a.consent(ctx, cid, op)
+	if status != statusOK {
+		return status, nil
+	}
+	rpName := textAt(rp, "name")
+	userName := textAt(user, "name")
+	userDisplayName := textAt(user, "displayName")
 
-	// shortcut: the gate is invoked with no per-site attribution because
-	// polkit actions cannot carry dynamic text; the daemon logs the RPID.
-	slog.Info("hid: MakeCredential accepted for gate", "rpID", rpID, "user", userName)
-	approved, timedOut := a.waitGate(ctx, cid, Operation{Kind: OperationRegister, RPID: rpID})
-	if timedOut {
-		return statusUserActionTimeout, nil
+	if ctx.Err() != nil {
+		return statusKeepaliveCancel, nil
 	}
-	if !approved {
-		return statusOperationDenied, nil
-	}
-
-	credID, _, coseKey, err := a.store.Create(rpID, rpName, userName, userDisplayName)
+	credID, _, coseKey, err := a.store.Create(rpID, rpName, userName, userDisplayName, userID, options["rk"] == true)
 	if err != nil {
-		a.log.Error("hid: credential creation failed", "rpID", rpID, "err", err)
+		a.log.Error("hid: credential creation failed")
 		return statusOperationDenied, nil
 	}
 
@@ -315,13 +317,16 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 	if err != nil {
 		return statusInvalidCBOR, nil
 	}
-	flags := FlagUP | FlagAT
-	if uvRequested {
-		flags |= FlagUV // Polkit authorization establishes user verification.
+	flags := FlagAT
+	if approval.UserPresence {
+		flags |= FlagUP
+	}
+	if approval.UserVerification {
+		flags |= FlagUV
 	}
 	authData := authenticatorData(rpID, byte(flags), 0, attested)
 
-	resp, err := cbor.Marshal(makeCredentialResponse{
+	resp, err := ctapEncoder.Marshal(makeCredentialResponse{
 		Fmt:      "none",
 		AuthData: authData,
 		AttStmt:  map[string]interface{}{},
@@ -336,76 +341,121 @@ func (a *Authenticator) makeCredential(ctx context.Context, data []byte, cid uin
 func (a *Authenticator) getAssertion(ctx context.Context, data []byte, cid uint32) (byte, []byte) {
 	req, err := decodeRequest(data)
 	if err != nil {
-		return statusInvalidCBOR, nil
+		return requestError(err), nil
 	}
-	rpID := textAt(req, 1)
-	clientDataHash := bytesAt(req, 2)
-	if rpID == "" || len(clientDataHash) != 32 {
-		return statusMissingParam, nil
+	fields := requestFields(req)
+	rpID, status := fields.text(1)
+	if status != statusOK {
+		return status, nil
+	}
+	clientDataHash, status := fields.hash(2)
+	if status != statusOK {
+		return status, nil
+	}
+	allowList, status := parseCredentialDescriptors(req, 3)
+	if status != statusOK {
+		return status, nil
+	}
+	if status := fields.extensions(4); status != statusOK {
+		return status, nil
+	}
+	options, status := fields.options(5)
+	if status != statusOK {
+		return status, nil
+	}
+	if status := fields.pinTypes(6, 7); status != statusOK {
+		return status, nil
 	}
 
-	// GetAssertion options live at top-level key 5 ("userPresence"
-	// defaults to true; "uv" defaults to false). Chrome's exclude-list
-	// silent sign sets userPresence=false: answer without prompting and
-	// without the UP flag so the platform learns which credentials exist.
-	options, _ := req[5].(map[interface{}]interface{})
-	silent := false
-	if present, ok := boolOK(options, "userPresence"); ok && !present {
-		silent = true
-	}
-	uvRequested := boolAt(options, "uv") && !silent
-
-	// Consult availability before the gate: a site the user has no
-	// credentials for must not trigger a prompt (0x2E without waiting).
+	// Lookup is read-only. Existence is disclosed only after required consent.
 	available, err := a.store.HasCredentialsForRPID(rpID)
 	if err != nil {
-		a.log.Error("hid: credential lookup failed", "rpID", rpID, "err", err)
 		return statusOperationDenied, nil
 	}
-	if !available {
-		return statusNoCredentials, nil
-	}
-
 	var credentialID []byte
-	allowList, _ := req[3].([]interface{})
-	for _, item := range allowList {
-		im, _ := item.(map[interface{}]interface{})
-		if id := bytesAt(im, "id"); len(id) > 0 {
-			credentialID = id
+	for _, desc := range allowList {
+		if desc.Type != "public-key" {
+			continue
+		}
+		matches, err := a.store.HasCredential(rpID, desc.ID)
+		if err != nil {
+			return statusOperationDenied, nil
+		}
+		if matches {
+			credentialID = desc.ID
 			break
 		}
 	}
-
-	// Gate approval establishes user presence and, for uv-flagged requests,
-	// user verification. Silent exclude-list signs skip the gate.
-	var approved = true
-	if !silent {
-		var timedOut bool
-		approved, timedOut = a.waitGate(ctx, cid, Operation{Kind: OperationAuthenticate, RPID: rpID})
-		if timedOut {
-			return statusUserActionTimeout, nil
+	upRequested := true
+	if up, present := options["up"].(bool); present {
+		upRequested = up
+	}
+	uvRequested, _ := options["uv"].(bool)
+	op := Operation{Kind: OperationAuthenticate, RPID: rpID, UserPresence: upRequested, UserVerification: uvRequested}
+	if status := fields.pinStatus(6, 7); status != statusOK {
+		if status == statusPINNotSet {
+			op.UserPresence, op.UserVerification = true, false
+			if _, denied := a.consent(ctx, cid, op); denied != statusOK {
+				return denied, nil
+			}
 		}
-		if !approved {
-			return statusOperationDenied, nil
+		return status, nil
+	}
+	if _, present := options["rk"]; present {
+		return statusInvalidOption, nil
+	}
+	var approval Approval
+	if upRequested || uvRequested {
+		approval, status = a.consent(ctx, cid, op)
+		if status != statusOK {
+			return status, nil
 		}
 	}
+	if !available || (len(allowList) > 0 && credentialID == nil) {
+		return statusNoCredentials, nil
+	}
 
-	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, !silent, uvRequested && !silent)
+	if ctx.Err() != nil {
+		return statusKeepaliveCancel, nil
+	}
+	if len(allowList) == 0 {
+		refs, err := a.store.ResidentCredentials(rpID)
+		if err != nil {
+			return statusOperationDenied, nil
+		}
+		if len(refs) == 0 {
+			return statusNoCredentials, nil
+		}
+		result, err := a.store.AssertResident(refs[0], refs, clientDataHash, approval.UserPresence, approval.UserVerification)
+		if err != nil {
+			return statusInvalidCredential, nil
+		}
+		count := 0
+		if len(refs) > 1 {
+			count = len(refs)
+		}
+		status, response := a.encodeResident(result, count, approval.UserVerification)
+		if status == statusOK && len(refs) > 1 {
+			a.rememberAssertions(ctx, &pendingAssertions{cid: cid, refs: refs, hash: clientDataHash, approval: approval, next: 1, lastSuccess: time.Now()})
+		}
+		return status, response
+	}
+	usedID, userHandle, authData, signature, err := a.store.Assert(rpID, credentialID, clientDataHash, approval.UserPresence, approval.UserVerification)
 	if err != nil {
 		if errors.Is(err, ErrNoCredentials) {
 			return statusNoCredentials, nil
 		}
-		a.log.Warn("hid: assertion refused", "rpID", rpID, "err", err)
+		a.log.Warn("hid: assertion refused")
 		return statusInvalidCredential, nil
 	}
 	if len(usedID) == 0 {
 		return statusInvalidCredential, nil
 	}
 
-	// Per CTAP 2.0 §5.2: key 1 is a PublicKeyCredentialDescriptor map
-	// (type 1, id 2), key 4 a user entity map (id 1). Raw bytes in
-	// either slot make the platform drop the assertion.
-	resp, err := cbor.Marshal(getAssertionResponse{
+	// C20 §§5.2, 6.2: descriptor and user entity members have text keys.
+	// Only the opaque user ID is returned; names require verification and
+	// account-selection semantics, which are handled separately.
+	resp, err := ctapEncoder.Marshal(getAssertionResponse{
 		Credential: credentialDescriptor{ID: usedID, Type: "public-key"},
 		AuthData:   authData,
 		Signature:  signature,
