@@ -598,3 +598,26 @@ var _ = Describe("foreign KeePassXC passkey entries", func() {
 		Expect(pk.PublicKeyCOSE).NotTo(BeEmpty(), "COSE key must be derived from the private key")
 	})
 })
+
+var _ = Describe("encodeECDSAPublicKey curve guard", func() {
+	DescribeTable("refuses non-P-256 curves instead of panicking",
+		func(curve elliptic.Curve) {
+			priv, err := ecdsa.GenerateKey(curve, rand.Reader)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = encodeECDSAPublicKey(&priv.PublicKey)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("P-256"))
+		},
+		Entry("P-224", elliptic.P224()),
+		Entry("P-384", elliptic.P384()),
+		Entry("P-521", elliptic.P521()),
+	)
+
+	It("accepts P-256", func() {
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		Expect(err).NotTo(HaveOccurred())
+		cose, err := encodeECDSAPublicKey(&priv.PublicKey)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cose).NotTo(BeEmpty())
+	})
+})

@@ -955,7 +955,12 @@ type coseOKPKey struct {
 }
 
 // encodeECDSAPublicKey encodes an ECDSA P-256 public key as a COSE key.
+// Other curves are refused: RFC 9052 fixes P-256 coordinates at 32 bytes, and
+// a larger curve would panic in FillBytes.
 func encodeECDSAPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
+	if pub.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("fido2: unsupported ECDSA curve %s (only P-256)", pub.Curve.Params().Name)
+	}
 	// RFC 9052 fixes the P-256 field width: x and y are exactly 32
 	// bytes. big.Int.Bytes() strips leading zeros, so pad explicitly —
 	// an unpadded coordinate makes Chrome reject the whole key.
