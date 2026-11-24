@@ -66,22 +66,39 @@ func newItem(conn *dbus.Conn, coll *Collection, entry gokeepasslib.Entry) *Item 
 
 func (i *Item) Path() dbus.ObjectPath { return i.path }
 
-// refresh updates the cached entry by looking it up in the database by UUID.
-// Returns a pointer to the cached entry, or nil if the entry no longer exists.
-func (i *Item) refresh() *gokeepasslib.Entry {
+// withEntry runs fn with the current entry copy under a single database read
+// lock. It reports whether the entry exists and the database is unlocked.
+// Exported Item objects are shared across D-Bus handler goroutines, so the
+// cached entry must never be written from a reader; fn receives a value copy
+// and all field reads happen under the lock (Values shares backing with the
+// live database). fn must not take database locks again.
+func (i *Item) withEntry(fn func(gokeepasslib.Entry)) bool {
 	i.db.RLock()
 	defer i.db.RUnlock()
-	if i.db.Db == nil || i.db.Db.Content == nil || i.db.Db.Content.Root == nil {
-		return nil
+	if i.db.Locked || i.db.Db == nil || i.db.Db.Content == nil || i.db.Db.Content.Root == nil {
+		return false
 	}
 	for _, entry := range i.coll.svc.collectEntriesForDB(i.db) {
 		if entryUUIDString(entry) == i.entryUUID {
-			i.entry = entry
-			return &i.entry
+			fn(entry)
+			return true
 		}
 	}
-	i.entry = gokeepasslib.Entry{}
-	return nil
+	return false
+}
+
+// currentPassword returns the entry's password, read under one database read
+// lock. It fails closed when the database is locked or the entry is gone —
+// after a lock or an external removal, a stale item must not serve an empty
+// or wiped value as if it were the password.
+func (i *Item) currentPassword() (string, *dbus.Error) {
+	var password string
+	ok := i.withEntry(func(e gokeepasslib.Entry) { password = e.GetPassword() })
+	if !ok {
+		return "", dbus.NewError(ErrNoSuchObject,
+			[]interface{}{"item no longer exists or database is locked"})
+	}
+	return password, nil
 }
 
 // Locked returns whether this item is locked.
@@ -89,39 +106,52 @@ func (i *Item) Locked() bool { return false }
 
 // Label returns the entry's title.
 func (i *Item) Label() string {
-	i.refresh()
-	return i.entry.GetTitle()
+	var label string
+	i.withEntry(func(e gokeepasslib.Entry) { label = e.GetTitle() })
+	return label
 }
 
 // Attributes returns the Secret Service attributes for this entry.
 func (i *Item) Attributes() map[string]string {
-	i.refresh()
+	attrs := map[string]string{}
 	i.db.RLock()
 	defer i.db.RUnlock()
-	return EntryAttributes(i.db, i.entry)
+	if i.db.Locked || i.db.Db == nil || i.db.Db.Content == nil || i.db.Db.Content.Root == nil {
+		return attrs
+	}
+	for _, entry := range i.coll.svc.collectEntriesForDB(i.db) {
+		if entryUUIDString(entry) == i.entryUUID {
+			return EntryAttributes(i.db, entry)
+		}
+	}
+	return attrs
 }
 
 // Created returns the Unix timestamp of when this entry was created.
 func (i *Item) Created() int64 {
-	i.refresh()
-	if i.entry.Times.CreationTime != nil {
-		return i.entry.Times.CreationTime.Time.Unix()
-	}
-	return 0
+	var ts int64
+	i.withEntry(func(e gokeepasslib.Entry) {
+		if e.Times.CreationTime != nil {
+			ts = e.Times.CreationTime.Time.Unix()
+		}
+	})
+	return ts
 }
 
 // Modified returns the Unix timestamp of when this entry was last modified.
 func (i *Item) Modified() int64 {
-	i.refresh()
-	if i.entry.Times.LastModificationTime != nil {
-		return i.entry.Times.LastModificationTime.Time.Unix()
-	}
-	return 0
+	var ts int64
+	i.withEntry(func(e gokeepasslib.Entry) {
+		if e.Times.LastModificationTime != nil {
+			ts = e.Times.LastModificationTime.Time.Unix()
+		}
+	})
+	return ts
 }
 
 // Delete removes this item and persists the database.
 func (i *Item) Delete() (dbus.ObjectPath, *dbus.Error) {
-	if i.refresh() == nil {
+	if !i.withEntry(func(gokeepasslib.Entry) {}) {
 		return "/", dbus.NewError(ErrNoSuchObject,
 			[]interface{}{"item no longer exists"})
 	}
@@ -152,7 +182,7 @@ func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
 	if err != nil {
 		return dbus.NewError(ErrNoSession, []interface{}{err.Error()})
 	}
-	if i.refresh() == nil {
+	if !i.withEntry(func(gokeepasslib.Entry) {}) {
 		return dbus.NewError(ErrNoSuchObject, []interface{}{"item no longer exists"})
 	}
 	uuid := i.entryUUID
@@ -168,7 +198,6 @@ func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
 	}); err != nil {
 		return dbus.NewError(ErrIsLocked, []interface{}{err.Error()})
 	}
-	i.refresh()
 	slog.Info("secretservice: item secret updated", "path", string(i.path), "collection", i.coll.db.Name)
 	return nil
 }
@@ -177,11 +206,6 @@ func (i *Item) SetSecret(secret DBusSecret) *dbus.Error {
 // Method name matches spec: org.freedesktop.Secret.Item.GetSecret.
 // Returns a Secret struct (oayays).
 func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusSecret, *dbus.Error) {
-	if i.refresh() == nil {
-		return DBusSecret{}, dbus.NewError(ErrNoSuchObject,
-			[]interface{}{"item no longer exists"})
-	}
-
 	svc := i.coll.svc
 	caller := svc.callerInfo(sender)
 	if err := svc.authorizeSecretAccess(caller, i); err != nil {
@@ -206,26 +230,11 @@ func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusS
 			[]interface{}{"Session is closed"})
 	}
 
-	// Re-resolve the entry and copy the password under one read lock: the
-	// earlier refresh() may have raced a lock/save, and reading i.entry here
-	// unlocked could return wiped or encrypted garbage.
-	i.db.RLock()
-	if i.db.Locked || i.db.Db == nil {
-		i.db.RUnlock()
-		return DBusSecret{}, dbus.NewError(ErrIsLocked,
-			[]interface{}{"database is locked"})
-	}
-	var password string
-	for _, entry := range i.coll.svc.collectEntriesForDB(i.db) {
-		if entryUUIDString(entry) == i.entryUUID {
-			password = entry.GetPassword()
-			break
-		}
-	}
-	i.db.RUnlock()
-	if password == "" && i.refresh() == nil {
-		return DBusSecret{}, dbus.NewError(ErrNoSuchObject,
-			[]interface{}{"item no longer exists"})
+	// Read the password under one lock AFTER authorization: a lock or reload
+	// during the wait must fail the request, not serve a stale value.
+	password, perr := i.currentPassword()
+	if perr != nil {
+		return DBusSecret{}, perr
 	}
 
 	var iv []byte

@@ -5,7 +5,6 @@ package secretservice
 import (
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/tobischo/gokeepasslib/v3"
@@ -186,13 +185,6 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 	}
 	slog.Info("secretservice: item created", "path", string(itemPath), "collection", c.db.Name, "replaced", replaced)
 	return itemPath, "/", nil
-}
-
-// CreatePrompt creates a prompt for the collection. Used internally.
-func (c *Collection) createPrompt() *Prompt {
-	promptPath := dbus.ObjectPath(ServicePath + "/prompt/" +
-		time.Now().Format("20060102150405.000000000"))
-	return NewPrompt(c.conn, promptPath)
 }
 
 // items returns all items in this collection. Must be called with db lock held.

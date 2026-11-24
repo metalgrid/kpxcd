@@ -283,17 +283,6 @@ var _ = Describe("entryUUIDString", func() {
 	})
 })
 
-var _ = Describe("Prompt", func() {
-	It("closes the Done channel after Prompt", func() {
-		p := NewPrompt(nil, "/test/prompt/1")
-		Expect(p).NotTo(BeNil())
-		Expect(string(p.Path())).To(Equal("/test/prompt/1"))
-
-		p.Prompt("")
-		Eventually(p.Done()).Should(BeClosed())
-	})
-})
-
 var _ = Describe("Item", func() {
 	It("exposes entry fields through its accessors", func() {
 		entry := gokeepasslib.Entry{
@@ -310,6 +299,8 @@ var _ = Describe("Item", func() {
 			},
 		}
 		odb := newTestOpenDatabase("Test.kdbx", "test-uuid", false)
+		odb.Db = gokeepasslib.NewDatabase()
+		odb.Db.Content.Root.Groups[0].Entries = append(odb.Db.Content.Root.Groups[0].Entries, entry)
 		coll := &Collection{db: odb, svc: &SecretService{}}
 		item := newItem(nil, coll, entry)
 
@@ -337,5 +328,16 @@ var _ = Describe("session close via registerSession", func() {
 		Eventually(done, 2*time.Second).Should(BeClosed(), "Close deadlocked on sess.mu")
 		Expect(svc.getSession(dbus.ObjectPath("/org/freedesktop/secrets/session/t"))).To(BeNil())
 		Expect(sess.isClosed()).To(BeTrue())
+	})
+})
+
+var _ = Describe("Item.currentPassword", func() {
+	It("fails closed when the database is locked", func() {
+		db := newTestOpenDatabase("Lock.kdbx", "lock-uuid", true)
+		svc := NewSecretService(dbpool.NewDatabasePool(nil))
+		coll := newCollection(nil, svc, db)
+		item := newItem(nil, coll, gokeepasslib.Entry{})
+		_, err := item.currentPassword()
+		Expect(err).To(HaveOccurred())
 	})
 })

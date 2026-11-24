@@ -76,7 +76,7 @@ func matchAttribute(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, key, val
 		}
 		return strings.EqualFold(entry.GetContent("URL"), value)
 	case AttrNotes:
-		return strings.Contains(strings.ToLower(entry.GetContent("Notes")), strings.ToLower(value))
+		return strings.EqualFold(entry.GetContent("Notes"), value)
 	case AttrDBNamePrefix:
 		return strings.EqualFold(odb.Name, value)
 	case AttrDBUUIDPrefix:

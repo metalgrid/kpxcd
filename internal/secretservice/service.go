@@ -715,13 +715,17 @@ func (ss *SecretService) GetSecrets(sender dbus.Sender, items []dbus.ObjectPath,
 				[]interface{}{err.Error()})
 		}
 
+		// Read the password under one lock after authorization: a concurrent
+		// lock must not make this return an empty value as a "successful" secret.
+		password, perr := item.currentPassword()
+		if perr != nil {
+			slog.Debug("secretservice: GetSecrets item unavailable", "path", string(itemPath))
+			continue
+		}
 		var iv []byte
 		var ciphertext []byte
 		var secretErr error
 		security.Do(func() {
-			item.db.RLock()
-			password := item.entry.GetPassword()
-			item.db.RUnlock()
 			iv, ciphertext, secretErr = sess.Encrypt([]byte(password))
 		})
 		if secretErr != nil {
@@ -818,27 +822,6 @@ func (ss *SecretService) getItemByPath(path dbus.ObjectPath) (*Item, bool) {
 		coll.db.RUnlock()
 	}
 	return nil, false
-}
-
-// nextPromptPath generates a new prompt object path.
-// nextPrompt creates a new prompt, exports it on the bus, and returns its path.
-func (ss *SecretService) nextPrompt() (*Prompt, dbus.ObjectPath) {
-	ss.mu.Lock()
-	id := ss.nextID
-	ss.nextID++
-	ss.mu.Unlock()
-
-	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
-	prompt := NewPrompt(ss.conn, path)
-
-	// Export the prompt interface.
-	if ss.conn != nil {
-		if err := ss.conn.Export(prompt, path, InterfacePrompt); err != nil {
-			slog.Warn("secretservice: failed to export prompt", "path", path, "error", err)
-		}
-	}
-
-	return prompt, path
 }
 
 // ---- DH parameter generation ----
