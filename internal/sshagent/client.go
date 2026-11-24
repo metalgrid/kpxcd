@@ -86,18 +86,20 @@ func (c *AgentClient) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		return
 	}
 	db.RLock()
-	allKeys, err := ExtractKeysFromDatabase(db.Db)
+	scanned := ScanKeys(db.Db)
 	autoKeys, aerr := ExtractAutoLoadKeysFromDatabase(db.Db)
 	db.RUnlock()
-	if err != nil || aerr != nil {
-		slog.Warn("SSH agent client: failed to re-extract keys after reload", "db", db.Name, "error", err)
+	if aerr != nil {
+		slog.Warn("SSH agent client: failed to re-extract keys after reload", "db", db.Name, "error", aerr)
 		return
 	}
 	// Drop tracked keys whose entry vanished; add auto-load keys not yet
 	// tracked; leave the rest untouched.
-	present := make(map[string]bool, len(allKeys))
-	for _, k := range allKeys {
-		present[k.Fingerprint()] = true
+	present := make(map[string]bool, len(scanned))
+	for _, sk := range scanned {
+		if !sk.Denied {
+			present[sk.Key.Fingerprint()] = true
+		}
 	}
 	c.mu.Lock()
 	var tracked []string

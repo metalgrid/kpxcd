@@ -234,7 +234,7 @@ func GenerateTestKey(keyType string) (*Key, error) {
 // Supported types: "rsa", "ed25519", "ecdsa-p256", "ecdsa-p384", "ecdsa-p521".
 // For RSA, bits defaults to 3072 if bits <= 0.
 // Returns the parsed Key and the PEM-encoded private key bytes.
-func GenerateSSHKeyPair(keyType string, bits int) (*Key, []byte, error) {
+func GenerateSSHKeyPair(keyType string, bits int, comment string) (*Key, []byte, error) {
 	var priv crypto.Signer
 	var err error
 
@@ -264,7 +264,7 @@ func GenerateSSHKeyPair(keyType string, bits int) (*Key, []byte, error) {
 		return nil, nil, fmt.Errorf("failed to create key wrapper: %w", err)
 	}
 
-	pemBlock, err := ssh.MarshalPrivateKey(priv, "")
+	pemBlock, err := ssh.MarshalPrivateKey(priv, comment)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal private key: %w", err)
 	}

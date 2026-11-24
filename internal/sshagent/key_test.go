@@ -285,7 +285,7 @@ var _ = Describe("key discovery rules", func() {
 		Expect(ref.denied).To(BeFalse())
 	})
 
-	It("denies on KeeAgent Allow=false", func() {
+	It("marker wins when no settings attachment exists", func() {
 		entry := makeEntry("ssh-key", map[string]string{
 			"KeeAgent.settings": `<EntrySettings><AllowUseOfSshKey>false</AllowUseOfSshKey></EntrySettings>`,
 		})

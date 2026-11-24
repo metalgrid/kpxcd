@@ -68,18 +68,12 @@ type legacyKeeLocation struct {
 // The KeePass2 KeeAgent plugin is believed to write UTF-16 settings.
 func stripBOM(b []byte) []byte {
 	if len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF {
-		return neutralizeDecl(utf16BEToUTF8(b[2:]))
+		return utf16BEToUTF8(b[2:])
 	}
 	if len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE {
-		return neutralizeDecl(utf16LEToUTF8(b[2:]))
+		return utf16LEToUTF8(b[2:])
 	}
 	return b
-}
-
-// neutralizeDecl rewrites a UTF-16 encoding declaration to UTF-8 after the
-// bytes were transcoded, so the XML decoder does not transcode again.
-func neutralizeDecl(b []byte) []byte {
-	return bytes.Replace(b, []byte(`encoding="UTF-16"`), []byte(`encoding="UTF-8"`), 1)
 }
 
 func utf16BEToUTF8(b []byte) []byte {
@@ -104,26 +98,14 @@ func utf16LEToUTF8(b []byte) []byte {
 func ParseEntrySettings(data []byte) (*EntrySettings, error) {
 	data = stripBOM(data)
 	if len(data) >= 4 && data[0] != 0 && data[1] == 0 {
-		data = neutralizeDecl(utf16LEToUTF8(data)) // BOM-less UTF-16LE
+		data = utf16LEToUTF8(data) // BOM-less UTF-16LE
 	} else if len(data) >= 4 && data[0] == 0 && data[1] != 0 {
-		data = neutralizeDecl(utf16BEToUTF8(data)) // BOM-less UTF-16BE
+		data = utf16BEToUTF8(data) // BOM-less UTF-16BE
 	}
 	dec := xml.NewDecoder(bytes.NewReader(data))
+	// The input was already transcoded to UTF-8 above (BOM or null-byte
+	// heuristic), so the charset label is irrelevant: pass through.
 	dec.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
-		switch strings.ToLower(charset) {
-		case "utf-16le":
-			b, err := io.ReadAll(input)
-			if err != nil {
-				return nil, err
-			}
-			return bytes.NewReader(utf16LEToUTF8(b)), nil
-		case "utf-16be", "utf-16":
-			b, err := io.ReadAll(input)
-			if err != nil {
-				return nil, err
-			}
-			return bytes.NewReader(utf16BEToUTF8(b)), nil
-		}
 		return input, nil
 	}
 	var s EntrySettings
@@ -463,7 +445,6 @@ func ScanKeys(db *gokeepasslib.Database) []ScannedKey {
 			for j := range g.Entries {
 				entry := &g.Entries[j]
 				ref := resolveKeyRef(entry, db)
-				uuid, _ := entry.UUID.MarshalText()
 				attachments := []string{ref.attachment}
 				if ref.attachment == "" || ref.source == "keeagent-unreadable" {
 					attachments = nil
@@ -484,7 +465,7 @@ func ScanKeys(db *gokeepasslib.Database) []ScannedKey {
 					}
 					out = append(out, ScannedKey{
 						Key:        key,
-						EntryUUID:  string(uuid),
+						EntryUUID:  fmt.Sprintf("%x", entry.UUID[:]),
 						Title:      entry.GetTitle(),
 						Attachment: name,
 						Source:     ref.source,
@@ -499,4 +480,23 @@ func ScanKeys(db *gokeepasslib.Database) []ScannedKey {
 	}
 	visit(db.Content.Root.Groups)
 	return out
+}
+
+// VerifyKeyAttachment parses the named attachment as a usable private key,
+// ignoring governance (deny/allow). Used to validate a choice before writing
+// metadata, and for export.
+func VerifyKeyAttachment(entry *gokeepasslib.Entry, db *gokeepasslib.Database, name string) error {
+	_, err := parseKeyAttachment(entry, db, name)
+	return err
+}
+
+// ExtractKeyForExport parses the entry's chosen key attachment without any
+// governance check: a KeeAgent deny governs agent use, not export (export is
+// separately polkit-gated).
+func ExtractKeyForExport(entry *gokeepasslib.Entry, db *gokeepasslib.Database) (*Key, error) {
+	name, err := ChooseKeyAttachment(entry, db)
+	if err != nil {
+		return nil, err
+	}
+	return parseKeyAttachment(entry, db, name)
 }

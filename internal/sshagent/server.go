@@ -373,19 +373,21 @@ func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		return
 	}
 	db.RLock()
-	allKeys, err := ExtractKeysFromDatabase(db.Db)
+	scanned := ScanKeys(db.Db)
 	autoKeys, aerr := ExtractAutoLoadKeysFromDatabase(db.Db)
 	db.RUnlock()
-	if err != nil || aerr != nil {
-		slog.Warn("SSH agent: failed to re-extract keys after reload", "error", err)
+	if aerr != nil {
+		slog.Warn("SSH agent: failed to re-extract keys after reload", "error", aerr)
 		return
 	}
-	// Surgical reconcile: drop identities whose key vanished from the file,
-	// add auto-load keys that are not loaded yet, and leave everything else
-	// (including manually added keys and their constraints) untouched.
-	present := make(map[string]bool, len(allKeys))
-	for _, k := range allKeys {
-		present[k.Fingerprint()] = true
+	// Surgical reconcile: "present" is every parseable non-denied key in the
+	// file (ScanKeys), so ad-hoc loaded keys survive; drop identities whose
+	// key vanished, add auto-load keys not yet loaded, leave the rest.
+	present := make(map[string]bool, len(scanned))
+	for _, sk := range scanned {
+		if !sk.Denied {
+			present[sk.Key.Fingerprint()] = true
+		}
 	}
 	for _, lk := range s.manager.ListIdentities() {
 		if lk.DBUUID == db.UUID && !present[lk.Key.Fingerprint()] {
