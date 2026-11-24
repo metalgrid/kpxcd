@@ -27,8 +27,10 @@ import (
 	"github.com/metalgrid/kpxcd/internal/fido2"
 	"github.com/metalgrid/kpxcd/internal/pamcred"
 	"github.com/metalgrid/kpxcd/internal/security"
+	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/metalgrid/kpxcd/internal/xdg"
 	"github.com/tobischo/gokeepasslib/v3"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -93,8 +95,12 @@ Commands:
   ssh show <fingerprint>     Show details of a loaded SSH key
   ssh generate <uuid> <entry> [--type rsa|ed25519|ecdsa] [--bits N] [--comment text]
                              Generate a new SSH key and store it in the database
-  ssh import <uuid> <entry> <file> [--passphrase] [--delete-after]
-                             Import an existing SSH private key into the database
+  ssh import [uuid]             Menu: import keys found in ~/.ssh (skips existing)
+  ssh import <uuid> <entry> <file>
+                             Import one key file into the database
+  ssh autoload [uuid]          Menu: choose which keys auto-load at unlock
+  ssh autoload <uuid> <entry> on|off [--override-deny]
+                             Set/clear auto-load for one entry
   ssh export <fingerprint> <file>  (disabled: private-key export is not supported)
   ssh diag                   Show SSH agent diagnostics
   passkey list                             List stored passkeys
@@ -506,6 +512,9 @@ func cmdSSH(args []string) {
 	defer conn.Close()
 
 	switch subcmd {
+	case "autoload":
+		cmdSSHAutoload(obj, subArgs)
+		return
 	case "list":
 		uuid := ""
 		if len(subArgs) > 0 {
@@ -603,6 +612,10 @@ func cmdSSH(args []string) {
 		fmt.Printf("SSH key generated and stored in entry %q\n", entryPath)
 
 	case "import":
+		if len(subArgs) == 0 {
+			cmdSSHImportMenu(obj, nil)
+			return
+		}
 		if len(subArgs) < 3 {
 			fmt.Fprintln(os.Stderr, "kpxcctl ssh import: missing uuid, entry path, or key file")
 			os.Exit(1)
@@ -735,6 +748,230 @@ func cmdSSH(args []string) {
 		fmt.Fprintf(os.Stderr, "kpxcctl ssh: unknown subcommand: %s\n", subcmd)
 		os.Exit(1)
 	}
+}
+
+// cmdSSHImportMenu scans ~/.ssh and offers a menu of importable keys.
+func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
+	uuid := ""
+	if len(args) > 0 {
+		uuid = args[0]
+	}
+	if uuid == "" {
+		// Default to the only unlocked database, if exactly one.
+		dbs := listDatabases(obj)
+		if len(dbs) == 1 {
+			uuid = getVariantString(dbs[0]["uuid"])
+		} else if len(dbs) > 1 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh import: multiple databases unlocked; pass the uuid")
+			os.Exit(1)
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh import: cannot resolve home:", err)
+		os.Exit(1)
+	}
+	files, err := scanSSHDir(filepath.Join(home, ".ssh"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh import: cannot read ~/.ssh:", err)
+		os.Exit(1)
+	}
+
+	// Fingerprints already stored in the target database are skipped.
+	existing := map[string]bool{}
+	scan := obj.Call(iface+".SshScanDatabase", 0, uuid)
+	if scan.Err == nil {
+		var entries []map[string]dbus.Variant
+		if scan.Store(&entries) == nil {
+			for _, e := range entries {
+				existing[getVariantString(e["fingerprint"])] = true
+			}
+		}
+	}
+
+	type candidate struct {
+		path string
+		key  *sshagent.Key
+		data []byte
+	}
+	var candidates []candidate
+	var skipped int
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		passphrase := ""
+		key, err := sshagent.ParsePrivateKey(data, "")
+		if err != nil {
+			// Maybe encrypted: ask once.
+			if _, ok := err.(*ssh.PassphraseMissingError); ok {
+				passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", filepath.Base(f)))
+				key, err = sshagent.ParsePrivateKey(data, passphrase)
+			}
+		}
+		if err != nil || key == nil || key.Signer == nil {
+			skipped++
+			continue
+		}
+		if strings.Contains(f, "sk-") || strings.HasPrefix(key.Format, "ssh-sk-") {
+			fmt.Printf("  skip %s: security-key (sk-*) keys are not supported\n", filepath.Base(f))
+			skipped++
+			continue
+		}
+		if existing[key.Fingerprint()] {
+			fmt.Printf("  skip %s: already in the database (%s)\n", filepath.Base(f), key.Fingerprint())
+			skipped++
+			continue
+		}
+		candidates = append(candidates, candidate{path: f, key: key, data: data})
+	}
+	if len(candidates) == 0 {
+		fmt.Printf("no importable keys in ~/.ssh (%d skipped)\n", skipped)
+		return
+	}
+	if !stdinIsInteractive() {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh import: stdin is not interactive; use: kpxcctl ssh import <uuid> <entry> <file>")
+		os.Exit(1)
+	}
+
+	items := make([]string, len(candidates))
+	for i, c := range candidates {
+		items[i] = fmt.Sprintf("%s  %s  %s", filepath.Base(c.path), c.key.Format, c.key.Fingerprint())
+	}
+	fmt.Printf("%d keys found in ~/.ssh:\n", len(candidates))
+	picked, err := selectFromMenu(os.Stdin, "import which? numbers (comma-separated), 'a' for all, enter to cancel: ", items)
+	if err != nil || len(picked) == 0 {
+		fmt.Println("nothing selected — nothing imported")
+		return
+	}
+
+	fmt.Println("Keys are stored unencrypted inside the encrypted vault; the vault master password protects them.")
+	imported, failed := 0, 0
+	for _, idx := range picked {
+		c := candidates[idx]
+		title := fmt.Sprintf("%s (%s)", filepath.Base(c.path), shortFP(c.key.Fingerprint()))
+		call := obj.Call(iface+".SshImportKey", 0, uuid, title, c.data, "")
+		if call.Err != nil {
+			fmt.Fprintf(os.Stderr, "  fail %s: %v\n", title, call.Err)
+			failed++
+			continue
+		}
+		fmt.Printf("  imported %s\n", title)
+		imported++
+	}
+	fmt.Printf("\n%d imported, %d failed\n", imported, failed)
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func shortFP(fp string) string {
+	if len(fp) > 19 {
+		return fp[:19]
+	}
+	return fp
+}
+
+func listDatabases(obj dbus.BusObject) []map[string]dbus.Variant {
+	call := obj.Call(iface+".ListDatabases", 0)
+	if call.Err != nil {
+		return nil
+	}
+	var dbs []map[string]dbus.Variant
+	_ = call.Store(&dbs)
+	return dbs
+}
+
+// cmdSSHAutoload shows a menu of the database's keys and toggles auto-load.
+func cmdSSHAutoload(obj dbus.BusObject, args []string) {
+	// Explicit form: autoload <uuid> <entry> on|off [--override-deny]
+	if len(args) >= 3 {
+		uuid, entryRef, state := args[0], args[1], args[2]
+		on := state == "on"
+		if state != "on" && state != "off" {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload: state must be on|off")
+			os.Exit(1)
+		}
+		override := false
+		for _, a := range args[3:] {
+			if a == "--override-deny" {
+				override = true
+			}
+		}
+		call := obj.Call(iface+".SshSetAutoload", 0, uuid, entryRef, on, override)
+		if call.Err != nil {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload:", call.Err)
+			os.Exit(1)
+		}
+		fmt.Printf("autoload %s for %s (applies at next unlock; use `ssh add` to load now)\n", state, entryRef)
+		return
+	}
+
+	uuid := ""
+	if len(args) > 0 {
+		uuid = args[0]
+	}
+	if uuid == "" {
+		dbs := listDatabases(obj)
+		if len(dbs) == 1 {
+			uuid = getVariantString(dbs[0]["uuid"])
+		} else if len(dbs) > 1 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload: multiple databases unlocked; pass the uuid")
+			os.Exit(1)
+		}
+	}
+	if !stdinIsInteractive() {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload: stdin is not interactive; use: kpxcctl ssh autoload <uuid> <entry> on|off")
+		os.Exit(1)
+	}
+
+	call := obj.Call(iface+".SshScanDatabase", 0, uuid)
+	if call.Err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload:", call.Err)
+		os.Exit(1)
+	}
+	var entries []map[string]dbus.Variant
+	if call.Store(&entries) != nil || len(entries) == 0 {
+		fmt.Println("no keys found")
+		return
+	}
+	items := make([]string, len(entries))
+	for i, e := range entries {
+		mark := " "
+		if getVariantBool(e["autoload"]) {
+			mark = "x"
+		}
+		denied := ""
+		if getVariantBool(e["denied"]) {
+			denied = " (KeeAgent-denied)"
+		}
+		items[i] = fmt.Sprintf("[%s] %s  %s  %s%s", mark, getVariantString(e["title"]),
+			getVariantString(e["fingerprint"]), getVariantString(e["source"]), denied)
+	}
+	fmt.Println("auto-load at unlock:")
+	picked, err := selectFromMenu(os.Stdin, "toggle which? numbers (comma-separated), enter for none: ", items)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh autoload:", err)
+		os.Exit(1)
+	}
+	if len(picked) == 0 {
+		fmt.Println("nothing changed")
+		return
+	}
+	for _, idx := range picked {
+		e := entries[idx]
+		on := !getVariantBool(e["autoload"])
+		override := getVariantBool(e["denied"]) && on
+		set := obj.Call(iface+".SshSetAutoload", 0, uuid, getVariantString(e["uuid"]), on, override)
+		if set.Err != nil {
+			fmt.Fprintf(os.Stderr, "  fail %s: %v\n", getVariantString(e["title"]), set.Err)
+			continue
+		}
+		fmt.Printf("  %s -> autoload=%v\n", getVariantString(e["title"]), on)
+	}
+	fmt.Println("applies at next unlock; use `kpxcctl ssh add` to load a key now")
 }
 
 // cmdPasskey handles passkey subcommands: list, create, remove, import.
