@@ -322,7 +322,8 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-				return nil, fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				continue
 			}
 			if pk == nil || (rpID != "" && pk.RPID != rpID) {
 				continue
@@ -345,7 +346,8 @@ func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyE
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-				return nil, fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				continue
 			}
 			if pk == nil || pk.CredentialID != credentialID {
 				continue
@@ -463,7 +465,8 @@ func (s *Fido2Service) RemovePasskey(credentialID string) error {
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-				return fmt.Errorf("fido2: database %s: %w", dbs[i].Name, err)
+								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				continue
 			}
 			if pk == nil || pk.CredentialID != credentialID {
 				continue
@@ -533,7 +536,8 @@ func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.Open
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-				return nil, nil, fmt.Errorf("database %s: %w", dbs[i].Name, err)
+								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				continue
 			}
 			if pk == nil || pk.RPID != rpID || pk.CredentialID == "" {
 				continue
@@ -607,12 +611,14 @@ func advanceSignCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) (uint32, error)
 	return newCount, nil
 }
 
-// readSignCount parses the counter field. A missing field is a hard error:
-// the counter must never silently restart.
+// readSignCount parses the counter field. A missing field means 0: kpxcd
+// always writes the field, so it is only absent on foreign (e.g. KeePassXC)
+// entries that have no persisted counter to restart. A malformed field is a
+// hard error.
 func readSignCount(entry *gokeepasslib.Entry) (uint32, error) {
 	raw := entry.GetContent(KPEXPasskeyCounter)
 	if raw == "" {
-		return 0, fmt.Errorf("passkey entry %q has no sign counter", entry.GetTitle())
+		return 0, nil
 	}
 	var count uint32
 	if _, err := fmt.Sscanf(raw, "%d", &count); err != nil {
@@ -651,15 +657,22 @@ func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
 		}
 	}
 
+	// The COSE public key is a kpxcd-stored convenience; foreign entries
+	// (e.g. KeePassXC) do not carry it, so derive it from the private key.
 	coseB64 := entry.GetContent(KPEXPasskeyPubKey)
-	if coseB64 == "" {
-		return nil, fmt.Errorf("passkey entry %q is missing %s", entry.GetTitle(), KPEXPasskeyPubKey)
+	if coseB64 != "" {
+		cose, err := base64.StdEncoding.DecodeString(coseB64)
+		if err != nil {
+			return nil, fmt.Errorf("passkey entry %q has malformed public key: %w", entry.GetTitle(), err)
+		}
+		pk.PublicKeyCOSE = cose
+	} else {
+		cose, err := cosePublicKeyFromPEM(pk.PrivateKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("passkey entry %q has unusable private key: %w", entry.GetTitle(), err)
+		}
+		pk.PublicKeyCOSE = cose
 	}
-	cose, err := base64.StdEncoding.DecodeString(coseB64)
-	if err != nil {
-		return nil, fmt.Errorf("passkey entry %q has malformed public key: %w", entry.GetTitle(), err)
-	}
-	pk.PublicKeyCOSE = cose
 
 	count, err := readSignCount(entry)
 	if err != nil {
@@ -669,6 +682,39 @@ func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
 
 	pk.Subject = entry.GetTitle()
 	return pk, nil
+}
+
+// cosePublicKeyFromPEM derives the COSE public key from a PKCS#8 PEM private
+// key (ECDSA P-256 or Ed25519).
+func cosePublicKeyFromPEM(privKeyPEM string) ([]byte, error) {
+	var cose []byte
+	var err error
+	security.Do(func() {
+		block, _ := pem.Decode([]byte(privKeyPEM))
+		if block == nil {
+			err = fmt.Errorf("not valid PEM")
+			return
+		}
+		key, perr := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if perr != nil {
+			err = perr
+			return
+		}
+		switch k := key.(type) {
+		case *ecdsa.PrivateKey:
+			cose, err = encodeECDSAPublicKey(&k.PublicKey)
+		case ed25519.PrivateKey:
+			pub, ok := k.Public().(ed25519.PublicKey)
+			if !ok {
+				err = fmt.Errorf("unexpected ed25519 public key type %T", k.Public())
+				return
+			}
+			cose, err = encodeEd25519PublicKey(pub)
+		default:
+			err = fmt.Errorf("unsupported key type %T", key)
+		}
+	})
+	return cose, err
 }
 
 // newPasskeyEntry builds the KeePass entry for a freshly created passkey.

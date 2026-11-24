@@ -9,8 +9,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -569,5 +571,30 @@ var _ = Describe("passkey entry field names", func() {
 		Expect(got.RPID).To(Equal("example.com"))
 		Expect(got.CredentialID).To(Equal("Y3JlZA"))
 		Expect(got.SignCount).To(Equal(uint32(7)))
+	})
+})
+
+var _ = Describe("foreign KeePassXC passkey entries", func() {
+	It("extracts a KeePassXC entry without kpxcd counter or COSE public key fields", func() {
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		Expect(err).NotTo(HaveOccurred())
+		der, err := x509.MarshalPKCS8PrivateKey(priv)
+		Expect(err).NotTo(HaveOccurred())
+		pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+
+		entry := gokeepasslib.NewEntry()
+		setEntryValue(&entry, "KPEX_PASSKEY_RELYING_PARTY", "example.com", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_USERNAME", "user", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_USER_HANDLE", "aGFuZGxl", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_CREDENTIAL_ID", "Y3JlZA", false)
+		setEntryValue(&entry, "KPEX_PASSKEY_PRIVATE_KEY_PEM", pemKey, true)
+		// No KPEX_PASSKEY_PUB_KEY, no KPEX_PASSKEY_COUNTER: KeePassXC does not write them.
+
+		pk, err := extractPasskeyFromEntry(&entry)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pk).NotTo(BeNil())
+		Expect(pk.RPID).To(Equal("example.com"))
+		Expect(pk.SignCount).To(Equal(uint32(0)))
+		Expect(pk.PublicKeyCOSE).NotTo(BeEmpty(), "COSE key must be derived from the private key")
 	})
 })

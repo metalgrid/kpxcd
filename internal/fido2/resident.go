@@ -4,6 +4,7 @@ package fido2
 
 import (
 	"bytes"
+	"log/slog"
 	"cmp"
 	"encoding/base64"
 	"fmt"
@@ -116,6 +117,13 @@ func (s *Fido2Service) persistRegistration(target *dbpool.OpenDatabase, pk *Pass
 		// All validation precedes mutation: callback errors do not restore the root.
 		// Replace credential fields only, retaining UUID, title, password, notes,
 		// attachments, history and unrelated metadata on an imported KeePass entry.
+		// Drop superseded legacy kpxcd fields so no stale private key or
+		// credential ID remains on the entry.
+		for _, key := range []string{legacyPasskeyRPID, legacyPasskeyRPName, legacyPasskeyUser, legacyPasskeyHandle, legacyPasskeyCredID, legacyPasskeyPrivKey} {
+			if idx := entry.GetIndex(key); idx >= 0 {
+				entry.Values = append(entry.Values[:idx], entry.Values[idx+1:]...)
+			}
+		}
 		fresh := newPasskeyEntry(pk)
 		for _, value := range fresh.Values {
 			if value.Key == "Title" || value.Key == "UserName" || value.Key == "URL" || value.Key == "Password" {
@@ -148,7 +156,8 @@ func (s *Fido2Service) residentCredentials(rpID string) ([]hid.CredentialReferen
 				}
 				pk, err := extractPasskeyFromEntry(&entry)
 				if err != nil {
-					return err
+					slog.Warn("fido2: skipping malformed passkey entry", "database", db.Name, "error", err)
+					continue
 				}
 				if pk == nil {
 					continue
