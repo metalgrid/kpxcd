@@ -4,10 +4,10 @@ package fido2
 
 import (
 	"bytes"
-	"log/slog"
 	"cmp"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 

@@ -322,7 +322,7 @@ func (s *Fido2Service) FindPasskeysByRPID(dbUUID, rpID string) ([]*PasskeyEntry,
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
 				continue
 			}
 			if pk == nil || (rpID != "" && pk.RPID != rpID) {
@@ -346,7 +346,7 @@ func (s *Fido2Service) FindPasskeyByCredentialID(credentialID string) (*PasskeyE
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
 				continue
 			}
 			if pk == nil || pk.CredentialID != credentialID {
@@ -465,7 +465,7 @@ func (s *Fido2Service) RemovePasskey(credentialID string) error {
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
 				continue
 			}
 			if pk == nil || pk.CredentialID != credentialID {
@@ -536,7 +536,7 @@ func (s *Fido2Service) lookupCredential(rpID, credentialID string) (*dbpool.Open
 		for j := range entries {
 			pk, err := extractPasskeyFromEntry(&entries[j])
 			if err != nil {
-								slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
+				slog.Warn("fido2: skipping malformed passkey entry", "database", dbs[i].Name, "error", err)
 				continue
 			}
 			if pk == nil || pk.RPID != rpID || pk.CredentialID == "" {
