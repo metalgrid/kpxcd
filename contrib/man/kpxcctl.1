@@ -91,11 +91,11 @@ specified entry, and set KeeAgent metadata. The public key is not stored
 separately; it can be derived from the private key attachment.
 
 .TP
-.B kpxcctl ssh import [uuid]
+.B kpxcctl ssh import
 Show a menu of private keys found in ~/.ssh and import the selected ones.
 Skips keys already stored (matched by fingerprint) and unsupported sk-* keys.
 .TP
-.B kpxcctl ssh autoload [uuid]
+.B kpxcctl ssh autoload
 Show a menu of the database's keys and toggle which auto-load at unlock.
 .TP
 .B kpxcctl ssh autoload <uuid> <entry> on|off [\-\-override-deny]
@@ -108,7 +108,7 @@ read, parsed, attached to the entry, and KeeAgent metadata is set.
 With \fB\-\-delete-after\fR, the source file is removed after successful import.
 
 .TP
-.B kpxcctl ssh export [uuid]
+.B kpxcctl ssh export
 Show a menu of stored keys and export one (polkit-gated).
 .TP
 .B kpxcctl ssh export <uuid> <entry> <file> [\-\-force] [\-\-no-passphrase]

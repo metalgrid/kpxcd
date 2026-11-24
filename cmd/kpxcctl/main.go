@@ -95,13 +95,13 @@ Commands:
   ssh show <fingerprint>     Show details of a loaded SSH key
   ssh generate <uuid> <entry> [--type rsa|ed25519|ecdsa] [--bits N] [--comment text]
                              Generate a new SSH key and store it in the database
-  ssh import [uuid]             Menu: import keys found in ~/.ssh (skips existing)
+  ssh import                   Menu: import keys found in ~/.ssh (skips existing); needs exactly one unlocked DB
   ssh import <uuid> <entry> <file>
                              Import one key file into the database
-  ssh autoload [uuid]          Menu: choose which keys auto-load at unlock
+  ssh autoload                 Menu: choose which keys auto-load at unlock; needs exactly one unlocked DB
   ssh autoload <uuid> <entry> on|off [--override-deny]
                              Set/clear auto-load for one entry
-  ssh export [uuid]              Menu: export a stored key to OpenSSH format (polkit-gated)
+  ssh export                   Menu: export a stored key to OpenSSH format (polkit-gated); needs exactly one unlocked DB
   ssh export <uuid> <entry> <file> [--force] [--no-passphrase]
                              Export one key; encrypted with a passphrase unless --no-passphrase
   ssh diag                   Show SSH agent diagnostics
@@ -805,23 +805,30 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 		if err != nil {
 			continue
 		}
+		encrypted := needsPassphrase(data) // check before parsing: legacy PEM errors first
 		key, err := sshagent.ParsePrivateKey(data, "")
 		if err != nil {
+			if !encrypted {
+				skipped++
+				continue
+			}
+			key = nil // encrypted legacy PEM: no public key without the passphrase
+		}
+		if key == nil && !encrypted {
 			skipped++
 			continue
 		}
 		if key == nil {
-			skipped++
-			continue
+			// encrypted: no fingerprint available; list by file name, dedupe after decrypt
+			key = &sshagent.Key{Format: "encrypted"}
 		}
-		encrypted := needsPassphrase(data)
 		// M7: sk- is a filename prefix, not a substring of the full path.
 		if strings.HasPrefix(filepath.Base(f), "sk-") {
 			fmt.Printf("  skip %s: security-key (sk-*) keys are not supported\n", filepath.Base(f))
 			skipped++
 			continue
 		}
-		if existing[key.Fingerprint()] {
+		if !encrypted && existing[key.Fingerprint()] {
 			fmt.Printf("  skip %s: already in the database (%s)\n", filepath.Base(f), key.Fingerprint())
 			skipped++
 			continue
