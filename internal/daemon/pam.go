@@ -37,7 +37,7 @@ func (app *DaemonApp) defaultDatabase() *config.DatabaseConfig {
 
 func (app *DaemonApp) isDatabaseOpen(path string) bool {
 	for _, db := range app.pool.List() {
-		if db.Path == path && !db.Locked {
+		if db.Path == path && !db.IsLocked() {
 			return true
 		}
 	}

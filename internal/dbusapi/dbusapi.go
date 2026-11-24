@@ -153,7 +153,7 @@ func (d *DaemonDBus) ListDatabases(sender dbus.Sender) ([]map[string]dbus.Varian
 			"uuid":        dbus.MakeVariant(db.UUID),
 			"name":        dbus.MakeVariant(db.Name),
 			"path":        dbus.MakeVariant(db.Path),
-			"locked":      dbus.MakeVariant(db.Locked),
+			"locked":      dbus.MakeVariant(db.IsLocked()),
 			"auto_unlock": dbus.MakeVariant(false), // TODO: from config
 		}
 	}
@@ -240,14 +240,13 @@ func (d *DaemonDBus) GetEntry(sender dbus.Sender, uuid string, entryPath string)
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
-	locked := db.Locked
-	db.RUnlock()
-	if locked {
+	if db.Locked {
+		db.RUnlock()
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
-
-	// Search for the entry by path.
-	entry := findEntryByPath(db, entryPath)
+	// Search for the entry by path while holding the read lock.
+	entry := findEntryByPathLocked(db, entryPath)
+	db.RUnlock()
 	if entry == nil {
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
@@ -284,12 +283,11 @@ func (d *DaemonDBus) SearchEntries(sender dbus.Sender, uuid string, query string
 	var results []map[string]dbus.Variant
 	for _, db := range dbs {
 		db.RLock()
-		locked := db.Locked
-		db.RUnlock()
-		if locked {
+		if db.Locked {
+			db.RUnlock()
 			continue
 		}
-		entries := db.RootEntries()
+		entries := db.RootEntriesLocked()
 		for i := range entries {
 			e := &entries[i]
 			if matchesQuery(e, query) {
@@ -302,6 +300,7 @@ func (d *DaemonDBus) SearchEntries(sender dbus.Sender, uuid string, query string
 				})
 			}
 		}
+		db.RUnlock()
 	}
 
 	return results, nil
@@ -375,20 +374,18 @@ func (d *DaemonDBus) SshAddKey(sender dbus.Sender, uuid string, entryPath string
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
 	db.RLock()
-	locked := db.Locked
-	db.RUnlock()
-	if locked {
+	if db.Locked {
+		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
-
-	db.RLock()
-	entry := findEntryByPath(db, entryPath)
-	db.RUnlock()
+	entry := findEntryByPathLocked(db, entryPath)
 	if entry == nil {
+		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
-
+	// Extract while holding the read lock: entry points into database content.
 	key, err := sshagent.ExtractKeyFromEntry(entry, db.Db)
+	db.RUnlock()
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to extract key: %w", err))
 	}
@@ -424,15 +421,11 @@ func (d *DaemonDBus) SshScanDatabase(sender dbus.Sender, uuid string) ([]map[str
 	var results []map[string]dbus.Variant
 	for _, db := range dbs {
 		db.RLock()
-		locked := db.Locked
-		db.RUnlock()
-		if locked {
+		if db.Locked {
+			db.RUnlock()
 			continue
 		}
-		db.RLock()
-		entries := db.RootEntries()
-		db.RUnlock()
-
+		entries := db.RootEntriesLocked()
 		for i := range entries {
 			key, err := sshagent.ExtractKeyFromEntry(&entries[i], db.Db)
 			if err != nil || key == nil {
@@ -447,6 +440,7 @@ func (d *DaemonDBus) SshScanDatabase(sender dbus.Sender, uuid string) ([]map[str
 				"db_name":     dbus.MakeVariant(db.Name),
 			})
 		}
+		db.RUnlock()
 	}
 	return results, nil
 }
@@ -461,10 +455,7 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
-	db.RLock()
-	locked := db.Locked
-	db.RUnlock()
-	if locked {
+	if db.IsLocked() {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
@@ -588,10 +579,7 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
-	db.RLock()
-	locked := db.Locked
-	db.RUnlock()
-	if locked {
+	if db.IsLocked() {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
@@ -889,9 +877,11 @@ func (d *DaemonDBus) ImportPasskey(sender dbus.Sender, uuid string, rpID string,
 	return true, nil
 }
 
-// findEntryByPath searches for an entry by slash-separated path.
-func findEntryByPath(db *dbpool.OpenDatabase, path string) *gokeepasslib.Entry {
-	entries := db.RootEntries()
+// findEntryByPath is unused; lock-holding callers use findEntryByPathLocked.
+// findEntryByPathLocked is findEntryByPath without taking the database lock:
+// the caller must already hold RLock or Lock on db.
+func findEntryByPathLocked(db *dbpool.OpenDatabase, path string) *gokeepasslib.Entry {
+	entries := db.RootEntriesLocked()
 	for i := range entries {
 		if entries[i].GetTitle() == path || entries[i].GetContent("UserName") == path {
 			return &entries[i]

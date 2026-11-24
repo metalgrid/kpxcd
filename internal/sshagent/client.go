@@ -44,7 +44,9 @@ func (c *AgentClient) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 		return
 	}
 
+	db.RLock()
 	keys, err := ExtractKeysFromDatabase(db.Db)
+	db.RUnlock()
 	if err != nil {
 		slog.Warn("SSH agent client: failed to extract keys from database",
 			"db", db.Name, "error", err)

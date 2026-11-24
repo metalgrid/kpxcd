@@ -330,7 +330,9 @@ func (s *AgentServer) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 		return
 	}
 
+	db.RLock()
 	keys, err := ExtractKeysFromDatabase(db.Db)
+	db.RUnlock()
 	if err != nil {
 		slog.Warn("SSH agent: failed to extract keys from database", "error", err)
 		return
@@ -362,14 +364,7 @@ func (s *AgentServer) OnDatabaseLocked(db *dbpool.OpenDatabase) {
 	slog.Info("SSH agent: removed keys for locked database", "uuid", db.UUID)
 }
 
-// resolveSocketPath determines the SSH agent socket path.
-func resolveSocketPath(cfg *config.SSHAgentConfig) string {
-	// Socket path is configured at the top level (DaemonConfig.SSHSocketPath).
-	// We accept it via parameter here for flexibility.
-	socketPath := defaultSocketPath()
-	return socketPath
-}
-
+// resolveSocketPath is unused; the daemon passes the configured socket path.
 func defaultSocketPath() string {
 	runDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runDir == "" {
