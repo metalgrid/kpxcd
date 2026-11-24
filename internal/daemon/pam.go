@@ -15,7 +15,7 @@ import (
 )
 
 func (app *DaemonApp) hasPAMDatabase() bool {
-	for _, db := range app.cfg.Databases {
+	for _, db := range app.currentCfg().Databases {
 		if db.AutoUnlock && db.UnlockCredential == "pam" {
 			return true
 		}
@@ -24,13 +24,14 @@ func (app *DaemonApp) hasPAMDatabase() bool {
 }
 
 func (app *DaemonApp) defaultDatabase() *config.DatabaseConfig {
-	for i := range app.cfg.Databases {
-		if app.cfg.Databases[i].Default {
-			return &app.cfg.Databases[i]
+	cfg := app.currentCfg()
+	for i := range cfg.Databases {
+		if cfg.Databases[i].Default {
+			return &cfg.Databases[i]
 		}
 	}
-	if len(app.cfg.Databases) > 0 {
-		return &app.cfg.Databases[0]
+	if len(cfg.Databases) > 0 {
+		return &cfg.Databases[0]
 	}
 	return nil
 }
@@ -133,13 +134,14 @@ func fileExists(path string) bool {
 // defaultDatabasePath returns the configured path of the default database
 // (or the first configured one). Passkey registrations land there.
 func (app *DaemonApp) defaultDatabasePath() string {
-	if len(app.cfg.Databases) == 0 {
+	cfg := app.currentCfg()
+	if len(cfg.Databases) == 0 {
 		return ""
 	}
-	for _, db := range app.cfg.Databases {
+	for _, db := range cfg.Databases {
 		if db.Default {
 			return db.Path
 		}
 	}
-	return app.cfg.Databases[0].Path
+	return cfg.Databases[0].Path
 }

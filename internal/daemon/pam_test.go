@@ -18,19 +18,20 @@ import (
 )
 
 func newPAMTestApp(dbPath string) *DaemonApp {
-	return &DaemonApp{
-		cfg: &config.Config{
-			Databases: []config.DatabaseConfig{{
-				Name:             "Default",
-				Path:             dbPath,
-				Default:          true,
-				AutoUnlock:       true,
-				UnlockCredential: "pam",
-			}},
-		},
+	app := &DaemonApp{
 		pool: dbpool.NewDatabasePool(nil),
 		done: make(chan struct{}),
 	}
+	app.cfg.Store(&config.Config{
+		Databases: []config.DatabaseConfig{{
+			Name:             "Default",
+			Path:             dbPath,
+			Default:          true,
+			AutoUnlock:       true,
+			UnlockCredential: "pam",
+		}},
+	})
+	return app
 }
 
 func setupPAMEnv() string {
@@ -165,7 +166,7 @@ var _ = Describe("unlockOrBootstrapWithPAM", func() {
 		Expect(xdg.WritePrivateFile(dbPath, []byte("existing"))).To(Succeed())
 		app := newPAMTestApp(dbPath)
 
-		err := app.unlockOrBootstrapWithPAM(app.cfg.Databases[0], []byte("login-password"))
+		err := app.unlockOrBootstrapWithPAM(app.currentCfg().Databases[0], []byte("login-password"))
 		Expect(err).To(HaveOccurred(), "expected existing DB without credential to fail")
 
 		data, err := os.ReadFile(dbPath)

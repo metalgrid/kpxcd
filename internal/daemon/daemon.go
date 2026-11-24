@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,7 +32,9 @@ import (
 
 // DaemonApp represents the running daemon.
 type DaemonApp struct {
-	cfg       *config.Config
+	// cfg is swapped atomically on SIGHUP; read it via cfg(), never directly.
+	cfg        atomic.Pointer[config.Config]
+	configPath string
 	pool      *dbpool.DatabasePool
 	dbusAPI   *dbusapi.DaemonDBus
 	secSvc    *secretservice.SecretService
@@ -46,6 +49,10 @@ type DaemonApp struct {
 	dbusConn  *dbus.Conn
 	done      chan struct{}
 }
+
+// cfg returns the current configuration. Safe for concurrent use; the
+// pointer is swapped atomically on SIGHUP reload.
+func (app *DaemonApp) currentCfg() *config.Config { return app.cfg.Load() }
 
 // Run starts the kpxcd daemon. It loads configuration, initializes the
 // database pool, starts all services (DBus API, Secret Service, SSH agent,
@@ -64,7 +71,8 @@ func Run(configPath string, cliLevel slog.Level, version string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("daemon: %w", err)
 	}
-	app.cfg = cfg
+	app.cfg.Store(cfg)
+	app.configPath = configPath
 
 	// Set up logging. CLI flags (-v, -q) override config file.
 	level := cliLevel
@@ -186,16 +194,16 @@ func (app *DaemonApp) startDBus() error {
 	app.dbusConn = conn
 
 	// Export org.keepassxc.Daemon interface.
-	app.dbusAPI = dbusapi.NewDaemonDBusWithConn(app.cfg, app.pool, app.fido2Svc, app.sshAgent, conn)
+	app.dbusAPI = dbusapi.NewDaemonDBusWithConn(app.currentCfg(), app.pool, app.fido2Svc, app.sshAgent, conn)
 	if err := app.dbusAPI.Export(); err != nil {
 		return fmt.Errorf("daemon: export daemon DBus API: %w", err)
 	}
 	slog.Info("DBus: org.keepassxc.Daemon exported")
 
 	// Export org.freedesktop.secrets if enabled.
-	if app.cfg.SecretService.Enabled {
-		app.secSvc = secretservice.NewSecretService(app.pool, &app.cfg.SecretService)
-		app.secSvc.UpdateDatabaseConfigs(app.cfg.Databases)
+	if app.currentCfg().SecretService.Enabled {
+		app.secSvc = secretservice.NewSecretService(app.pool, &app.currentCfg().SecretService)
+		app.secSvc.UpdateDatabaseConfigs(app.currentCfg().Databases)
 		if err := app.secSvc.Export(conn); err != nil {
 			slog.Warn("Secret Service not exported (another provider may be running)", "error", err)
 			app.secSvc = nil
@@ -210,11 +218,11 @@ func (app *DaemonApp) startDBus() error {
 // startSSHAgent creates and starts the SSH agent listener or client,
 // depending on the configured ssh_mode.
 func (app *DaemonApp) startSSHAgent() error {
-	if !app.cfg.SSHAgent.Enabled {
+	if !app.currentCfg().SSHAgent.Enabled {
 		return nil
 	}
 
-	switch app.cfg.Daemon.SSHMode {
+	switch app.currentCfg().Daemon.SSHMode {
 	case "client", "proxy":
 		// In both documented "proxy" mode and legacy "client" mode, kpxcd
 		// pushes KeePass keys into the already-registered SSH_AUTH_SOCK agent
@@ -228,7 +236,7 @@ func (app *DaemonApp) startSSHAgent() error {
 // startSSHAgentServer starts kpxcd's own SSH agent server (agent mode).
 func (app *DaemonApp) startSSHAgentServer() error {
 	// Resolve socket path: expand $XDG_RUNTIME_DIR.
-	socketPath := os.ExpandEnv(app.cfg.Daemon.SSHSocketPath)
+	socketPath := os.ExpandEnv(app.currentCfg().Daemon.SSHSocketPath)
 	if !filepath.IsAbs(socketPath) {
 		xdg := os.Getenv("XDG_RUNTIME_DIR")
 		if xdg == "" {
@@ -237,7 +245,7 @@ func (app *DaemonApp) startSSHAgentServer() error {
 		socketPath = filepath.Join(xdg, socketPath)
 	}
 
-	app.sshAgent = sshagent.NewAgentServer(&app.cfg.SSHAgent, app.pool, socketPath)
+	app.sshAgent = sshagent.NewAgentServer(&app.currentCfg().SSHAgent, app.pool, socketPath)
 
 	if err := app.sshAgent.Listen(); err != nil {
 		return fmt.Errorf("daemon: ssh agent listen: %w", err)
@@ -258,7 +266,7 @@ func (app *DaemonApp) startSSHAgentServer() error {
 
 // startSSHAgentClient connects to the existing ssh-agent (client mode).
 func (app *DaemonApp) startSSHAgentClient() error {
-	client, err := sshagent.NewAgentClient(&app.cfg.SSHAgent)
+	client, err := sshagent.NewAgentClient(&app.currentCfg().SSHAgent)
 	if err != nil {
 		return fmt.Errorf("daemon: ssh agent client: %w", err)
 	}
@@ -325,8 +333,8 @@ func (app *DaemonApp) eventLoop(sigCh <-chan os.Signal, eventCh <-chan dbpool.Ev
 	// idleCh is nil when idle timeout is disabled — a nil channel in
 	// a select case is never ready, so the branch is effectively skipped.
 	var idleCh <-chan time.Time
-	if app.cfg.Daemon.IdleTimeout > 0 {
-		idleTimer := time.NewTimer(time.Duration(app.cfg.Daemon.IdleTimeout) * time.Second)
+	if app.currentCfg().Daemon.IdleTimeout > 0 {
+		idleTimer := time.NewTimer(time.Duration(app.currentCfg().Daemon.IdleTimeout) * time.Second)
 		defer idleTimer.Stop()
 		idleCh = idleTimer.C
 	}
@@ -423,7 +431,7 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 
 // autoUnlock attempts to unlock all databases that have auto_unlock=true.
 func (app *DaemonApp) autoUnlock() {
-	for _, db := range app.cfg.Databases {
+	for _, db := range app.currentCfg().Databases {
 		if !db.AutoUnlock {
 			slog.Debug("skipping locked database", "name", db.Name, "path", db.Path)
 			continue
@@ -459,7 +467,9 @@ func (app *DaemonApp) autoUnlock() {
 
 // reloadConfig reloads the configuration file and re-applies settings.
 func (app *DaemonApp) reloadConfig() error {
-	cfg, err := config.Load("")
+	// Reload the same file the daemon started with; config.Load("") would
+	// silently switch to the XDG default when -c was given.
+	cfg, err := config.Load(app.configPath)
 	if err != nil {
 		return err
 	}
@@ -471,7 +481,7 @@ func (app *DaemonApp) reloadConfig() error {
 		"log_level", cfg.Daemon.LogLevel,
 		"databases", len(cfg.Databases),
 	)
-	app.cfg = cfg
+	app.cfg.Store(cfg)
 	if app.secSvc != nil {
 		app.secSvc.UpdateConfig(cfg.SecretService)
 		app.secSvc.UpdateDatabaseConfigs(cfg.Databases)
