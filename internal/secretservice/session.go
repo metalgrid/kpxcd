@@ -20,8 +20,9 @@ import (
 type Session struct {
 	conn   *dbus.Conn
 	path   dbus.ObjectPath
-	alg    string // "plain" or "dh-ietf1024-sha256-aes128-cbc"
-	key    []byte // AES key (for encrypted sessions)
+	alg    string     // "plain" or "dh-ietf1024-sha256-aes128-cbc"
+	key    []byte     // AES key (for encrypted sessions)
+	mu     sync.Mutex // serializes Encrypt/Decrypt against wipeKey
 	closed atomic.Bool
 	// onClose, if set, runs once when the session is closed (used to remove
 	// the session from the service map).
@@ -60,8 +61,8 @@ func (s *Session) Algorithm() string {
 	return s.alg
 }
 
-// Close closes the session, invalidating it and removing it from the
-// service's session map. Idempotent.
+// Close closes the session, invalidating it, unexporting it, wiping its
+// key, and removing it from the service's session map. Idempotent.
 func (s *Session) Close() *dbus.Error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
@@ -75,8 +76,11 @@ func (s *Session) Close() *dbus.Error {
 // isClosed reports whether the session was closed.
 func (s *Session) isClosed() bool { return s.closed.Load() }
 
-// wipeKey zeroes the session key material.
+// wipeKey zeroes the session key material. It owns s.mu, so Encrypt/Decrypt
+// (which hold it) cannot race the wipe.
 func (s *Session) wipeKey() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := range s.key {
 		s.key[i] = 0
 	}
@@ -90,6 +94,8 @@ func (s *Session) Encrypt(plaintext []byte) ([]byte, []byte, error) {
 		// No encryption: return empty IV and plaintext as-is.
 		return nil, plaintext, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.key) == 0 {
 		return nil, nil, fmt.Errorf("secretservice: no encryption key for session %s", s.path)
 	}
@@ -124,6 +130,8 @@ func (s *Session) Decrypt(iv, ciphertext []byte) ([]byte, error) {
 	if s.alg == "plain" {
 		return ciphertext, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.key) == 0 {
 		return nil, fmt.Errorf("secretservice: no encryption key for session %s", s.path)
 	}

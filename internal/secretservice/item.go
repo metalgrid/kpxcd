@@ -206,12 +206,33 @@ func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusS
 			[]interface{}{"Session is closed"})
 	}
 
+	// Re-resolve the entry and copy the password under one read lock: the
+	// earlier refresh() may have raced a lock/save, and reading i.entry here
+	// unlocked could return wiped or encrypted garbage.
+	i.db.RLock()
+	if i.db.Locked || i.db.Db == nil {
+		i.db.RUnlock()
+		return DBusSecret{}, dbus.NewError(ErrIsLocked,
+			[]interface{}{"database is locked"})
+	}
+	var password string
+	for _, entry := range i.coll.svc.collectEntriesForDB(i.db) {
+		if entryUUIDString(entry) == i.entryUUID {
+			password = entry.GetPassword()
+			break
+		}
+	}
+	i.db.RUnlock()
+	if password == "" && i.refresh() == nil {
+		return DBusSecret{}, dbus.NewError(ErrNoSuchObject,
+			[]interface{}{"item no longer exists"})
+	}
+
 	var iv []byte
 	var ciphertext []byte
 	var secretErr error
 
 	security.Do(func() {
-		password := i.entry.GetPassword()
 		iv, ciphertext, secretErr = sess.Encrypt([]byte(password))
 	})
 	if secretErr != nil {
@@ -237,15 +258,15 @@ func entryUUIDString(entry gokeepasslib.Entry) string {
 
 // collectionPathFor builds the collection object path from the database
 // name plus a UUID suffix, so two databases with the same file basename do
-// not collide on one path. The UUID is hex-encoded first: the pool's UUID
-// text form is base64 and contains '+', '/', '=', which are not valid in a
-// D-Bus object path element.
+// not collide on one path. The suffix is hex (the pool's UUID text form is
+// base64 with '+', '/', '='), and the separator is '_' because D-Bus object
+// path elements allow only [A-Za-z0-9_].
 func collectionPathFor(name, uuid string) dbus.ObjectPath {
 	suffix := hex.EncodeToString([]byte(uuid))
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
 	}
-	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(name) + "-" + suffix)
+	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(name) + "_" + suffix)
 }
 
 // itemPathForDB builds the item object path inside the database's collection.

@@ -208,24 +208,28 @@ func (ss *SecretService) onDatabaseLocked(uuid string) {
 	}
 }
 
-// onDatabaseReloaded emits CollectionChanged for the database's collection.
-// Collections read through to the live database, so no teardown/recreate is
-// needed — and tearing down would drop custom aliases.
+// onDatabaseReloaded re-exports the collection's items (entries added
+// externally were found by search but never exported) and emits
+// CollectionChanged. Collections read through to the live database, so no
+// teardown/recreate is needed — and tearing down would drop custom aliases.
 func (ss *SecretService) onDatabaseReloaded(uuid string) {
 	ss.mu.RLock()
-	var path dbus.ObjectPath
-	for p, coll := range ss.collections {
-		if coll.db.UUID == uuid {
-			path = p
+	var coll *Collection
+	for _, c := range ss.collections {
+		if c.db.UUID == uuid {
+			coll = c
 			break
 		}
 	}
 	ss.mu.RUnlock()
-	if path == "" || ss.conn == nil {
+	if coll == nil {
 		return
 	}
-	if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionChanged", path); err != nil {
-		slog.Warn("secretservice: emit CollectionChanged", "error", err)
+	if ss.conn != nil {
+		ss.exportItemsForCollection(coll)
+		if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionChanged", coll.Path()); err != nil {
+			slog.Warn("secretservice: emit CollectionChanged", "error", err)
+		}
 	}
 }
 
@@ -328,23 +332,18 @@ func (ss *SecretService) aliasPath(alias string) dbus.ObjectPath {
 // to a remaining collection (or removed when none remain). Emits the spec
 // CollectionDeleted signal. Must be called with ss.mu held.
 func (ss *SecretService) removeCollectionLocked(path dbus.ObjectPath) {
-	coll, existed := ss.collections[path]
+	_, existed := ss.collections[path]
 	delete(ss.collections, path)
 
 	if existed && ss.conn != nil {
-		// Unexport the collection and every exported item under it, so no
-		// stale object remains reachable on the bus after removal.
+		// Unexport the collection object itself. Exported item objects are
+		// intentionally left: Item.GetSecret re-validates against the live
+		// database via refresh() and fails closed for removed entries, and
+		// enumerating them here would need the database lock while this
+		// caller holds ss.mu (and on lock the content is already gone).
 		_ = ss.conn.Export(nil, path, InterfaceCollection)
 		_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Introspectable")
 		_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Properties")
-		coll.db.RLock()
-		for _, entry := range ss.collectEntriesForDB(coll.db) {
-			itemPath := itemPathForDB(coll.db, entry)
-			_ = ss.conn.Export(nil, itemPath, InterfaceItem)
-			_ = ss.conn.Export(nil, itemPath, "org.freedesktop.DBus.Introspectable")
-			_ = ss.conn.Export(nil, itemPath, "org.freedesktop.DBus.Properties")
-		}
-		coll.db.RUnlock()
 	}
 
 	for alias, target := range ss.aliases {
@@ -466,7 +465,7 @@ func (ss *SecretService) registerSession(path dbus.ObjectPath, sess *Session) {
 			_ = ss.conn.Export(nil, path, InterfaceSession)
 			_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Introspectable")
 		}
-		sess.wipeKey()
+		sess.wipeKey() // owns sess.mu; Encrypt/Decrypt hold it too
 	}
 	ss.sessionsMu.Lock()
 	ss.sessions[path] = sess

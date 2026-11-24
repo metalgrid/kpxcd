@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/tobischo/gokeepasslib/v3"
 	"github.com/tobischo/gokeepasslib/v3/wrappers"
 
@@ -322,5 +323,19 @@ var _ = Describe("Item", func() {
 		Expect(attrs[AttrUserName]).To(Equal("testuser"))
 		Expect(attrs[AttrURL]).To(Equal("https://example.com"))
 		Expect(attrs[AttrDBNamePrefix]).To(Equal("Test.kdbx"))
+	})
+})
+
+var _ = Describe("session close via registerSession", func() {
+	It("closes without deadlock and removes the session from the map", func() {
+		svc := NewSecretService(dbpool.NewDatabasePool(nil))
+		sess := NewEncryptedSession(nil, "/org/freedesktop/secrets/session/t", []byte("0123456789abcdef"))
+		svc.registerSession(dbus.ObjectPath("/org/freedesktop/secrets/session/t"), sess)
+
+		done := make(chan struct{})
+		go func() { sess.Close(); close(done) }()
+		Eventually(done, 2*time.Second).Should(BeClosed(), "Close deadlocked on sess.mu")
+		Expect(svc.getSession(dbus.ObjectPath("/org/freedesktop/secrets/session/t"))).To(BeNil())
+		Expect(sess.isClosed()).To(BeTrue())
 	})
 })
