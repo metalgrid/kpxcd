@@ -29,8 +29,8 @@ type Key struct {
 	SKFlags       byte
 	SKKeyHandle   []byte
 	// Confirm/Lifetime come from the entry's KeeAgent settings when present.
-	Confirm  bool
-	Lifetime uint32
+	Confirm   bool
+	Lifetime  uint32
 	entryUUID string
 	dbUUID    string
 }

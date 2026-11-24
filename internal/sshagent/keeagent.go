@@ -28,22 +28,22 @@ const KeeAgentSettingsAttachment = "KeeAgent.settings"
 // EntrySettings mirrors KeePassXC's KeeAgentSettings XML (root
 // <EntrySettings>, PascalCase fields), as written by KeePassXC's toXml().
 type EntrySettings struct {
-	XMLName                        xml.Name      `xml:"EntrySettings"`
-	AllowUseOfSshKey               bool          `xml:"AllowUseOfSshKey"`
-	AddAtDatabaseOpen              bool          `xml:"AddAtDatabaseOpen"`
-	RemoveAtDatabaseClose          bool          `xml:"RemoveAtDatabaseClose"`
-	UseConfirmConstraintWhenAdding bool          `xml:"UseConfirmConstraintWhenAdding"`
-	UseLifetimeConstraintWhenAdding bool         `xml:"UseLifetimeConstraintWhenAdding"`
-	LifetimeConstraintDuration     int           `xml:"LifetimeConstraintDuration"`
-	Location                       EntryLocation `xml:"Location"`
+	XMLName                         xml.Name      `xml:"EntrySettings"`
+	AllowUseOfSshKey                bool          `xml:"AllowUseOfSshKey"`
+	AddAtDatabaseOpen               bool          `xml:"AddAtDatabaseOpen"`
+	RemoveAtDatabaseClose           bool          `xml:"RemoveAtDatabaseClose"`
+	UseConfirmConstraintWhenAdding  bool          `xml:"UseConfirmConstraintWhenAdding"`
+	UseLifetimeConstraintWhenAdding bool          `xml:"UseLifetimeConstraintWhenAdding"`
+	LifetimeConstraintDuration      int           `xml:"LifetimeConstraintDuration"`
+	Location                        EntryLocation `xml:"Location"`
 }
 
 // EntryLocation is the <Location> element of EntrySettings.
 type EntryLocation struct {
-	SelectedType           string `xml:"SelectedType"` // "attachment" or "file"
-	AttachmentName         string `xml:"AttachmentName"`
-	SaveAttachmentToTempFile bool `xml:"SaveAttachmentToTempFile"`
-	FileName               string `xml:"FileName"`
+	SelectedType             string `xml:"SelectedType"` // "attachment" or "file"
+	AttachmentName           string `xml:"AttachmentName"`
+	SaveAttachmentToTempFile bool   `xml:"SaveAttachmentToTempFile"`
+	FileName                 string `xml:"FileName"`
 }
 
 // legacyKeeAgentSettings is the old kpxcd <KeeAgent> custom-data form.
@@ -53,7 +53,7 @@ type legacyKeeAgentSettings struct {
 	AllowUseOfSshKey      bool              `xml:"allowUseOfSshKey"`
 	AddAtDatabaseOpen     bool              `xml:"addAtDatabaseOpen"`
 	RemoveAtDatabaseClose bool              `xml:"removeAtDatabaseClose"`
-	Location              legacyKeeLocation  `xml:"location"`
+	Location              legacyKeeLocation `xml:"location"`
 }
 
 type legacyKeeLocation struct {
