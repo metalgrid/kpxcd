@@ -828,7 +828,7 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 			skipped++
 			continue
 		}
-		if !encrypted && existing[key.Fingerprint()] {
+		if len(key.Blob) > 0 && existing[key.Fingerprint()] {
 			fmt.Printf("  skip %s: already in the database (%s)\n", filepath.Base(f), key.Fingerprint())
 			skipped++
 			continue
@@ -849,10 +849,14 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 	items := make([]string, len(candidates))
 	for i, c := range candidates {
 		enc := ""
+		fp := c.key.Fingerprint()
 		if c.encrypted {
 			enc = "  (encrypted)"
 		}
-		items[i] = fmt.Sprintf("%s  %s  %s%s", filepath.Base(c.path), c.key.Format, c.key.Fingerprint(), enc)
+		if len(c.key.Blob) == 0 {
+			fp = "fingerprint unknown"
+		}
+		items[i] = fmt.Sprintf("%s  %s  %s%s", filepath.Base(c.path), c.key.Format, fp, enc)
 	}
 	fmt.Printf("%d keys found in ~/.ssh:\n", len(candidates))
 	picked, err := selectFromMenu(os.Stdin, "import which? numbers (comma-separated), 'a' for all, enter to cancel: ", items)
