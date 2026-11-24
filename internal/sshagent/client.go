@@ -86,21 +86,51 @@ func (c *AgentClient) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		return
 	}
 	db.RLock()
-	keys, err := ExtractAutoLoadKeysFromDatabase(db.Db)
+	allKeys, err := ExtractKeysFromDatabase(db.Db)
+	autoKeys, aerr := ExtractAutoLoadKeysFromDatabase(db.Db)
 	db.RUnlock()
-	if err != nil {
+	if err != nil || aerr != nil {
 		slog.Warn("SSH agent client: failed to re-extract keys after reload", "db", db.Name, "error", err)
 		return
 	}
-	c.RemoveKeysForDB(db.UUID)
-	for _, key := range keys {
+	// Drop tracked keys whose entry vanished; add auto-load keys not yet
+	// tracked; leave the rest untouched.
+	present := make(map[string]bool, len(allKeys))
+	for _, k := range allKeys {
+		present[k.Fingerprint()] = true
+	}
+	c.mu.Lock()
+	var tracked []string
+	for fp, key := range c.keys {
+		if key.DBUUID() == db.UUID {
+			tracked = append(tracked, fp)
+		}
+	}
+	c.mu.Unlock()
+	for _, fp := range tracked {
+		if !present[fp] {
+			_ = c.removeByFingerprint(fp)
+		}
+	}
+	c.mu.Lock()
+	loaded := make(map[string]bool, len(c.keys))
+	for fp, key := range c.keys {
+		if key.DBUUID() == db.UUID {
+			loaded[fp] = true
+		}
+	}
+	c.mu.Unlock()
+	for _, key := range autoKeys {
+		if loaded[key.Fingerprint()] {
+			continue
+		}
 		key.SetDBUUID(db.UUID)
 		if err := c.AddKey(key); err != nil {
 			slog.Warn("SSH agent client: failed to re-add key after reload",
 				"fingerprint", key.Fingerprint(), "error", err)
 		}
 	}
-	slog.Info("SSH agent client: keys reconciled after reload", "db", db.Name, "count", len(keys))
+	slog.Info("SSH agent client: keys reconciled after reload", "db", db.Name)
 }
 
 // OnDatabaseLocked removes SSH keys belonging to a locked database

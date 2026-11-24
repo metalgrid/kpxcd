@@ -362,16 +362,35 @@ func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		return
 	}
 	db.RLock()
-	keys, err := ExtractAutoLoadKeysFromDatabase(db.Db)
+	allKeys, err := ExtractKeysFromDatabase(db.Db)
+	autoKeys, aerr := ExtractAutoLoadKeysFromDatabase(db.Db)
 	db.RUnlock()
-	if err != nil {
+	if err != nil || aerr != nil {
 		slog.Warn("SSH agent: failed to re-extract keys after reload", "error", err)
 		return
 	}
-	// Remove every identity of this database (not only AutoRemove ones), then
-	// re-add what the reloaded content still contains.
-	s.manager.RemoveAllIdentitiesForDatabase(db.UUID)
-	for _, key := range keys {
+	// Surgical reconcile: drop identities whose key vanished from the file,
+	// add auto-load keys that are not loaded yet, and leave everything else
+	// (including manually added keys and their constraints) untouched.
+	present := make(map[string]bool, len(allKeys))
+	for _, k := range allKeys {
+		present[k.Fingerprint()] = true
+	}
+	for _, lk := range s.manager.ListIdentities() {
+		if lk.DBUUID == db.UUID && !present[lk.Key.Fingerprint()] {
+			_ = s.manager.RemoveIdentity(lk.Key.Fingerprint())
+		}
+	}
+	loaded := make(map[string]bool)
+	for _, lk := range s.manager.ListIdentities() {
+		if lk.DBUUID == db.UUID {
+			loaded[lk.Key.Fingerprint()] = true
+		}
+	}
+	for _, key := range autoKeys {
+		if loaded[key.Fingerprint()] {
+			continue
+		}
 		key.SetDBUUID(db.UUID)
 		lifetime := uint32(s.config.Lifetime)
 		if err := s.manager.AddIdentity(key, lifetime, s.config.ConfirmOnUse,
@@ -380,7 +399,7 @@ func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 				"fingerprint", key.Fingerprint(), "error", err)
 		}
 	}
-	slog.Info("SSH agent: identities reconciled after reload", "uuid", db.UUID, "count", len(keys))
+	slog.Info("SSH agent: identities reconciled after reload", "uuid", db.UUID)
 }
 
 // OnDatabaseLocked removes SSH keys from a locked database.
@@ -392,7 +411,6 @@ func (s *AgentServer) OnDatabaseLocked(db *dbpool.OpenDatabase) {
 	slog.Info("SSH agent: removed keys for locked database", "uuid", db.UUID)
 }
 
-// resolveSocketPath is unused; the daemon passes the configured socket path.
 func defaultSocketPath() string {
 	runDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runDir == "" {
