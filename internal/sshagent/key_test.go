@@ -416,6 +416,32 @@ var _ = Describe("ChooseKeyAttachment and fail-closed unreadable settings", func
 		Expect(keys).To(BeEmpty(), "unreadable settings must not auto-load even with a marker present")
 	})
 
+	It("parses UTF-16LE with BOM and a lowercase utf-16 declaration (.NET XmlWriter form)", func() {
+		xml := `<?xml version="1.0" encoding="utf-16"?><EntrySettings><AllowUseOfSshKey>true</AllowUseOfSshKey></EntrySettings>`
+		u16 := []byte{0xFF, 0xFE}
+		for _, c := range []byte(xml) {
+			u16 = append(u16, c, 0)
+		}
+		s, err := ParseEntrySettings(u16)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.AllowUseOfSshKey).To(BeTrue())
+	})
+
+	It("resolves a deny from a real settings attachment", func() {
+		db := gokeepasslib.NewDatabase()
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values,
+			gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}},
+			gokeepasslib.ValueData{Key: MarkerSSHKey, Value: gokeepasslib.V{Content: "ssh-key"}})
+		db.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		e := &db.Content.Root.Groups[0].Entries[0]
+		bin := db.AddBinary([]byte(`<EntrySettings><AllowUseOfSshKey>false</AllowUseOfSshKey></EntrySettings>`))
+		e.Binaries = append(e.Binaries, bin.CreateReference(KeeAgentSettingsAttachment))
+		ref := resolveKeyRef(e, db)
+		Expect(ref.denied).To(BeTrue(), "a deny in a real settings attachment must win over the marker")
+		Expect(ref.source).To(Equal("keeagent"))
+	})
+
 	It("parses UTF-16 with an XML declaration", func() {
 		xml := `<?xml version="1.0" encoding="UTF-16"?><EntrySettings><AllowUseOfSshKey>true</AllowUseOfSshKey></EntrySettings>`
 		u16 := make([]byte, 0, len(xml)*2)
