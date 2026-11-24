@@ -3,13 +3,20 @@
 package dbusapi
 
 import (
+	"os"
+	"reflect"
+	"regexp"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/tobischo/gokeepasslib/v3"
+
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/sshagent"
 )
 
 // newHandler builds a DaemonDBus over an empty pool, optionally with a
@@ -145,5 +152,73 @@ var _ = Describe("FIDO2 D-Bus methods", func() {
 
 		_, err = handler.ImportPasskey("", "db", "example.com", "Example", "user", "User", "cred", "handle", "PEM", 0)
 		Expect(err).To(MatchError(ContainSubstring("fido2 service is not running")))
+	})
+})
+
+var _ = Describe("D-Bus method completeness", func() {
+	It("every method kpxcctl calls exists on DaemonDBus", func() {
+		cli, err := os.ReadFile("../../cmd/kpxcctl/main.go")
+		Expect(err).NotTo(HaveOccurred())
+		calls := regexp.MustCompile(`iface\+\"\.([A-Za-z]+)\"`).FindAllStringSubmatch(string(cli), -1)
+		Expect(calls).NotTo(BeEmpty())
+		typ := reflect.TypeOf((*DaemonDBus)(nil))
+		for _, c := range calls {
+			_, ok := typ.MethodByName(c[1])
+			Expect(ok).To(BeTrue(), "kpxcctl calls .%s but DaemonDBus has no such method", c[1])
+		}
+	})
+})
+
+var _ = Describe("attachSSHKey collision rules", func() {
+	newKDB := func() *gokeepasslib.Database { return gokeepasslib.NewDatabase() }
+	newEntryWithKey := func(kdb *gokeepasslib.Database, pem []byte) *gokeepasslib.Entry {
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values, gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}})
+		kdb.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		e := &kdb.Content.Root.Groups[0].Entries[0]
+		bin := kdb.AddBinary(pem)
+		e.Binaries = append(e.Binaries, bin.CreateReference("ssh-key"))
+		return e
+	}
+	genPEM := func() []byte {
+		_, pemBytes, err := sshagent.GenerateSSHKeyPair("ed25519", 0)
+		Expect(err).NotTo(HaveOccurred())
+		return pemBytes
+	}
+
+	It("refuses to overwrite a different existing key", func() {
+		kdb := newKDB()
+		entry := newEntryWithKey(kdb, genPEM())
+		err := attachSSHKey(kdb, entry, genPEM())
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("refusing to overwrite"))
+	})
+
+	It("refuses to overwrite an unparseable existing key (fail closed)", func() {
+		kdb := newKDB()
+		entry := newEntryWithKey(kdb, []byte("not a key"))
+		err := attachSSHKey(kdb, entry, genPEM())
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does not parse"))
+	})
+
+	It("allows same fingerprint (metadata update only)", func() {
+		kdb := newKDB()
+		pem := genPEM()
+		entry := newEntryWithKey(kdb, pem)
+		Expect(attachSSHKey(kdb, entry, pem)).To(Succeed())
+		Expect(entry.GetContent(sshagent.MarkerSSHKey)).To(Equal("ssh-key"))
+	})
+
+	It("refuses a KeeAgent-denied entry", func() {
+		kdb := newKDB()
+		entry := newEntryWithKey(kdb, genPEM())
+		settings, err := sshagent.MarshalEntrySettings(&sshagent.EntrySettings{AllowUseOfSshKey: false})
+		Expect(err).NotTo(HaveOccurred())
+		bin := kdb.AddBinary(settings)
+		entry.Binaries = append(entry.Binaries, bin.CreateReference(sshagent.KeeAgentSettingsAttachment))
+		err = attachSSHKey(kdb, entry, genPEM())
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("deny"))
 	})
 })
