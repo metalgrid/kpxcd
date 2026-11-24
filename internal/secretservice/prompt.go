@@ -4,30 +4,30 @@ package secretservice
 
 import (
 	"log/slog"
+	"sync"
 
 	"github.com/godbus/dbus/v5"
 )
 
 // Prompt implements org.freedesktop.Secret.Prompt.
-// Per the Secret Service spec, Prompt objects are used for operations that
-// require user authorization (via Polkit or similar). For now, prompts are
-// auto-accepted since Polkit integration is planned for Phase 6.
+// Per the Secret Service spec the Completed signal carries a dismissed flag
+// and a result variant (an object path for unlock/lock operations).
 type Prompt struct {
 	conn      *dbus.Conn
 	path      dbus.ObjectPath
 	completed chan struct{}
 	dismissed bool
 	result    dbus.Variant
+	closeOnce sync.Once
 }
 
 // NewPrompt creates a new Prompt object.
 func NewPrompt(conn *dbus.Conn, path dbus.ObjectPath) *Prompt {
-	p := &Prompt{
+	return &Prompt{
 		conn:      conn,
 		path:      path,
 		completed: make(chan struct{}),
 	}
-	return p
 }
 
 // Path returns the DBus object path of this prompt.
@@ -35,15 +35,12 @@ func (p *Prompt) Path() dbus.ObjectPath {
 	return p.path
 }
 
-// Prompt prompts the user. For now, it auto-accepts immediately.
-// In Phase 6, this will integrate with Polkit for authorization.
-func (p *Prompt) Prompt() *dbus.Error {
-	// Auto-accept: emit Completed signal immediately.
-	go func() {
-		p.dismissed = false
-		p.result = dbus.MakeVariant("")
-
-		// Emit the Completed signal (skip if no connection, e.g. in tests).
+// complete emits the Completed signal exactly once.
+func (p *Prompt) complete(dismissed bool) {
+	p.closeOnce.Do(func() {
+		p.dismissed = dismissed
+		// The result variant is an object path per the spec; "/" means none.
+		p.result = dbus.MakeVariant(dbus.ObjectPath("/"))
 		if p.conn != nil {
 			if err := p.conn.Emit(p.path, "org.freedesktop.Secret.Prompt.Completed",
 				p.dismissed, p.result); err != nil {
@@ -51,27 +48,20 @@ func (p *Prompt) Prompt() *dbus.Error {
 					"path", p.path, "error", err)
 			}
 		}
-
 		close(p.completed)
-	}()
+	})
+}
+
+// Prompt completes the prompt. kpxcd performs no interactive operation
+// here, so it completes immediately with an empty result.
+func (p *Prompt) Prompt(windowID string) *dbus.Error {
+	go p.complete(false)
 	return nil
 }
 
 // Dismiss cancels the prompt.
 func (p *Prompt) Dismiss() *dbus.Error {
-	p.dismissed = true
-	p.result = dbus.MakeVariant("")
-
-	// Emit the Completed signal with dismissed=true (skip if no connection, e.g. in tests).
-	if p.conn != nil {
-		if err := p.conn.Emit(p.path, "org.freedesktop.Secret.Prompt.Completed",
-			true, p.result); err != nil {
-			slog.Warn("failed to emit Prompt.Completed signal (dismiss)",
-				"path", p.path, "error", err)
-		}
-	}
-
-	close(p.completed)
+	p.complete(true)
 	return nil
 }
 

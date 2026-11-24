@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
@@ -280,8 +281,8 @@ func (ss *SecretService) createCollection(odb *dbpool.OpenDatabase) {
 	}
 	ss.mu.Unlock()
 
-	// Signal CollectionsChanged.
-	ss.emitCollectionsChanged(nil, []dbus.ObjectPath{path})
+	// Signal CollectionCreated (spec signal: a single object path).
+	ss.emitCollectionCreated(path)
 }
 
 // exportAlias registers an alias path (/org/freedesktop/secrets/aliases/<alias>)
@@ -325,9 +326,41 @@ func (ss *SecretService) aliasPath(alias string) dbus.ObjectPath {
 	return dbus.ObjectPath(ServicePath + "/aliases/" + alias)
 }
 
-// removeCollectionLocked removes a collection. Must be called with ss.mu held.
+// removeCollectionLocked removes a collection and everything bound to it:
+// its aliases are unexported and dropped, and the "default" alias is rebound
+// to a remaining collection (or removed when none remain). Emits the spec
+// CollectionDeleted signal. Must be called with ss.mu held.
 func (ss *SecretService) removeCollectionLocked(path dbus.ObjectPath) {
 	delete(ss.collections, path)
+
+	for alias, target := range ss.aliases {
+		if target != path {
+			continue
+		}
+		aliasPath := ss.aliasPath(alias)
+		if ss.conn != nil {
+			_ = ss.conn.Export(nil, aliasPath, InterfaceCollection)
+			_ = ss.conn.Export(nil, aliasPath, "org.freedesktop.DBus.Introspectable")
+			_ = ss.conn.Export(nil, aliasPath, "org.freedesktop.DBus.Properties")
+		}
+		delete(ss.aliases, alias)
+	}
+
+	// Rebind "default" to a remaining collection, deterministically.
+	if len(ss.collections) > 0 {
+		remaining := make([]string, 0, len(ss.collections))
+		for p := range ss.collections {
+			remaining = append(remaining, string(p))
+		}
+		slices.Sort(remaining)
+		if _, ok := ss.aliases["default"]; !ok {
+			target := dbus.ObjectPath(remaining[0])
+			ss.aliases["default"] = target
+			ss.exportAlias("default", ss.collections[target])
+		}
+	}
+
+	ss.emitCollectionDeleted(path)
 }
 
 // exportItemsForCollection exports all items for a collection.
@@ -382,18 +415,49 @@ func (ss *SecretService) itemsForCollection(collPath dbus.ObjectPath) []*Item {
 	return items
 }
 
-// emitCollectionsChanged emits the CollectionsChanged signal.
-func (ss *SecretService) emitCollectionsChanged(created, deleted []dbus.ObjectPath) {
+// emitCollectionCreated emits the spec CollectionCreated signal (one path).
+func (ss *SecretService) emitCollectionCreated(path dbus.ObjectPath) {
 	if ss.conn == nil {
 		return
 	}
-	if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionsChanged",
-		created, deleted); err != nil {
-		slog.Warn("secretservice: emit CollectionsChanged", "error", err)
+	if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionCreated", path); err != nil {
+		slog.Warn("secretservice: emit CollectionCreated", "error", err)
+	}
+}
+
+// emitCollectionDeleted emits the spec CollectionDeleted signal (one path).
+func (ss *SecretService) emitCollectionDeleted(path dbus.ObjectPath) {
+	if ss.conn == nil {
+		return
+	}
+	if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionDeleted", path); err != nil {
+		slog.Warn("secretservice: emit CollectionDeleted", "error", err)
 	}
 }
 
 // ---- org.freedesktop.Secret.Service methods ----
+
+// registerSession stores a session under the session-map mutex. All reads
+// and writes of ss.sessions must go through sessionsMu (never ss.mu): the
+// two mutexes were used inconsistently before, which allowed a fatal
+// concurrent map read/write.
+func (ss *SecretService) registerSession(path dbus.ObjectPath, sess *Session) {
+	sess.onClose = func() {
+		ss.sessionsMu.Lock()
+		delete(ss.sessions, path)
+		ss.sessionsMu.Unlock()
+	}
+	ss.sessionsMu.Lock()
+	ss.sessions[path] = sess
+	ss.sessionsMu.Unlock()
+}
+
+// getSession returns the session for path, or nil.
+func (ss *SecretService) getSession(path dbus.ObjectPath) *Session {
+	ss.sessionsMu.RLock()
+	defer ss.sessionsMu.RUnlock()
+	return ss.sessions[path]
+}
 
 // OpenSession negotiates a session for encrypted secret transfer.
 func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus.Variant, dbus.ObjectPath, *dbus.Error) {
@@ -410,7 +474,7 @@ func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus
 	case "plain":
 		output = dbus.MakeVariant("")
 		sess := NewPlainSession(ss.conn, sessionPath)
-		ss.sessions[sessionPath] = sess
+		ss.registerSession(sessionPath, sess)
 
 	case "dh-ietf1024-sha256-aes128-cbc", "dh-ietf1024-sha256-aes128-cbc-pkcs7":
 		output = ss.handleDHKeyExchange(input, sessionPath)
@@ -425,8 +489,16 @@ func (ss *SecretService) OpenSession(algorithm string, input dbus.Variant) (dbus
 			[]interface{}{"Unsupported algorithm: " + algorithm})
 	}
 
-	// Export the session object with introspection.
-	sess := ss.sessions[sessionPath]
+	// Export the session object (including Close) with introspection.
+	sess := ss.getSession(sessionPath)
+	if sess == nil {
+		return dbus.Variant{}, "/", dbus.NewError(ErrNoSession,
+			[]interface{}{"Session was not created"})
+	}
+	if err := ss.conn.Export(sess, sessionPath, InterfaceSession); err != nil {
+		slog.Warn("secretservice: failed to export session", "path", string(sessionPath), "error", err)
+	}
+
 	sessNode := &introspect.Node{
 		Name: string(sessionPath),
 		Interfaces: []introspect.Interface{
@@ -462,11 +534,17 @@ func (ss *SecretService) handleDHKeyExchange(input dbus.Variant, sessionPath dbu
 
 	clientPub := new(big.Int).SetBytes(clientPubBytes)
 	prime := dhPrime()
+	// Reject out-of-range public keys instead of computing a degenerate
+	// shared secret (fail closed on malformed input).
+	if clientPub.Sign() <= 0 || clientPub.Cmp(prime) >= 0 || new(big.Int).Sub(clientPub, big.NewInt(1)).Sign() < 0 {
+		slog.Warn("secretservice: DH exchange: client public key out of range")
+		return dbus.Variant{}
+	}
 	sharedSecret := new(big.Int).Exp(clientPub, privKey, prime)
 	key := DeriveSessionKey(sharedSecret.Bytes())
 
 	sess := NewEncryptedSession(ss.conn, sessionPath, key)
-	ss.sessions[sessionPath] = sess
+	ss.registerSession(sessionPath, sess)
 
 	// Return just the server's public key as a byte array variant.
 	output := dbus.MakeVariant(pubKey.Bytes())
@@ -483,10 +561,13 @@ func (ss *SecretService) generateID() string {
 
 // CreateCollection creates a new collection. Since kpxcd is read-only
 // with respect to the database, this returns a not-supported error.
+// CreateCollection refuses: kpxcd exposes existing KeePass databases as
+// collections and cannot create new ones. Returning a prompt that never
+// yields a collection would hang clients.
 func (ss *SecretService) CreateCollection(properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	slog.Debug("secretservice: CreateCollection", "alias", alias)
-	_, promptPath := ss.nextPrompt()
-	return "/", promptPath, nil
+	slog.Debug("secretservice: CreateCollection refused", "alias", alias)
+	return "/", "/", dbus.NewError("org.freedesktop.DBus.Error.NotSupported",
+		[]interface{}{"kpxcd does not create collections; unlock a KeePass database instead"})
 }
 
 // SearchItems searches for items across all collections matching the attributes.
@@ -512,7 +593,7 @@ func (ss *SecretService) SearchItems(attributes map[string]string) ([]dbus.Objec
 		entries := ss.collectEntriesForDB(coll.db)
 		for _, entry := range entries {
 			if MatchAttributes(entry, coll.db, attributes) {
-				itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
+				itemPath := itemPathForDB(coll.db, entry)
 				slog.Debug("secretservice: SearchItems match", "path", itemPath, "title", entry.GetTitle())
 				unlocked = append(unlocked, dbus.ObjectPath(itemPath))
 			}
@@ -553,8 +634,11 @@ func (ss *SecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, d
 		return unlocked, "/", nil
 	}
 
-	_, promptPath := ss.nextPrompt()
-	return unlocked, promptPath, nil
+	// A locked collection maps to a locked database, which only the user can
+	// unlock (kpxcctl unlock / PAM). Fail closed instead of returning a
+	// prompt that completes without unlocking anything.
+	return unlocked, "/", dbus.NewError(ErrIsLocked,
+		[]interface{}{"collection is backed by a locked database; unlock it with kpxcctl"})
 }
 
 // Lock locks the given objects.
@@ -570,13 +654,9 @@ func (ss *SecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbu
 		}
 	}
 
-	// Only return a prompt if there are objects that actually need locking.
-	if len(locked) == 0 {
-		return locked, "/", nil
-	}
-
-	_, promptPath := ss.nextPrompt()
-	return locked, promptPath, nil
+	// Locking happened synchronously above; a prompt could never change the
+	// outcome, so always return the null prompt "/".
+	return locked, "/", nil
 }
 
 // GetSecrets retrieves secrets for the given items using the specified session.
@@ -585,14 +665,12 @@ func (ss *SecretService) GetSecrets(sender dbus.Sender, items []dbus.ObjectPath,
 	secrets := make(map[dbus.ObjectPath]DBusSecret)
 	caller := ss.callerInfo(sender)
 
-	ss.sessionsMu.RLock()
-	sess, ok := ss.sessions[sessionPath]
-	ss.sessionsMu.RUnlock()
-	if !ok {
+	sess := ss.getSession(sessionPath)
+	if sess == nil {
 		return secrets, dbus.NewError(ErrNoSession,
 			[]interface{}{"No such session"})
 	}
-	if sess.closed {
+	if sess.isClosed() {
 		return secrets, dbus.NewError(ErrNoSession,
 			[]interface{}{"Session is closed"})
 	}
@@ -709,7 +787,7 @@ func (ss *SecretService) getItemByPath(path dbus.ObjectPath) (*Item, bool) {
 		}
 		entries := ss.collectEntriesForDB(coll.db)
 		for _, entry := range entries {
-			itemPath := CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUIDString(entry)
+			itemPath := itemPathForDB(coll.db, entry)
 			if dbus.ObjectPath(itemPath) == path {
 				item := newItem(ss.conn, coll, entry)
 				coll.db.RUnlock()

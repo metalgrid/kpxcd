@@ -52,7 +52,7 @@ type Item struct {
 
 func newItem(conn *dbus.Conn, coll *Collection, entry gokeepasslib.Entry) *Item {
 	entryUUID := entryUUIDString(entry)
-	itemPath := dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(coll.db.Name) + "/" + entryUUID)
+	itemPath := itemPathForDB(coll.db, entry)
 	return &Item{
 		conn:      conn,
 		path:      itemPath,
@@ -195,14 +195,12 @@ func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusS
 			[]interface{}{err.Error()})
 	}
 
-	svc.sessionsMu.RLock()
-	sess, ok := svc.sessions[sessionPath]
-	svc.sessionsMu.RUnlock()
-	if !ok {
+	sess := svc.getSession(sessionPath)
+	if sess == nil {
 		return DBusSecret{}, dbus.NewError(ErrNoSession,
 			[]interface{}{"No such session"})
 	}
-	if sess.closed {
+	if sess.isClosed() {
 		return DBusSecret{}, dbus.NewError(ErrNoSession,
 			[]interface{}{"Session is closed"})
 	}
@@ -234,6 +232,22 @@ func (i *Item) GetSecret(sender dbus.Sender, sessionPath dbus.ObjectPath) (DBusS
 // entryUUIDString returns a hex-encoded UUID safe for DBus paths.
 func entryUUIDString(entry gokeepasslib.Entry) string {
 	return fmt.Sprintf("%x", entry.UUID[:])
+}
+
+// collectionPathFor builds the collection object path from the database
+// name plus a short UUID suffix, so two databases with the same file basename
+// do not collide on one path.
+func collectionPathFor(name, uuid string) dbus.ObjectPath {
+	short := uuid
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(name) + "-" + short)
+}
+
+// itemPathForDB builds the item object path inside the database's collection.
+func itemPathForDB(db *dbpool.OpenDatabase, entry gokeepasslib.Entry) dbus.ObjectPath {
+	return collectionPathFor(db.Name, db.UUID) + dbus.ObjectPath("/"+entryUUIDString(entry))
 }
 
 // sanitizeCollectionName makes a name safe for DBus object path elements.

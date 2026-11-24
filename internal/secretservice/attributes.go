@@ -51,12 +51,14 @@ func MatchAttributes(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, attribu
 	return true
 }
 
-// matchAttribute checks a single attribute against an entry.
+// matchAttribute checks a single attribute against an entry. All well-known
+// attributes match the whole value (case-insensitive): substring matching
+// would let `url=example.com` return credentials stored for
+// `notexample.com`.
 func matchAttribute(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, key, value string) bool {
 	switch key {
 	case AttrTitle:
-		return strings.EqualFold(entry.GetTitle(), value) ||
-			strings.Contains(strings.ToLower(entry.GetTitle()), strings.ToLower(value))
+		return strings.EqualFold(entry.GetTitle(), value)
 	case AttrUserName:
 		return strings.EqualFold(entry.GetContent("UserName"), value)
 	case "username":
@@ -67,8 +69,7 @@ func matchAttribute(entry gokeepasslib.Entry, odb *dbpool.OpenDatabase, key, val
 		// incorrectly canonicalized the client attribute into UserName.
 		return strings.EqualFold(entry.GetContent("UserName"), value)
 	case AttrURL:
-		return strings.EqualFold(entry.GetContent("URL"), value) ||
-			strings.Contains(strings.ToLower(entry.GetContent("URL")), strings.ToLower(value))
+		return strings.EqualFold(entry.GetContent("URL"), value)
 	case "url":
 		if matched, found := matchExactEntryAttribute(entry, key, value); found {
 			return matched

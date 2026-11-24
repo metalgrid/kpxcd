@@ -151,7 +151,8 @@ var _ = Describe("MatchAttributes", func() {
 		Entry("legacy lowercase username falls back to UserName", map[string]string{"username": "dev@example.com"}, true),
 		Entry("by URL", map[string]string{AttrURL: "https://github.com/user/repo"}, true),
 		Entry("legacy lowercase url falls back to URL", map[string]string{"url": "https://github.com/user/repo"}, true),
-		Entry("partial URL match", map[string]string{AttrURL: "github.com"}, true),
+		Entry("partial URL does not match", map[string]string{AttrURL: "github.com"}, false),
+		Entry("partial title does not match", map[string]string{AttrTitle: "Git"}, false),
 		Entry("by database name", map[string]string{AttrDBNamePrefix: "Work.kdbx"}, true),
 		Entry("by custom attribute", map[string]string{"CustomAttr": "custom_val"}, true),
 		Entry("non-matching title", map[string]string{AttrTitle: "GitLab"}, false),
@@ -287,7 +288,7 @@ var _ = Describe("Prompt", func() {
 		Expect(p).NotTo(BeNil())
 		Expect(string(p.Path())).To(Equal("/test/prompt/1"))
 
-		p.Prompt()
+		p.Prompt("")
 		Eventually(p.Done()).Should(BeClosed())
 	})
 })

@@ -24,8 +24,7 @@ type Collection struct {
 
 // newCollection creates a new Collection for the given database.
 func newCollection(conn *dbus.Conn, svc *SecretService, db *dbpool.OpenDatabase) *Collection {
-	name := sanitizeCollectionName(db.Name)
-	collPath := dbus.ObjectPath(CollectionPrefix + name)
+	collPath := collectionPathFor(db.Name, db.UUID)
 
 	return &Collection{
 		conn: conn,
@@ -109,7 +108,7 @@ func (c *Collection) SearchItems(attributes map[string]string) ([]dbus.ObjectPat
 	allEntries := c.svc.collectEntriesForDB(c.db)
 	for _, entry := range allEntries {
 		if MatchAttributes(entry, c.db, strAttrs) {
-			itemPath := CollectionPrefix + sanitizeCollectionName(c.db.Name) + "/" + entryUUIDString(entry)
+			itemPath := itemPathForDB(c.db, entry)
 			results = append(results, dbus.ObjectPath(itemPath))
 		}
 	}
@@ -151,7 +150,7 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 				appendHistory(entry, db)
 				applyEntryFields(entry, label, attrs, string(plaintext))
 				updateModificationTime(entry)
-				itemPath = itemPathForEntry(c.db.Name, *entry)
+				itemPath = itemPathForDB(c.db, *entry)
 				created = *entry
 				replaced = true
 				return nil
@@ -170,7 +169,7 @@ func (c *Collection) CreateItem(properties map[string]dbus.Variant, secret DBusS
 		}
 		group.Entries = append(group.Entries, entry)
 		created = entry
-		itemPath = itemPathForEntry(c.db.Name, entry)
+		itemPath = itemPathForDB(c.db, entry)
 		return nil
 	}); err != nil {
 		return "/", "/", dbus.NewError(ErrIsLocked, []interface{}{err.Error()})

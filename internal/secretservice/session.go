@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -20,7 +22,11 @@ type Session struct {
 	path   dbus.ObjectPath
 	alg    string // "plain" or "dh-ietf1024-sha256-aes128-cbc"
 	key    []byte // AES key (for encrypted sessions)
-	closed bool
+	closed atomic.Bool
+	// onClose, if set, runs once when the session is closed (used to remove
+	// the session from the service map).
+	onClose func()
+	closeOnce sync.Once
 }
 
 // NewPlainSession creates a session with no encryption (for testing or
@@ -54,11 +60,20 @@ func (s *Session) Algorithm() string {
 	return s.alg
 }
 
-// Close closes the session, invalidating it.
+// Close closes the session, invalidating it and removing it from the
+// service's session map. Idempotent.
 func (s *Session) Close() *dbus.Error {
-	s.closed = true
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		if s.onClose != nil {
+			s.onClose()
+		}
+	})
 	return nil
 }
+
+// isClosed reports whether the session was closed.
+func (s *Session) isClosed() bool { return s.closed.Load() }
 
 // Encrypt encrypts the given plaintext using AES-CBC with the session key.
 // Returns (iv, ciphertext, error). The IV is prepended to the ciphertext.
@@ -70,7 +85,7 @@ func (s *Session) Encrypt(plaintext []byte) ([]byte, []byte, error) {
 	if len(s.key) == 0 {
 		return nil, nil, fmt.Errorf("secretservice: no encryption key for session %s", s.path)
 	}
-	if s.closed {
+	if s.isClosed() {
 		return nil, nil, fmt.Errorf("secretservice: session %s is closed", s.path)
 	}
 
@@ -104,7 +119,7 @@ func (s *Session) Decrypt(iv, ciphertext []byte) ([]byte, error) {
 	if len(s.key) == 0 {
 		return nil, fmt.Errorf("secretservice: no encryption key for session %s", s.path)
 	}
-	if s.closed {
+	if s.isClosed() {
 		return nil, fmt.Errorf("secretservice: session %s is closed", s.path)
 	}
 

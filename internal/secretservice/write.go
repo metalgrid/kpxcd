@@ -18,13 +18,11 @@ import (
 const secretServiceGroupName = "Secret Service"
 
 func (ss *SecretService) validateSession(sessionPath dbus.ObjectPath) error {
-	ss.sessionsMu.RLock()
-	defer ss.sessionsMu.RUnlock()
-	sess, ok := ss.sessions[sessionPath]
-	if !ok {
+	sess := ss.getSession(sessionPath)
+	if sess == nil {
 		return fmt.Errorf("secretservice: no such session: %s", sessionPath)
 	}
-	if sess.closed {
+	if sess.isClosed() {
 		return fmt.Errorf("secretservice: session %s is closed", sessionPath)
 	}
 	return nil
@@ -34,9 +32,10 @@ func (ss *SecretService) decryptSecret(secret DBusSecret) ([]byte, error) {
 	if err := ss.validateSession(secret.Session); err != nil {
 		return nil, err
 	}
-	ss.sessionsMu.RLock()
-	sess := ss.sessions[secret.Session]
-	ss.sessionsMu.RUnlock()
+	sess := ss.getSession(secret.Session)
+	if sess == nil {
+		return nil, fmt.Errorf("secretservice: no such session: %s", secret.Session)
+	}
 	return sess.Decrypt(secret.Parameters, secret.Value)
 }
 
@@ -77,10 +76,6 @@ func cloneAttrs(attrs map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-func itemPathForEntry(dbName string, entry gokeepasslib.Entry) dbus.ObjectPath {
-	return dbus.ObjectPath(CollectionPrefix + sanitizeCollectionName(dbName) + "/" + entryUUIDString(entry))
 }
 
 func findEntryPtrByUUID(groups []gokeepasslib.Group, uuidHex string) *gokeepasslib.Entry {

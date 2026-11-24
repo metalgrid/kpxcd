@@ -89,7 +89,7 @@ var _ = Describe("Step 5 Secret Service Items lock boundary", func() {
 		var paths []dbus.ObjectPath
 		Eventually(itemsDone, 5*time.Second).Should(Receive(&paths))
 		itemsReceived = true
-		Expect(paths).To(ContainElement(itemPathForEntry(db.Name, entry)))
+		Expect(paths).To(ContainElement(itemPathForDB(db, entry)))
 	})
 
 	DescribeTable("returns no items for unavailable collection content", func(state string) {
