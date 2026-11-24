@@ -374,6 +374,7 @@ func (ss *SecretService) itemsForCollection(collPath dbus.ObjectPath) []*Item {
 	}
 
 	entries := ss.collectEntriesForDB(coll.db)
+	items = make([]*Item, 0, len(entries))
 	for _, entry := range entries {
 		item := newItem(ss.conn, coll, entry)
 		items = append(items, item)

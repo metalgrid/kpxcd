@@ -39,6 +39,7 @@ type DaemonApp struct {
 	sshClient *sshagent.AgentClient
 	fido2Svc  *fido2.Fido2Service
 	fido2Auth *hid.Authenticator
+	fido2Gate *fido2.PresenceGate
 	fido2Ctx  context.Context
 	fido2Stop context.CancelFunc
 	pamSocket *PAMSocketServer
@@ -116,14 +117,15 @@ func Run(configPath string, cliLevel slog.Level, version string) error {
 	}
 
 	// FIDO2 virtual authenticator. Built before startDBus so the D-Bus
-	// handler captures a live service pointer. The polkit presence gate
-	// denies every browser operation without an explicit approval.
+	// handler captures a live service pointer. Requested UP/UV uses the generic
+	// polkit gate under the shipped fresh-auth policy; silent probes bypass it.
+	// HID cancellation/resync/close cancel the gate's pending authorization.
 	if cfg.Fido2.Enabled {
 		app.fido2Svc = fido2.NewFido2Service(&cfg.Fido2, app.pool)
 		app.fido2Ctx, app.fido2Stop = context.WithCancel(context.Background())
-		gate := fido2.NewPresenceGate()
+		app.fido2Gate = fido2.NewPresenceGate()
 		store := fido2.NewCtapStore(app.fido2Svc, app.pool, app.defaultDatabasePath())
-		app.fido2Auth = hid.NewAuthenticator(store, gate, slog.Default())
+		app.fido2Auth = hid.NewAuthenticator(store, app.fido2Gate, slog.Default())
 		if err := app.fido2Auth.Start(app.fido2Ctx); err != nil {
 			slog.Error("FIDO2 virtual device unavailable; passkeys disabled", "error", err)
 			app.fido2Auth.Close()
@@ -273,6 +275,9 @@ func (app *DaemonApp) shutdown() {
 	}
 	if app.fido2Auth != nil {
 		app.fido2Auth.Close()
+	}
+	if app.fido2Gate != nil {
+		app.fido2Gate.Close()
 	}
 
 	// Stop PAM socket.

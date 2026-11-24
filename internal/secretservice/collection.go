@@ -81,14 +81,12 @@ func (c *Collection) Modified() int64 {
 
 // Items returns the list of item paths in this collection.
 func (c *Collection) Items() ([]dbus.ObjectPath, *dbus.Error) {
-	c.db.RLock()
-	defer c.db.RUnlock()
-
-	if c.db.Locked || c.db.Db == nil || c.db.Db.Content == nil {
+	// The helper validates the collection under its database lock. Taking a
+	// read lock here too would deadlock if a writer queued between the reads.
+	items := c.svc.itemsForCollection(c.path)
+	if items == nil {
 		return nil, nil
 	}
-
-	items := c.svc.itemsForCollection(c.path)
 	paths := make([]dbus.ObjectPath, 0, len(items))
 	for _, item := range items {
 		paths = append(paths, item.Path())
