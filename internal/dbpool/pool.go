@@ -181,6 +181,13 @@ type DatabasePool struct {
 	mu    sync.RWMutex
 	dbs   map[string]*OpenDatabase
 	event chan Event
+	// Events are queued and forwarded to event by a dedicated dispatcher
+	// goroutine: producers (Open/Lock) must never block on the consumer,
+	// because the consumer calls back into the pool (Get, LockAll).
+	queue   []Event
+	wake    chan struct{}
+	stopCh  chan struct{}
+	stopped bool
 }
 
 // Event represents a database pool event.
@@ -206,9 +213,48 @@ const (
 // drained by the caller; Open/Lock block until an event is consumed, so a
 // full channel with no consumer stalls them. Close stops event delivery.
 func NewDatabasePool(eventChan chan Event) *DatabasePool {
-	return &DatabasePool{
-		dbs:   make(map[string]*OpenDatabase),
-		event: eventChan,
+	p := &DatabasePool{
+		dbs:    make(map[string]*OpenDatabase),
+		event:  eventChan,
+		wake:   make(chan struct{}, 1),
+		stopCh: make(chan struct{}),
+	}
+	if eventChan != nil {
+		go p.dispatchEvents()
+	}
+	return p
+}
+
+// enqueue appends an event for delivery. It never blocks: the dispatcher
+// goroutine forwards queued events to the consumer channel.
+func (p *DatabasePool) enqueue(ev Event) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped || p.event == nil {
+		return
+	}
+	p.queue = append(p.queue, ev)
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// dispatchEvents forwards queued events to the consumer until Close.
+func (p *DatabasePool) dispatchEvents() {
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-p.wake:
+		}
+		p.mu.Lock()
+		queue := p.queue
+		p.queue = nil
+		p.mu.Unlock()
+		for _, ev := range queue {
+			p.event <- ev
+		}
 	}
 }
 
@@ -258,7 +304,7 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	}
 
 	// Set up file watcher for external changes. The event channel is read
-	// under the pool lock so Close's nil-ing cannot race the watcher start.
+	// under the pool lock so Close's stop cannot race the watcher start.
 	p.mu.RLock()
 	eventCh := p.event
 	p.mu.RUnlock()
@@ -274,12 +320,7 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	p.dbs[uuid] = odb
 	p.mu.Unlock()
 
-	if eventCh != nil {
-		// Sent after the pool lock is released: the event consumer calls
-		// back into the pool, and a blocking send under p.mu could deadlock.
-		// Blocking (not non-blocking) so unlock events are never dropped.
-		eventCh <- Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path}
-	}
+	p.enqueue(Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path})
 
 	return uuid, nil
 }
@@ -292,7 +333,6 @@ func (p *DatabasePool) Lock(uuid string) error {
 		p.mu.Unlock()
 		return fmt.Errorf("dbpool: database %s not found", uuid)
 	}
-	eventCh := p.event
 
 	odb.mu.Lock()
 	security.Do(func() {
@@ -318,13 +358,9 @@ func (p *DatabasePool) Lock(uuid string) error {
 	odb.mu.Unlock()
 	p.mu.Unlock()
 
-	// Sent after both locks are released (see Open): the event consumer
-	// calls back into the pool, and a send while holding p.mu can deadlock
-	// or, with a non-blocking send, be silently dropped — which used to
-	// skip remove_on_lock key removal and Secret Service cleanup.
-	if eventCh != nil {
-		eventCh <- Event{Type: EventDatabaseLocked, UUID: uuid, Name: name, Path: path}
-	}
+	// Queued (never dropped, never blocking the caller): remove_on_lock key
+	// removal and Secret Service cleanup depend on this event.
+	p.enqueue(Event{Type: EventDatabaseLocked, UUID: uuid, Name: name, Path: path})
 
 	return nil
 }
@@ -439,9 +475,13 @@ func (p *DatabasePool) UpdateAndSaveWithUnlockedDatabases(target *OpenDatabase, 
 // Close locks all databases and releases all resources.
 func (p *DatabasePool) Close() error {
 	p.mu.Lock()
-	// The event loop has stopped by the time Close runs; drop the channel so
-	// Lock's blocking send cannot wait on a consumer that no longer exists.
-	p.event = nil
+	// Stop event delivery first: the consumer (event loop) has exited by the
+	// time Close runs, so queued events must not block the dispatcher.
+	if !p.stopped {
+		p.stopped = true
+		p.event = nil
+		close(p.stopCh)
+	}
 	p.mu.Unlock()
 	err := p.LockAll()
 	p.mu.Lock()

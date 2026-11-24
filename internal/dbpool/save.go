@@ -104,14 +104,17 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 	// Snapshot the whole content: the encoder compacts and renumbers the live
 	// binary table (cleanupBinaries) before any I/O can fail, so restoring
 	// only Root would leave entry references pointing into a renumbered table.
+	// KDBX4 keeps that table in Content.InnerHeader.Binaries, KDBX3 in
+	// Content.Meta.Binaries — snapshot whichever this file uses.
 	var originalRoot *gokeepasslib.RootData
 	var originalBinaries gokeepasslib.Binaries
+	binariesPtr := binariesTable(o.Db)
 	if o.Db.Content != nil {
 		if o.Db.Content.Root != nil {
 			originalRoot = cloneRootData(o.Db.Content.Root)
 		}
-		if o.Db.Content.Meta != nil {
-			originalBinaries = append(gokeepasslib.Binaries(nil), o.Db.Content.Meta.Binaries...)
+		if binariesPtr != nil {
+			originalBinaries = append(gokeepasslib.Binaries(nil), *binariesPtr...)
 		}
 	}
 	if mutate != nil {
@@ -124,13 +127,30 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 			if originalRoot != nil {
 				o.Db.Content.Root = originalRoot
 			}
-			if originalBinaries != nil {
-				o.Db.Content.Meta.Binaries = originalBinaries
+			if originalBinaries != nil && binariesPtr != nil {
+				*binariesPtr = originalBinaries
 			}
 		}
 		return err
 	}
 	return nil
+}
+
+// binariesTable returns the live binary table for the database format, or nil.
+func binariesTable(db *gokeepasslib.Database) *gokeepasslib.Binaries {
+	if db == nil || db.Content == nil {
+		return nil
+	}
+	if db.Header != nil && db.Header.IsKdbx4() {
+		if db.Content.InnerHeader == nil {
+			return nil
+		}
+		return &db.Content.InnerHeader.Binaries
+	}
+	if db.Content.Meta == nil {
+		return nil
+	}
+	return &db.Content.Meta.Binaries
 }
 
 // Save writes the current in-memory database to disk using optimistic conflict
