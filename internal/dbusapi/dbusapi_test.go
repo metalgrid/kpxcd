@@ -467,12 +467,12 @@ var _ = Describe("governance matrix (state x operation)", func() {
 		{"legacy-allow", "OFF", want{false, false, true, false, "id_ed25519", ""}},
 		{"legacy-deny", "OFF", want{false, false, false, false, "", ""}},
 		// generate
-		{"none", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
-		{"allow", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
+		{"none", "generate", want{true, false, false, false, "", ""}},          // entry already has a key
+		{"allow", "generate", want{true, false, true, true, "id_ed25519", ""}}, // refused, unchanged
 		{"deny", "generate", want{true, false, false, true, "", ""}},
 		{"file", "generate", want{true, false, true, false, "", ""}},
 		{"unreadable", "generate", want{true, false, false, false, "", ""}},
-		{"legacy-allow", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
+		{"legacy-allow", "generate", want{true, false, true, true, "id_ed25519", ""}}, // refused, unchanged
 		{"legacy-deny", "generate", want{true, false, false, false, "", ""}},
 	}
 

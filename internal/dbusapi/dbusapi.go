@@ -510,6 +510,10 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to parse key: %w", err))
 	}
+	// ParsePrivateKey does not extract the OpenSSH comment; use the entry title.
+	if key.Comment == "" {
+		key.SetComment(entryPath)
+	}
 	// Store the key unencrypted (protected at rest by the KDBX encryption):
 	// the agent resolves keys with the entry password or none, so persisting
 	// the original passphrase-protected bytes would make the key unusable
@@ -693,27 +697,31 @@ func attachSSHKey(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry, pemByte
 		return fmt.Errorf("dbusapi: new key does not parse: %w", err)
 	}
 	for _, ref := range entry.Binaries {
-		if !strings.EqualFold(ref.Name, "ssh-key") {
+		if strings.EqualFold(ref.Name, sshagent.KeeAgentSettingsAttachment) {
 			continue
 		}
 		binary := kdb.FindBinary(ref.Value.ID)
 		if binary == nil {
-			return fmt.Errorf("dbusapi: existing ssh-key attachment not found in database")
+			continue
 		}
 		old, err := binary.GetContentBytes()
 		if err != nil {
-			return fmt.Errorf("dbusapi: decode existing key: %w", err)
+			return fmt.Errorf("dbusapi: decode existing attachment %q: %w", ref.Name, err)
 		}
 		existing, perr := sshagent.ParsePrivateKey(old, entry.GetPassword())
 		if perr != nil {
 			existing, perr = sshagent.ParsePrivateKey(old, "")
 		}
-		// Fail closed: an unparseable existing key is an error, never overwritten.
 		if perr != nil {
-			return fmt.Errorf("dbusapi: existing ssh-key attachment does not parse; refusing to overwrite")
+			// Fail closed for the key-named attachment; other attachments
+			// that do not parse are simply not keys.
+			if strings.EqualFold(ref.Name, "ssh-key") {
+				return fmt.Errorf("dbusapi: existing ssh-key attachment does not parse; refusing to overwrite")
+			}
+			continue
 		}
 		if existing.Fingerprint() != newKey.Fingerprint() {
-			return fmt.Errorf("dbusapi: entry already has a different SSH key (%s); refusing to overwrite", existing.Fingerprint())
+			return fmt.Errorf("dbusapi: entry already has a different SSH key in attachment %q (%s); refusing to overwrite", ref.Name, existing.Fingerprint())
 		}
 	}
 
