@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -77,6 +78,9 @@ type OpenDatabase struct {
 	Db          *gokeepasslib.Database
 	Fingerprint FileFingerprint
 	Watcher     *fileWatcher
+	// cred retains the unlock credential so the file can be re-decoded after
+	// an external change (Reload). It is destroyed on Lock.
+	cred Credential
 }
 
 // Lock acquires a write lock on the database for modifications.
@@ -91,12 +95,25 @@ func (o *OpenDatabase) RLock() { o.mu.RLock() }
 // RUnlock releases a read lock on the database.
 func (o *OpenDatabase) RUnlock() { o.mu.RUnlock() }
 
+// IsLocked reports whether the database is locked. Safe for concurrent use;
+// callers that need Locked and Db together must hold RLock instead.
+func (o *OpenDatabase) IsLocked() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.Locked
+}
+
 // RootEntries returns all entries recursively from the root group,
 // excluding entries in the recycle bin.
 func (o *OpenDatabase) RootEntries() []gokeepasslib.Entry {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	return o.RootEntriesLocked()
+}
 
+// RootEntriesLocked is RootEntries for callers already holding the
+// database lock. It must not be called without RLock/Lock held.
+func (o *OpenDatabase) RootEntriesLocked() []gokeepasslib.Entry {
 	if o.Db == nil || o.Db.Content == nil || o.Db.Content.Root == nil {
 		return nil
 	}
@@ -185,7 +202,9 @@ const (
 	EventDatabaseError
 )
 
-// NewDatabasePool creates an empty database pool.
+// NewDatabasePool creates an empty database pool. The event channel must be
+// drained by the caller; Open/Lock block until an event is consumed, so a
+// full channel with no consumer stalls them. Close stops event delivery.
 func NewDatabasePool(eventChan chan Event) *DatabasePool {
 	return &DatabasePool{
 		dbs:   make(map[string]*OpenDatabase),
@@ -204,42 +223,14 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	}
 	defer f.Close()
 
-	db := gokeepasslib.NewDatabase()
-
-	// Perform credential construction, decoding, and unlock inside
-	// security.Do() so that key material and derivative values are
-	// zeroed from registers and stack frames before returning.
-	var uuid string
-	var openErr error
-	security.Do(func() {
-		// Set credentials before decoding — the decoder needs them
-		// to derive the transformed key and decrypt the database content.
-		creds, err := buildCredentials(cred)
-		if err != nil {
-			openErr = fmt.Errorf("dbpool: credentials %s: %w", path, err)
-			return
-		}
-		db.Credentials = creds
-
-		if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
-			openErr = fmt.Errorf("dbpool: decode %s: %w", path, err)
-			return
-		}
-
-		if err := db.UnlockProtectedEntries(); err != nil {
-			openErr = fmt.Errorf("dbpool: unlock %s: %w", path, err)
-			return
-		}
-
-		// Extract database UUID from the root group.
-		uuid = extractUUID(db, path)
-	})
-
-	if openErr != nil {
-		return "", openErr
+	uuid, db, err := decodeDatabase(f, cred)
+	if err != nil {
+		return "", err
 	}
 
-	fingerprint, err := FingerprintFile(path)
+	// Fingerprint the same descriptor we decoded from, so the stored
+	// fingerprint always matches the content in memory.
+	fingerprint, err := FingerprintOpenFile(f)
 	if err != nil {
 		return "", fmt.Errorf("dbpool: fingerprint %s: %w", path, err)
 	}
@@ -252,6 +243,7 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 		Locked:      false,
 		Db:          db,
 		Fingerprint: fingerprint,
+		cred:        cred,
 	}
 
 	// Set up file watcher for external changes.
@@ -264,14 +256,15 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	odb.Watcher = &fileWatcher{cancel: cancel, done: done}
 
 	p.mu.Lock()
+	eventCh := p.event
 	p.dbs[uuid] = odb
 	p.mu.Unlock()
 
-	if p.event != nil {
-		select {
-		case p.event <- Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path}:
-		default:
-		}
+	if eventCh != nil {
+		// Sent after the pool lock is released: the event consumer calls
+		// back into the pool, and a blocking send under p.mu could deadlock.
+		// Blocking (not non-blocking) so unlock events are never dropped.
+		eventCh <- Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path}
 	}
 
 	return uuid, nil
@@ -280,21 +273,25 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 // Lock locks a database by UUID, clearing decrypted data from memory.
 func (p *DatabasePool) Lock(uuid string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	odb, ok := p.dbs[uuid]
 	if !ok {
+		p.mu.Unlock()
 		return fmt.Errorf("dbpool: database %s not found", uuid)
 	}
+	eventCh := p.event
 
 	odb.mu.Lock()
-	defer odb.mu.Unlock()
-
 	security.Do(func() {
 		wipeDatabaseContent(odb.Db)
 		odb.Db = nil
 	})
 	odb.Locked = true
+	// The unlock credential is only needed to reload after an external
+	// change; it does not survive locking.
+	if odb.cred.Password != nil {
+		odb.cred.Password.Destroy()
+	}
+	odb.cred = Credential{}
 
 	// Stop file watcher.
 	if odb.Watcher != nil {
@@ -303,11 +300,16 @@ func (p *DatabasePool) Lock(uuid string) error {
 		odb.Watcher = nil
 	}
 
-	if p.event != nil {
-		select {
-		case p.event <- Event{Type: EventDatabaseLocked, UUID: uuid, Name: odb.Name, Path: odb.Path}:
-		default:
-		}
+	name, path := odb.Name, odb.Path
+	odb.mu.Unlock()
+	p.mu.Unlock()
+
+	// Sent after both locks are released (see Open): the event consumer
+	// calls back into the pool, and a send while holding p.mu can deadlock
+	// or, with a non-blocking send, be silently dropped — which used to
+	// skip remove_on_lock key removal and Secret Service cleanup.
+	if eventCh != nil {
+		eventCh <- Event{Type: EventDatabaseLocked, UUID: uuid, Name: name, Path: path}
 	}
 
 	return nil
@@ -422,11 +424,107 @@ func (p *DatabasePool) UpdateAndSaveWithUnlockedDatabases(target *OpenDatabase, 
 
 // Close locks all databases and releases all resources.
 func (p *DatabasePool) Close() error {
+	p.mu.Lock()
+	// The event loop has stopped by the time Close runs; drop the channel so
+	// Lock's blocking send cannot wait on a consumer that no longer exists.
+	p.event = nil
+	p.mu.Unlock()
 	err := p.LockAll()
 	p.mu.Lock()
 	p.dbs = make(map[string]*OpenDatabase)
 	p.mu.Unlock()
 	return err
+}
+
+// decodeDatabase decodes and unlocks the KDBX stream in f with cred.
+// Credential construction, decoding, and unlock happen inside security.Do()
+// so key material is zeroed from registers and stack frames after use.
+func decodeDatabase(f *os.File, cred Credential) (string, *gokeepasslib.Database, error) {
+	path := f.Name()
+	db := gokeepasslib.NewDatabase()
+
+	var uuid string
+	var openErr error
+	security.Do(func() {
+		// Set credentials before decoding — the decoder needs them
+		// to derive the transformed key and decrypt the database content.
+		creds, err := buildCredentials(cred)
+		if err != nil {
+			openErr = fmt.Errorf("dbpool: credentials %s: %w", path, err)
+			return
+		}
+		db.Credentials = creds
+
+		if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
+			openErr = fmt.Errorf("dbpool: decode %s: %w", path, err)
+			return
+		}
+
+		if err := db.UnlockProtectedEntries(); err != nil {
+			openErr = fmt.Errorf("dbpool: unlock %s: %w", path, err)
+			return
+		}
+
+		// Extract database UUID from the root group.
+		uuid = extractUUID(db, path)
+	})
+
+	if openErr != nil {
+		return "", nil, openErr
+	}
+	return uuid, db, nil
+}
+
+// Reload re-reads a database file from disk with the retained unlock
+// credential, used when the file watcher reports an external modification.
+// The in-memory content is replaced only when the file changed and decoding
+// succeeds; on any failure the previous content is kept and an error is
+// returned. A no-op when the fingerprint already matches (e.g. our own save).
+func (p *DatabasePool) Reload(uuid string) error {
+	p.mu.RLock()
+	odb, ok := p.dbs[uuid]
+	p.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("dbpool: database %s not found", uuid)
+	}
+
+	odb.mu.Lock()
+	defer odb.mu.Unlock()
+	if odb.Locked || odb.Db == nil {
+		return fmt.Errorf("dbpool: database %s is locked", uuid)
+	}
+
+	f, err := os.Open(odb.Path)
+	if err != nil {
+		return fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
+	}
+	defer f.Close()
+
+	fp, err := FingerprintOpenFile(f)
+	if err != nil {
+		return fmt.Errorf("dbpool: reload %s: fingerprint: %w", odb.Path, err)
+	}
+	if odb.Fingerprint.Equal(fp) {
+		return nil
+	}
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
+	}
+	newUUID, newDB, err := decodeDatabase(f, odb.cred)
+	if err != nil {
+		return fmt.Errorf("dbpool: reload %s: keeping previous content: %w", odb.Path, err)
+	}
+	if newUUID != odb.UUID {
+		return fmt.Errorf("dbpool: reload %s: file now holds a different database; keeping previous content", odb.Path)
+	}
+
+	security.Do(func() {
+		wipeDatabaseContent(odb.Db)
+	})
+	odb.Db = newDB
+	odb.Fingerprint = fp
+	return nil
 }
 
 // buildCredentials converts a Credential into gokeepasslib DBCredentials.

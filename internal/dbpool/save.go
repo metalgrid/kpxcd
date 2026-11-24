@@ -29,7 +29,21 @@ type FileFingerprint struct {
 
 // FingerprintFile computes a fingerprint for path.
 func FingerprintFile(path string) (FileFingerprint, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return FileFingerprint{}, err
+	}
+	defer f.Close()
+	return FingerprintOpenFile(f)
+}
+
+// FingerprintOpenFile computes a fingerprint from an already-open file: the
+// inode metadata comes from the descriptor and the content hash is read from
+// the same descriptor, so an atomic replacement of the pathname cannot pair
+// old content with new metadata (the TOCTOU FingerprintFile(path) after
+// decoding the fd had).
+func FingerprintOpenFile(f *os.File) (FileFingerprint, error) {
+	info, err := f.Stat()
 	if err != nil {
 		return FileFingerprint{}, err
 	}
@@ -38,12 +52,9 @@ func FingerprintFile(path string) (FileFingerprint, error) {
 		return FileFingerprint{}, fmt.Errorf("unsupported stat type %T", info.Sys())
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return FileFingerprint{}, err
 	}
-	defer f.Close()
-
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return FileFingerprint{}, err
@@ -90,9 +101,18 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 	if !o.Fingerprint.Equal(current) {
 		return fmt.Errorf("dbpool: refusing to update %s: database changed on disk", o.Path)
 	}
+	// Snapshot the whole content: the encoder compacts and renumbers the live
+	// binary table (cleanupBinaries) before any I/O can fail, so restoring
+	// only Root would leave entry references pointing into a renumbered table.
 	var originalRoot *gokeepasslib.RootData
-	if o.Db.Content != nil && o.Db.Content.Root != nil {
-		originalRoot = cloneRootData(o.Db.Content.Root)
+	var originalBinaries gokeepasslib.Binaries
+	if o.Db.Content != nil {
+		if o.Db.Content.Root != nil {
+			originalRoot = cloneRootData(o.Db.Content.Root)
+		}
+		if o.Db.Content.Meta != nil {
+			originalBinaries = append(gokeepasslib.Binaries(nil), o.Db.Content.Meta.Binaries...)
+		}
 	}
 	if mutate != nil {
 		if err := mutate(o.Db); err != nil {
@@ -100,8 +120,13 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 		}
 	}
 	if err := o.saveLocked(); err != nil {
-		if originalRoot != nil && o.Db.Content != nil {
-			o.Db.Content.Root = originalRoot
+		if o.Db.Content != nil {
+			if originalRoot != nil {
+				o.Db.Content.Root = originalRoot
+			}
+			if originalBinaries != nil {
+				o.Db.Content.Meta.Binaries = originalBinaries
+			}
 		}
 		return err
 	}

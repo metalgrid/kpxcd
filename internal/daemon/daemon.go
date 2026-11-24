@@ -401,7 +401,14 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 		}
 
 	case dbpool.EventDatabaseReloaded:
-		slog.Info("database file changed on disk", "name", evt.Name, "uuid", evt.UUID)
+		// The file changed on disk: re-decode it with the retained credential
+		// before notifying services, so they see the new content. On failure
+		// the pool keeps the old content and the error is logged here.
+		if err := app.pool.Reload(evt.UUID); err != nil {
+			slog.Warn("database reload failed", "name", evt.Name, "uuid", evt.UUID, "error", err)
+		} else {
+			slog.Info("database reloaded from disk", "name", evt.Name, "uuid", evt.UUID)
+		}
 
 		if app.secSvc != nil {
 			app.secSvc.HandlePoolEvent(evt)

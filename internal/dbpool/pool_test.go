@@ -236,7 +236,22 @@ var _ = Describe("Pool lock cycle", func() {
 				},
 			},
 		}
-		pool, uuid, _ := openTestKDBX("race.kdbx", "racepassword", entries, make(chan Event, 100))
+		eventCh := make(chan Event, 100)
+		pool, uuid, _ := openTestKDBX("race.kdbx", "racepassword", entries, eventCh)
+
+		// The pool blocks until events are consumed; drain them like the
+		// daemon event loop does.
+		stop := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-eventCh:
+				case <-stop:
+					return
+				}
+			}
+		}()
+		defer close(stop)
 
 		var wg sync.WaitGroup
 		for i := 0; i < 100; i++ {
@@ -249,5 +264,70 @@ var _ = Describe("Pool lock cycle", func() {
 			}()
 		}
 		wg.Wait()
+	})
+})
+
+var _ = Describe("Pool.Reload", func() {
+	It("re-decodes the file after an external change and keeps old content on failure", func() {
+		entries := []gokeepasslib.Entry{
+			{
+				UUID: gokeepasslib.NewUUID(),
+				Values: []gokeepasslib.ValueData{
+					{Key: "Title", Value: gokeepasslib.V{Content: "Before"}},
+				},
+			},
+		}
+		eventCh := make(chan Event, 10)
+		pool, uuid, odb := openTestKDBX("reload.kdbx", "reloadpassword", entries, eventCh)
+		<-eventCh // drain the unlock event
+		Expect(odb.RootEntries()).To(HaveLen(1))
+
+		// External modification: rewrite the file with a different entry,
+		// keeping the root group UUID so it is still the same database.
+		var rootUUID gokeepasslib.UUID
+		Expect(rootUUID.UnmarshalText([]byte(odb.UUID))).To(Succeed())
+		newEntries := []gokeepasslib.Entry{
+			{
+				UUID: gokeepasslib.NewUUID(),
+				Values: []gokeepasslib.ValueData{
+					{Key: "Title", Value: gokeepasslib.V{Content: "After"}},
+				},
+			},
+		}
+		dbPath := odb.Path
+		newDB := gokeepasslib.NewDatabase()
+		newDB.Credentials = gokeepasslib.NewPasswordCredentials("reloadpassword")
+		newDB.Content.Root.Groups[0].UUID = rootUUID
+		newDB.Content.Root.Groups[0].Entries = newEntries
+		Expect(newDB.LockProtectedEntries()).To(Succeed())
+		nf, err := os.Create(dbPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gokeepasslib.NewEncoder(nf).Encode(newDB)).To(Succeed())
+		Expect(nf.Close()).To(Succeed())
+
+		Expect(pool.Reload(uuid)).To(Succeed())
+		odb, err = pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(odb.RootEntries()).To(HaveLen(1))
+		Expect(odb.RootEntries()[0].GetTitle()).To(Equal("After"))
+
+		// Reloading again with an unchanged file is a no-op.
+		Expect(pool.Reload(uuid)).To(Succeed())
+
+		// A file that is no longer a valid KDBX keeps the previous content.
+		Expect(os.WriteFile(dbPath, []byte("not a kdbx"), 0o600)).To(Succeed())
+		Expect(pool.Reload(uuid)).NotTo(Succeed())
+		odb, err = pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(odb.RootEntries()[0].GetTitle()).To(Equal("After"))
+	})
+
+	It("refuses to reload a locked database", func() {
+		eventCh := make(chan Event, 10)
+		pool, uuid, _ := openTestKDBX("reloadlock.kdbx", "pw", nil, eventCh)
+		<-eventCh
+		Expect(pool.Lock(uuid)).To(Succeed())
+		<-eventCh
+		Expect(pool.Reload(uuid)).NotTo(Succeed())
 	})
 })
