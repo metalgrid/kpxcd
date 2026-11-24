@@ -329,17 +329,17 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	odb.Watcher = &fileWatcher{cancel: cancel, done: done}
 
 	p.mu.Lock()
-	// Reopening an already-open database: tear the old instance down (watcher,
-	// content, retained credential) without emitting a Locked event, so a
-	// stale event cannot remove the fresh instance's state.
+	// Reopening an already-open database: tear the old instance down and emit
+	// Locked(old) then Unlocked(new) in this one critical section, so consumers
+	// do a normal lock/unlock cycle (aliases, SSH keys, collections) and the
+	// order is fixed.
 	if old, ok := p.dbs[uuid]; ok {
 		old.mu.Lock()
 		old.destroyLocked()
 		old.mu.Unlock()
+		p.enqueueLocked(Event{Type: EventDatabaseLocked, UUID: uuid, Name: old.Name, Path: old.Path})
 	}
 	p.dbs[uuid] = odb
-	// Enqueue under the same lock as the state change so event order always
-	// matches pool state order (a stale lock event must not follow a reopen).
 	p.enqueueLocked(Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path})
 	p.mu.Unlock()
 

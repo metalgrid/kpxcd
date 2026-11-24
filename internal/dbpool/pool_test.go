@@ -358,10 +358,12 @@ var _ = Describe("Pool.Open reopen", func() {
 		Expect(odb2).NotTo(BeIdenticalTo(odb))
 		Expect(odb.IsLocked()).To(BeTrue(), "old instance must be torn down")
 
-		select {
-		case ev := <-eventCh:
-			Expect(ev.Type).To(Equal(EventDatabaseUnlocked), "no Locked event may follow a reopen")
-		default:
-		}
+		// The reopen is a lock/unlock cycle: Locked(old) then Unlocked(new).
+		ev := <-eventCh
+		Expect(ev.Type).To(Equal(EventDatabaseLocked))
+		Expect(ev.UUID).To(Equal(uuid))
+		ev = <-eventCh
+		Expect(ev.Type).To(Equal(EventDatabaseUnlocked))
+		Expect(ev.UUID).To(Equal(uuid))
 	})
 })
