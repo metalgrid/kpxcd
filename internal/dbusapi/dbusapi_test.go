@@ -333,18 +333,17 @@ var _ = Describe("SshSetAutoload / scan round-trip", func() {
 		odb.RUnlock()
 	})
 
-	It("unreadable settings: ON without override fails; OFF is a no-op", func() {
+	It("unreadable settings: ON without override fails; OFF errors and changes nothing", func() {
 		d, pool, uuid, _ := newVaultWithEntry("id_ed25519", "garbage <<<", "", true)
 		eid := entryUUIDHex(pool, uuid)
 		_, serr := d.SshSetAutoload("", uuid, eid, true, false)
 		Expect(serr).To(HaveOccurred())
-		ok, serr := d.SshSetAutoload("", uuid, eid, false, false)
-		Expect(serr).To(BeNil())
-		Expect(ok).To(BeTrue())
+		_, serr = d.SshSetAutoload("", uuid, eid, false, false)
+		Expect(serr).To(HaveOccurred())
 		odb, _ := pool.Get(uuid)
 		odb.RLock()
 		e := odb.Db.Content.Root.Groups[0].Entries[0]
-		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(Equal("id_ed25519"), "OFF on unreadable must leave the marker alone")
+		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(Equal("id_ed25519"), "failed calls must not change the entry")
 		odb.RUnlock()
 	})
 })
@@ -353,3 +352,168 @@ func getVariantStringDBus(v dbus.Variant) string {
 	s, _ := v.Value().(string)
 	return s
 }
+
+var _ = Describe("governance matrix (state x operation)", func() {
+	const (
+		allowXML    = `<EntrySettings><AllowUseOfSshKey>true</AllowUseOfSshKey><AddAtDatabaseOpen>true</AddAtDatabaseOpen><Location><SelectedType>attachment</SelectedType><AttachmentName>id_ed25519</AttachmentName></Location></EntrySettings>`
+		denyXML     = `<EntrySettings><AllowUseOfSshKey>false</AllowUseOfSshKey></EntrySettings>`
+		fileXML     = `<EntrySettings><AllowUseOfSshKey>true</AllowUseOfSshKey><Location><SelectedType>file</SelectedType><FileName>/tmp/k</FileName></Location></EntrySettings>`
+		legacyAllow = `<KeeAgent><allowUseOfSshKey>true</allowUseOfSshKey><addAtDatabaseOpen>true</addAtDatabaseOpen><location><selectedType>attachment</selectedType><attachment>id_ed25519</attachment></location></KeeAgent>`
+		legacyDeny  = `<KeeAgent><allowUseOfSshKey>false</allowUseOfSshKey></KeeAgent>`
+	)
+
+	build := func(state string) (*DaemonDBus, *dbpool.DatabasePool, string) {
+		dir := GinkgoT().TempDir()
+		path := filepath.Join(dir, "v.kdbx")
+		kdb := gokeepasslib.NewDatabase()
+		kdb.Credentials = gokeepasslib.NewPasswordCredentials("pw")
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values, gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}})
+		_, pemBytes, err := sshagent.GenerateSSHKeyPair("ed25519", 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		bin := kdb.AddBinary(pemBytes)
+		entry.Binaries = append(entry.Binaries, bin.CreateReference("id_ed25519"))
+		switch state {
+		case "allow":
+			entry.Binaries = append(entry.Binaries, kdb.AddBinary([]byte(allowXML)).CreateReference(sshagent.KeeAgentSettingsAttachment))
+		case "deny":
+			entry.Binaries = append(entry.Binaries, kdb.AddBinary([]byte(denyXML)).CreateReference(sshagent.KeeAgentSettingsAttachment))
+		case "file":
+			entry.Binaries = append(entry.Binaries, kdb.AddBinary([]byte(fileXML)).CreateReference(sshagent.KeeAgentSettingsAttachment))
+		case "unreadable":
+			entry.Binaries = append(entry.Binaries, kdb.AddBinary([]byte("garbage <<<")).CreateReference(sshagent.KeeAgentSettingsAttachment))
+		case "legacy-allow":
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{Key: sshagent.KeeAgentSettingsAttachment, Value: legacyAllow})
+		case "legacy-deny":
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{Key: sshagent.KeeAgentSettingsAttachment, Value: legacyDeny})
+		}
+		kdb.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		Expect(kdb.LockProtectedEntries()).To(Succeed())
+		f, err := os.Create(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gokeepasslib.NewEncoder(f).Encode(kdb)).To(Succeed())
+		Expect(f.Close()).To(Succeed())
+		pool := dbpool.NewDatabasePool(nil)
+		ss, err := security.NewSecureString("pw")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(ss.Destroy)
+		uuid, err := pool.Open(path, dbpool.PasswordCredential(ss))
+		Expect(err).NotTo(HaveOccurred())
+		return NewDaemonDBus(config.DefaultConfig(), pool, nil, nil), pool, uuid
+	}
+
+	snapshot := func(pool *dbpool.DatabasePool, uuid string) (allow, addOpen bool, attach, marker string, nBin int) {
+		odb, err := pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		odb.RLock()
+		defer odb.RUnlock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		marker = e.GetContent(sshagent.MarkerSSHKey)
+		nBin = len(e.Binaries)
+		for _, b := range e.Binaries {
+			if strings.EqualFold(b.Name, sshagent.KeeAgentSettingsAttachment) {
+				bin := odb.Db.FindBinary(b.Value.ID)
+				content, _ := bin.GetContentBytes()
+				st, err := sshagent.ParseEntrySettings(content)
+				if err == nil {
+					allow, addOpen, attach = st.AllowUseOfSshKey, st.AddAtDatabaseOpen, st.Location.AttachmentName
+				}
+			}
+		}
+		return
+	}
+
+	autoLoads := func(pool *dbpool.DatabasePool, uuid string) bool {
+		odb, err := pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		odb.RLock()
+		defer odb.RUnlock()
+		keys, err := sshagent.ExtractAutoLoadKeysFromDatabase(odb.Db)
+		Expect(err).NotTo(HaveOccurred())
+		return len(keys) > 0
+	}
+
+	type want struct {
+		err       bool
+		autoLoads bool
+		allow     bool
+		addOpen   bool
+		attach    string
+		marker    string
+	}
+	// expected outcomes per state; generate = SshGenerateKey
+	cases := []struct {
+		state string
+		op    string
+		want  want
+	}{
+		// ON
+		{"none", "ON", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		{"allow", "ON", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		{"deny", "ON", want{true, false, false, true, "", ""}},
+		{"deny", "ON+override", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		{"file", "ON", want{true, false, true, false, "", ""}},
+		{"unreadable", "ON", want{true, false, false, false, "", ""}},
+		{"unreadable", "ON+override", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		{"legacy-allow", "ON", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		{"legacy-deny", "ON", want{true, false, false, false, "", ""}},
+		{"legacy-deny", "ON+override", want{false, true, true, true, "id_ed25519", "id_ed25519"}},
+		// OFF
+		{"none", "OFF", want{false, false, false, false, "", ""}}, // bare entry: OFF only clears the marker, no settings written
+		{"allow", "OFF", want{false, false, true, false, "id_ed25519", ""}},
+		{"deny", "OFF", want{false, false, false, false, "", ""}},
+		{"file", "OFF", want{false, false, true, false, "", ""}},
+		{"unreadable", "OFF", want{true, false, false, false, "", ""}},
+		{"legacy-allow", "OFF", want{false, false, true, false, "id_ed25519", ""}},
+		{"legacy-deny", "OFF", want{false, false, false, false, "", ""}},
+		// generate
+		{"none", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
+		{"allow", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
+		{"deny", "generate", want{true, false, false, true, "", ""}},
+		{"file", "generate", want{true, false, true, false, "", ""}},
+		{"unreadable", "generate", want{true, false, false, false, "", ""}},
+		{"legacy-allow", "generate", want{false, true, true, true, "ssh-key", "ssh-key"}},
+		{"legacy-deny", "generate", want{true, false, false, false, "", ""}},
+	}
+
+	for _, c := range cases {
+		c := c
+		It(fmt.Sprintf("%s / %s", c.state, c.op), func() {
+			d, pool, uuid := build(c.state)
+			odb, _ := pool.Get(uuid)
+			odb.RLock()
+			e := odb.Db.Content.Root.Groups[0].Entries[0]
+			eid := fmt.Sprintf("%x", e.UUID[:])
+			odb.RUnlock()
+			beforeAllow, beforeAddOpen, beforeAttach, beforeMarker, beforeBin := snapshot(pool, uuid)
+
+			var derr *dbus.Error
+			switch c.op {
+			case "ON":
+				_, derr = d.SshSetAutoload("", uuid, eid, true, false)
+			case "ON+override":
+				_, derr = d.SshSetAutoload("", uuid, eid, true, true)
+			case "OFF":
+				_, derr = d.SshSetAutoload("", uuid, eid, false, false)
+			case "generate":
+				_, derr = d.SshGenerateKey("", uuid, "k", "ed25519", 0, "")
+			}
+			if c.want.err {
+				Expect(derr).To(HaveOccurred(), "expected an error")
+				a, ao, at, m, nb := snapshot(pool, uuid)
+				Expect([2]bool{a, ao}).To(Equal([2]bool{beforeAllow, beforeAddOpen}), "on error Allow/AddAtDatabaseOpen must be unchanged")
+				Expect(at).To(Equal(beforeAttach))
+				Expect(m).To(Equal(beforeMarker))
+				Expect(nb).To(Equal(beforeBin))
+			} else {
+				Expect(derr).To(BeNil())
+				a, ao, at, m, _ := snapshot(pool, uuid)
+				Expect(a).To(Equal(c.want.allow), "Allow")
+				Expect(ao).To(Equal(c.want.addOpen), "AddAtDatabaseOpen")
+				Expect(at).To(Equal(c.want.attach), "AttachmentName")
+				Expect(m).To(Equal(c.want.marker), "marker")
+				Expect(autoLoads(pool, uuid)).To(Equal(c.want.autoLoads), "auto-load extraction")
+			}
+		})
+	}
+})
