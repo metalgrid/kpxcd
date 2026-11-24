@@ -28,6 +28,16 @@
     </defaults>
   </action>
 
+  <action id="org.keepassxc.daemon.ssh.export">
+    <description>Export an SSH private key from kpxcd</description>
+    <message>Authentication is required to export an SSH private key</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.keepassxc.daemon.passkey.assert">
     <description>Authenticate with a passkey from kpxcd</description>
     <message>Authentication is required to authenticate with a passkey from kpxcd</message>

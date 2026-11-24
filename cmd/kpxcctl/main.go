@@ -101,7 +101,9 @@ Commands:
   ssh autoload [uuid]          Menu: choose which keys auto-load at unlock
   ssh autoload <uuid> <entry> on|off [--override-deny]
                              Set/clear auto-load for one entry
-  ssh export <fingerprint> <file>  (disabled: private-key export is not supported)
+  ssh export [uuid]              Menu: export a stored key to OpenSSH format (polkit-gated)
+  ssh export <uuid> <entry> <file> [--force] [--no-passphrase]
+                             Export one key; encrypted with a passphrase unless --no-passphrase
   ssh diag                   Show SSH agent diagnostics
   passkey list                             List stored passkeys
   passkey create <uuid> <rpID> <username> [displayName]
@@ -654,8 +656,7 @@ func cmdSSH(args []string) {
 		fmt.Printf("SSH key imported into entry %q\n", entryPath)
 
 	case "export":
-		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: private-key export is disabled")
-		os.Exit(1)
+		cmdSSHExport(obj, subArgs)
 
 	case "scan":
 		uuid := ""
@@ -972,6 +973,147 @@ func cmdSSHAutoload(obj dbus.BusObject, args []string) {
 		fmt.Printf("  %s -> autoload=%v\n", getVariantString(e["title"]), on)
 	}
 	fmt.Println("applies at next unlock; use `kpxcctl ssh add` to load a key now")
+}
+
+// cmdSSHExport exports a stored key to OpenSSH format. The daemon gates the
+// call behind polkit auth_self. Output is O_EXCL|O_NOFOLLOW 0600, encrypted
+// with a passphrase unless --no-passphrase (which requires typed consent).
+func cmdSSHExport(obj dbus.BusObject, args []string) {
+	force, noPassphrase := false, false
+	var pos []string
+	for _, a := range args {
+		switch a {
+		case "--force":
+			force = true
+		case "--no-passphrase":
+			noPassphrase = true
+		default:
+			pos = append(pos, a)
+		}
+	}
+
+	uuid, entryRef := "", ""
+	switch len(pos) {
+	case 0:
+		// menu form
+	case 2:
+		uuid, entryRef = pos[0], pos[1]
+	case 3:
+		uuid, entryRef = pos[0], pos[1]
+	default:
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: usage: export [uuid] | export <uuid> <entry> <file> [--force] [--no-passphrase]")
+		os.Exit(1)
+	}
+
+	if uuid == "" {
+		dbs := listDatabases(obj)
+		if len(dbs) == 1 {
+			uuid = getVariantString(dbs[0]["uuid"])
+		} else if len(dbs) > 1 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: multiple databases unlocked; pass the uuid")
+			os.Exit(1)
+		}
+	}
+
+	outFile := ""
+	if len(pos) == 3 {
+		outFile = pos[2]
+	}
+	if len(pos) == 0 {
+		if !stdinIsInteractive() {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: stdin is not interactive; use: kpxcctl ssh export <uuid> <entry> <file>")
+			os.Exit(1)
+		}
+		scan := obj.Call(iface+".SshScanDatabase", 0, uuid)
+		if scan.Err != nil {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", scan.Err)
+			os.Exit(1)
+		}
+		var entries []map[string]dbus.Variant
+		if scan.Store(&entries) != nil || len(entries) == 0 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: no keys found")
+			os.Exit(1)
+		}
+		items := make([]string, len(entries))
+		for i, e := range entries {
+			items[i] = fmt.Sprintf("%s  %s  %s", getVariantString(e["title"]), getVariantString(e["type"]), getVariantString(e["fingerprint"]))
+		}
+		picked, err := selectFromMenu(os.Stdin, "export which? number, enter to cancel: ", items)
+		if err != nil || len(picked) == 0 {
+			fmt.Println("nothing selected")
+			return
+		}
+		entryRef = getVariantString(entries[picked[0]]["uuid"])
+		fmt.Print("output file: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		outFile = strings.TrimSpace(line)
+		if outFile == "" || outFile == "-" || outFile == "/dev/stdout" {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: refusing to write to stdout")
+			os.Exit(1)
+		}
+	}
+	if outFile == "" || outFile == "-" || outFile == "/dev/stdout" {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: refusing to write to stdout; give a file path")
+		os.Exit(1)
+	}
+
+	call := obj.Call(iface+".SshExportKey", 0, uuid, entryRef)
+	if call.Err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", call.Err)
+		os.Exit(1)
+	}
+	var pemBytes []byte
+	if call.Store(&pemBytes) != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: unexpected response")
+		os.Exit(1)
+	}
+
+	// Encrypt by default; --no-passphrase requires typed consent.
+	out := pemBytes
+	if !noPassphrase {
+		p1 := readSecretPrompt("Passphrase for exported key (empty = none): ")
+		p2 := readSecretPrompt("Repeat passphrase: ")
+		if p1 != p2 {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: passphrases do not match")
+			os.Exit(1)
+		}
+		if p1 == "" {
+			noPassphrase = true
+		} else {
+			key, err := sshagent.ParsePrivateKey(pemBytes, "")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: cannot re-encrypt:", err)
+				os.Exit(1)
+			}
+			block, err := ssh.MarshalPrivateKeyWithPassphrase(key.PrivateKey, "", []byte(p1))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: encrypt:", err)
+				os.Exit(1)
+			}
+			out = pem.EncodeToMemory(block)
+		}
+	}
+	if noPassphrase && len(pos) == 3 {
+		fmt.Fprintln(os.Stderr, "WARNING: exporting an UNENCRYPTED private key; the file is 0600 but anyone reading it can use the key.")
+	}
+
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	if force {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	f, err := os.OpenFile(outFile, flags, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", err)
+		os.Exit(1)
+	}
+	if _, err := f.Write(out); err != nil {
+		f.Close()
+		os.Remove(outFile)
+		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: write:", err)
+		os.Exit(1)
+	}
+	f.Close()
+	fmt.Printf("exported %s to %s (mode 0600)\n", entryRef, outFile)
 }
 
 // cmdPasskey handles passkey subcommands: list, create, remove, import.

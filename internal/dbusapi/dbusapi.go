@@ -703,29 +703,56 @@ func setEntryValue(entry *gokeepasslib.Entry, key, value string, protected bool)
 	entry.Values = append(entry.Values, v)
 }
 
-// SshExportKey is intentionally disabled: kpxcd exposes SSH keys for signing,
-// not private-key extraction.
-func (d *DaemonDBus) SshExportKey(sender dbus.Sender, fingerprint string) ([]byte, *dbus.Error) {
+// ActionSSExport is the polkit action gating private-key export.
+const ActionSSExport = "org.keepassxc.daemon.ssh.export"
+
+// SshExportKey exports one stored SSH private key as OpenSSH PEM. Gated by
+// polkit auth_self per call: any same-user process could otherwise call this
+// without the user approving. Key bytes cross the session bus; the CLI
+// re-encrypts them with a passphrase by default. Logs fingerprint and
+// caller, never key material.
+func (d *DaemonDBus) SshExportKey(sender dbus.Sender, uuid string, entryRef string) ([]byte, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
-	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh private-key export is disabled"))
-}
-
-// SshRemoveKey removes an SSH key from the agent by fingerprint.
-func (d *DaemonDBus) SshRemoveKey(sender dbus.Sender, fingerprint string) (bool, *dbus.Error) {
-	if err := d.authorize(sender); err != nil {
-		return false, dbus.MakeFailedError(err)
+	if err := d.authorizeAction(sender, ActionSSExport); err != nil {
+		return nil, dbus.MakeFailedError(err)
 	}
-	if d.sshAgent == nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
+	db, err := d.pool.Get(uuid)
+	if err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database not found: %w", err))
 	}
-
-	if err := d.sshAgent.Manager().RemoveIdentity(fingerprint); err != nil {
-		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to remove key: %w", err))
+	db.RLock()
+	if db.Locked {
+		db.RUnlock()
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
-	slog.Info("DBus: SSH key removed", "fingerprint", fingerprint)
-	return true, nil
+	entry := findEntryByUUIDOrTitle(&db.Db.Content.Root.Groups, entryRef)
+	var key *sshagent.Key
+	if entry != nil {
+		key, err = sshagent.ExtractKeyFromEntry(entry, db.Db)
+	}
+	db.RUnlock()
+	if entry == nil || key == nil || err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: no SSH key for entry %s", entryRef))
+	}
+	if key.PrivateKey == nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: key has no private material (encrypted key without passphrase)"))
+	}
+	var pemBytes []byte
+	security.Do(func() {
+		block, merr := ssh.MarshalPrivateKey(key.PrivateKey, "")
+		if merr != nil {
+			err = merr
+			return
+		}
+		pemBytes = pem.EncodeToMemory(block)
+	})
+	if err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: marshal key: %w", err))
+	}
+	slog.Info("DBus: SSH key exported", "fingerprint", key.Fingerprint(), "db", db.Name, "entry", entryRef, "sender", string(sender))
+	return pemBytes, nil
 }
 
 // SshSetAutoload sets or clears an entry's auto-load marker: writes the kpxcd
@@ -826,12 +853,12 @@ const (
 	ActionPasskeyAssert = "org.keepassxc.daemon.passkey.assert"
 )
 
-// authorizePasskey authorizes the sender and gates the operation behind
+// authorizeAction authorizes the sender and gates the operation behind
 // polkit (auth_self; the desktop agent prompts). Unit-test-style calls
 // (empty sender, no connection) follow the same convention as authorize:
 // real D-Bus callers always carry a sender, so no production path skips
 // the gate.
-func (d *DaemonDBus) authorizePasskey(sender dbus.Sender, actionID string) error {
+func (d *DaemonDBus) authorizeAction(sender dbus.Sender, actionID string) error {
 	if err := d.authorize(sender); err != nil {
 		return err
 	}
@@ -862,7 +889,7 @@ func (d *DaemonDBus) CreatePasskey(sender dbus.Sender, uuid string, rpID string,
 	if d.fido2 == nil {
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
 	}
-	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+	if err := d.authorizeAction(sender, ActionPasskeyCreate); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
 
@@ -886,7 +913,7 @@ func (d *DaemonDBus) AssertPasskey(sender dbus.Sender, rpID string, credentialID
 	if d.fido2 == nil {
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
 	}
-	if err := d.authorizePasskey(sender, ActionPasskeyAssert); err != nil {
+	if err := d.authorizeAction(sender, ActionPasskeyAssert); err != nil {
 		return nil, dbus.MakeFailedError(err)
 	}
 
@@ -944,7 +971,7 @@ func (d *DaemonDBus) RemovePasskey(sender dbus.Sender, credentialID string) (boo
 	if d.fido2 == nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
 	}
-	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+	if err := d.authorizeAction(sender, ActionPasskeyCreate); err != nil {
 		return false, dbus.MakeFailedError(err)
 	}
 	if err := d.fido2.RemovePasskey(credentialID); err != nil {
@@ -959,7 +986,7 @@ func (d *DaemonDBus) ImportPasskey(sender dbus.Sender, uuid string, rpID string,
 	if d.fido2 == nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: fido2 service is not running"))
 	}
-	if err := d.authorizePasskey(sender, ActionPasskeyCreate); err != nil {
+	if err := d.authorizeAction(sender, ActionPasskeyCreate); err != nil {
 		return false, dbus.MakeFailedError(err)
 	}
 	_, err := d.fido2.ImportPasskey(uuid, fido2.ImportPasskeyInput{
