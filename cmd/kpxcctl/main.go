@@ -119,8 +119,9 @@ Commands:
   ping                       Check if daemon is alive
   doctor <old.kdbx>          Diagnose an old database (read-only)
   doctor --fix <old.kdbx> <new.kdbx>
-                             Create a fresh vault at <new.kdbx> with new key
-                             material, entries copied, legacy fields migrated
+                             Rewrite the vault at <new.kdbx> preserving the
+                             header (KDF/cipher/version) but rotating key
+                             material; old file untouched, no overwrite
   help                       Show this help message`)
 }
 
@@ -1588,6 +1589,9 @@ func cmdDoctor(args []string) {
 		newPw := readSecretPrompt("New database password (enter to keep the old one): ")
 		if newPw == "" {
 			newPw = oldPw
+		} else if p2 := readSecretPrompt("Repeat new database password: "); p2 != newPw {
+			fmt.Fprintln(os.Stderr, "kpxcctl doctor --fix: passwords do not match")
+			os.Exit(1)
 		}
 		rep, err := doctorFix(pos[0], oldPw, pos[1], newPw)
 		if err != nil {
@@ -1595,7 +1599,7 @@ func cmdDoctor(args []string) {
 			os.Exit(1)
 		}
 		fmt.Print(rep.String())
-		fmt.Printf("Fresh vault written to %s (mode 0600). Verify it opens, then replace the old file yourself.\n", pos[1])
+		fmt.Printf("Rewritten vault at %s (mode 0600, verified by reopening). Replace the old file yourself.\n", pos[1])
 		return
 	}
 	if len(pos) != 1 {

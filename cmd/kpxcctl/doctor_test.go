@@ -64,8 +64,8 @@ func TestDoctorCheckAndFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.hasFixable() {
-		t.Fatalf("expected fixable issues, got:\n%s", rep.String())
+	if len(rep.issues) == 0 {
+		t.Fatal("expected issues, got none")
 	}
 	t.Logf("check:\n%s", rep.String())
 
@@ -98,13 +98,26 @@ func TestDoctorCheckAndFix(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(fresh.Header.FileHeaders.MasterSeed) == string(old.Header.FileHeaders.MasterSeed) {
-		t.Error("MasterSeed reused between old and fresh vault")
+		t.Error("MasterSeed not rotated")
 	}
 	if string(fresh.Header.FileHeaders.EncryptionIV) == string(old.Header.FileHeaders.EncryptionIV) {
-		t.Error("EncryptionIV reused")
+		t.Error("EncryptionIV not rotated")
 	}
 	if string(fresh.Content.InnerHeader.InnerRandomStreamKey) == string(old.Content.InnerHeader.InnerRandomStreamKey) {
-		t.Error("inner stream key reused")
+		t.Error("inner stream key not rotated")
+	}
+	// D1: KDF parameters must be preserved, not reset to library defaults
+	if fresh.Header.FileHeaders.KdfParameters.Memory != old.Header.FileHeaders.KdfParameters.Memory ||
+		fresh.Header.FileHeaders.KdfParameters.Iterations != old.Header.FileHeaders.KdfParameters.Iterations {
+		t.Error("KDF parameters not preserved")
+	}
+	if fresh.Header.FileHeaders.CipherID == nil || string(fresh.Header.FileHeaders.CipherID) != string(old.Header.FileHeaders.CipherID) {
+		t.Error("cipher not preserved")
+	}
+	// D6: directory mode must not change
+	fi, _ := os.Stat(dir)
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("directory mode changed to %o", fi.Mode().Perm())
 	}
 
 	// entries migrated
@@ -123,31 +136,60 @@ func TestDoctorCheckAndFix(t *testing.T) {
 	if pkEntry == nil || skEntry == nil {
 		t.Fatal("entries not copied")
 	}
-	if pkEntry.GetContent("KPEX_PASSKEY_RELYING_PARTY") != "example.com" {
-		t.Error("passkey RPID not migrated to KeePassXC name")
-	}
-	if pkEntry.GetContent("KPEX_PASSKEY_RPID") != "" {
-		t.Error("legacy RPID field not removed")
-	}
-	if pkEntry.GetContent("KPEX_PASSKEY_FLAG_BE") != "0" {
-		t.Error("BE flag not backfilled")
+	// No migrations: legacy fields stay as-is (daemon reads them compatibly).
+	if pkEntry.GetContent("KPEX_PASSKEY_RPID") != "example.com" {
+		t.Error("legacy passkey fields must be preserved, not rewritten")
 	}
 	if pkEntry.GetContent("KPEX_PASSKEY_COUNTER") != "7" {
 		t.Error("counter not preserved")
 	}
-	if skEntry.GetContent("KPXCD_SSH_KEY") == "" && len(skEntry.CustomData) == 0 {
-		// legacy custom data should be converted to an attachment
+	if skEntry.GetContent("KPXCD_SSH_KEY") != "" {
+		t.Error("bare key must NOT be auto-marked (D2)")
 	}
-	hasSettingsAttachment := false
-	for _, b := range skEntry.Binaries {
-		if b.Name == "KeeAgent.settings" {
-			hasSettingsAttachment = true
+	if len(skEntry.CustomData) == 0 {
+		t.Error("legacy custom data must be preserved (D3)")
+	}
+}
+
+func TestDoctorFixKDBX3(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old31.kdbx")
+	newPath := filepath.Join(dir, "new31.kdbx")
+	db := gokeepasslib.NewDatabase() // KDBX 3.1
+	db.Credentials = gokeepasslib.NewPasswordCredentials("pw")
+	e := gokeepasslib.NewEntry()
+	e.Values = append(e.Values,
+		gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "s"}},
+		gokeepasslib.ValueData{Key: "Password", Value: gokeepasslib.V{Content: "v", Protected: wrappers.BoolWrapper{Bool: true}}})
+	db.Content.Root.Groups[0].Entries = append(db.Content.Root.Groups[0].Entries, e)
+	if err := db.LockProtectedEntries(); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Create(oldPath)
+	if err := gokeepasslib.NewEncoder(f).Encode(db); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	if _, err := doctorFix(oldPath, "pw", newPath, "pw2"); err != nil {
+		t.Fatalf("KDBX3 --fix failed (D7): %v", err)
+	}
+	nf, _ := os.Open(newPath)
+	defer nf.Close()
+	chk := gokeepasslib.NewDatabase()
+	chk.Credentials = gokeepasslib.NewPasswordCredentials("pw2")
+	if err := gokeepasslib.NewDecoder(nf).Decode(chk); err != nil {
+		t.Fatal(err)
+	}
+	if chk.Header.IsKdbx4() {
+		t.Error("KDBX3 vault must stay KDBX3")
+	}
+	if err := chk.UnlockProtectedEntries(); err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range chk.Content.Root.Groups[0].Entries {
+		if en.GetTitle() == "s" && en.GetPassword() != "v" {
+			t.Errorf("protected value mismatch after KDBX3 rekey: %q", en.GetPassword())
 		}
-	}
-	if !hasSettingsAttachment {
-		t.Error("legacy KeeAgent custom data not converted to EntrySettings attachment")
-	}
-	if len(skEntry.CustomData) != 0 {
-		t.Error("legacy custom data not removed")
 	}
 }
