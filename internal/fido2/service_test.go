@@ -621,3 +621,117 @@ var _ = Describe("encodeECDSAPublicKey curve guard", func() {
 		Expect(cose).NotTo(BeEmpty())
 	})
 })
+
+// testPrivPEM is a throwaway ed25519 key used by interop tests.
+var testPrivPEM = func() string {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		panic(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}()
+
+var _ = Describe("KeePassXC backup-flag and counter interop (X1)", func() {
+	hash := func() []byte { sum := sha256.Sum256([]byte("cd")); return sum[:] }
+
+	// buildEntry makes a passkey entry with the given extra fields.
+	buildEntry := func(extra map[string]string) gokeepasslib.Entry {
+		pk := &PasskeyEntry{
+			RPID: "example.com", RPName: "Example", Username: "u", DisplayName: "U",
+			UserHandle: "aGFuZGxl", CredentialID: "Y3JlZA",
+			PrivateKeyPEM: testPrivPEM,
+		}
+		e := newPasskeyEntry(pk)
+		for k, v := range extra {
+			setEntryValue(&e, k, v, false)
+		}
+		return e
+	}
+
+	openWith := func(entry gokeepasslib.Entry) (*dbpool.DatabasePool, string, *Fido2Service) {
+		pool, path := newTestPoolWithDB()
+		// overwrite the default entry with ours
+		odb, err := pool.Get(firstPoolUUID(pool))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(odb.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+			kdb.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+			return nil
+		})).To(Succeed())
+		_ = path
+		return pool, firstPoolUUID(pool), NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+	}
+
+	It("kpxcd-made entry asserts BE=0/BS=0 and increments the counter", func() {
+		pool, uuid, svc := openWith(buildEntry(nil))
+		res, err := svc.SignAssertion(SignAssertionInput{RPID: "example.com", ClientDataHash: hash(), UserPresent: true})
+		Expect(err).NotTo(HaveOccurred())
+		flags := res.AuthenticatorData[32]
+		Expect(flags & (FlagBE | FlagBS)).To(Equal(byte(0)))
+		Expect(res.SignCount).To(Equal(uint32(1)))
+		// flag fields backfilled on save
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e.GetContent(KPEXPasskeyFlagBE)).To(Equal("0"))
+		Expect(e.GetContent(KPEXPasskeyFlagBS)).To(Equal("0"))
+		odb.RUnlock()
+	})
+
+	It("KeePassXC entry with FLAG_BE/BS=1 asserts BE=1/BS=1 and counter 0, no vault change", func() {
+		e := buildEntry(map[string]string{
+			KPEXPasskeyFlagBE: "1", KPEXPasskeyFlagBS: "1",
+		})
+		// KeePassXC entries have no kpxcd PUB_KEY / flag / counter fields: remove them
+		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyCounter, KPEXPasskeyFlagBE, KPEXPasskeyFlagBS} {
+			if idx := e.GetIndex(key); idx >= 0 {
+				e.Values = append(e.Values[:idx], e.Values[idx+1:]...)
+			}
+		}
+		pool, uuid, svc := openWith(e)
+		res, err := svc.SignAssertion(SignAssertionInput{RPID: "example.com", ClientDataHash: hash(), UserPresent: true})
+		Expect(err).NotTo(HaveOccurred())
+		flags := res.AuthenticatorData[32]
+		Expect(flags & FlagBE).To(Equal(byte(FlagBE)))
+		Expect(flags & FlagBS).To(Equal(byte(FlagBS)))
+		Expect(res.SignCount).To(Equal(uint32(0)), "KeePassXC-made entries sign with counter 0")
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e2 := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e2.GetContent(KPEXPasskeyCounter)).To(BeEmpty(), "no counter written for KeePassXC-made entries")
+		odb.RUnlock()
+	})
+
+	It("KeePassXC entry without flag fields defaults to BE=1/BS=1", func() {
+		e := buildEntry(nil)
+		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyCounter, KPEXPasskeyFlagBE, KPEXPasskeyFlagBS} {
+			if idx := e.GetIndex(key); idx >= 0 {
+				e.Values = append(e.Values[:idx], e.Values[idx+1:]...)
+			}
+		}
+		_, _, svc := openWith(e)
+		pool2, uuid2, _ := openWith(buildEntry(nil)) // need pool handle; reuse via svc
+		_ = pool2
+		res, err := svc.SignAssertion(SignAssertionInput{RPID: "example.com", ClientDataHash: hash()})
+		Expect(err).NotTo(HaveOccurred())
+		flags := res.AuthenticatorData[32]
+		Expect(flags&(FlagBE|FlagBS)).To(Equal(byte(FlagBE|FlagBS)), "absent flags on foreign entries default to 1 like KeePassXC")
+		_ = uuid2
+	})
+
+	It("KeePassXC entry that already carries a counter keeps incrementing it", func() {
+		e := buildEntry(map[string]string{KPEXPasskeyCounter: "41"})
+		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyFlagBE, KPEXPasskeyFlagBS} {
+			if idx := e.GetIndex(key); idx >= 0 {
+				e.Values = append(e.Values[:idx], e.Values[idx+1:]...)
+			}
+		}
+		_, _, svc := openWith(e)
+		res, err := svc.SignAssertion(SignAssertionInput{RPID: "example.com", ClientDataHash: hash()})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.SignCount).To(Equal(uint32(42)))
+	})
+})

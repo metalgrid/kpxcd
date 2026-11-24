@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,6 +88,10 @@ const (
 	KPEXPasskeyDisplayName = "KPXCD_PASSKEY_DISPLAY_NAME"
 	KPEXPasskeyCreated     = "KPXCD_PASSKEY_CREATED"
 	KPEXPasskeyCounter     = "KPEX_PASSKEY_COUNTER"
+	// KeePassXC's backup-eligibility fields. KeePassXC registers BE=1/BS=1
+	// and defaults to 1 when absent; kpxcd registers BE=0/BS=0 and writes "0".
+	KPEXPasskeyFlagBE = "KPEX_PASSKEY_FLAG_BE"
+	KPEXPasskeyFlagBS = "KPEX_PASSKEY_FLAG_BS"
 )
 
 // entryContent returns the first non-empty value among keys (new name first,
@@ -114,6 +119,13 @@ type PasskeyEntry struct {
 	DBUUID        string // Database UUID
 	EntryUUID     string // KeePass entry UUID, hex
 	DisplayName   string // Explicit account display name; never inferred from the entry title.
+	// BE/BS are the backup flags to assert (KeePassXC interop: its entries
+	// default to 1 when the flag fields are absent, kpxcd's to 0).
+	BE, BS bool
+	// KpxcdMade: kpxcd always writes KPEXPasskeyPubKey; KeePassXC does not.
+	KpxcdMade bool
+	// HasCounter: the entry carries a persisted sign counter.
+	HasCounter bool
 }
 
 // ErrNoCredentials is returned when no stored credential matches an
@@ -262,11 +274,18 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 		return nil, fmt.Errorf("fido2: %w", err)
 	}
 
-	// Advance the persisted counter before signing; an assertion whose
-	// counter did not persist is an error, never a replayable signature.
-	signCount, err := advanceSignCount(odb, entry)
-	if err != nil {
-		return nil, fmt.Errorf("fido2: %w", err)
+	// Advance the persisted counter before signing for kpxcd-made entries
+	// (or entries already carrying one); KeePassXC-made entries without a
+	// counter sign with 0 and persist nothing, matching KeePassXC.
+	var signCount uint32
+	if shouldPersistCounter(entry) {
+		var err error
+		signCount, err = advanceSignCount(odb, entry)
+		if err != nil {
+			return nil, fmt.Errorf("fido2: %w", err)
+		}
+	} else {
+		signCount = entry.SignCount
 	}
 
 	var flags byte
@@ -276,10 +295,12 @@ func (s *Fido2Service) SignAssertion(in SignAssertionInput) (*AssertionResult, e
 	if in.UserVerified {
 		flags |= FlagUV
 	}
-	if in.BackupEligible {
+	// BE/BS come from the entry's stored flags (KeePassXC interop), not the
+	// request: WebAuthn L3 requires them unchanged from registration.
+	if entry.BE {
 		flags |= FlagBE
 	}
-	if in.BackupState {
+	if entry.BS {
 		flags |= FlagBS
 	}
 
@@ -601,6 +622,16 @@ func advanceSignCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) (uint32, error)
 		}
 		newCount = current + 1
 		setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", newCount), false)
+		// Backfill the backup-flag fields on kpxcd-made entries so KeePassXC
+		// asserts the same BE/BS we registered.
+		if entry.GetContent(KPEXPasskeyPubKey) != "" {
+			if entry.GetContent(KPEXPasskeyFlagBE) == "" {
+				setEntryValue(entry, KPEXPasskeyFlagBE, "0", false)
+			}
+			if entry.GetContent(KPEXPasskeyFlagBS) == "" {
+				setEntryValue(entry, KPEXPasskeyFlagBS, "0", false)
+			}
+		}
 		now := wrappers.Now()
 		entry.Times.LastModificationTime = &now
 		return nil
@@ -679,6 +710,9 @@ func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
 		return nil, err
 	}
 	pk.SignCount = count
+	pk.HasCounter = entry.GetContent(KPEXPasskeyCounter) != ""
+	pk.KpxcdMade = entry.GetContent(KPEXPasskeyPubKey) != ""
+	pk.BE, pk.BS = backupFlags(entry, pk.KpxcdMade)
 
 	pk.Subject = entry.GetTitle()
 	return pk, nil
@@ -717,6 +751,30 @@ func cosePublicKeyFromPEM(privKeyPEM string) ([]byte, error) {
 	return cose, err
 }
 
+// backupFlags resolves the BE/BS flags for an entry: the KeePassXC flag
+// fields when present ("1"/"true"), else 0 for kpxcd-made entries and 1 for
+// foreign (KeePassXC) entries, matching how each registers.
+func backupFlags(entry *gokeepasslib.Entry, kpxcdMade bool) (be, bs bool) {
+	be = flagField(entry, KPEXPasskeyFlagBE, !kpxcdMade)
+	bs = flagField(entry, KPEXPasskeyFlagBS, !kpxcdMade)
+	return be, bs
+}
+
+func flagField(entry *gokeepasslib.Entry, key string, defaultVal bool) bool {
+	raw := entry.GetContent(key)
+	if raw == "" {
+		return defaultVal
+	}
+	return raw == "1" || strings.EqualFold(raw, "true")
+}
+
+// shouldPersistCounter: kpxcd-made entries and entries that already carry a
+// counter keep incrementing it; KeePassXC-made entries without one send 0 and
+// write nothing, matching KeePassXC's counterless behavior.
+func shouldPersistCounter(pk *PasskeyEntry) bool {
+	return pk.KpxcdMade || pk.HasCounter
+}
+
 // newPasskeyEntry builds the KeePass entry for a freshly created passkey.
 func newPasskeyEntry(pk *PasskeyEntry) gokeepasslib.Entry {
 	entry := gokeepasslib.NewEntry()
@@ -742,6 +800,8 @@ func newPasskeyEntry(pk *PasskeyEntry) gokeepasslib.Entry {
 	set(KPEXPasskeyPrivKey, pk.PrivateKeyPEM, true)
 	set(KPEXPasskeyPubKey, base64.StdEncoding.EncodeToString(pk.PublicKeyCOSE), false)
 	set(KPEXPasskeyCounter, "0", false)
+	set(KPEXPasskeyFlagBE, "0", false)
+	set(KPEXPasskeyFlagBS, "0", false)
 
 	return entry
 }

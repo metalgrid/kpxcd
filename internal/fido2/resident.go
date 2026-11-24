@@ -163,17 +163,20 @@ func (s *Fido2Service) residentCredentials(rpID string) ([]hid.CredentialReferen
 					continue
 				}
 				if id, err := base64.RawURLEncoding.DecodeString(pk.CredentialID); err != nil || len(id) == 0 {
-					return fmt.Errorf("fido2: invalid stored credential ID")
+					slog.Warn("fido2: skipping entry with invalid credential ID", "database", db.Name, "entry", entry.GetTitle())
+					continue
 				}
 				if handle, err := base64.RawURLEncoding.DecodeString(pk.UserHandle); err != nil || len(handle) == 0 {
-					return fmt.Errorf("fido2: invalid stored user handle")
+					slog.Warn("fido2: skipping entry with invalid user handle", "database", db.Name, "entry", entry.GetTitle())
+					continue
 				}
 				c := candidate{ref: hid.CredentialReference{DatabaseUUID: db.UUID, DatabaseInstance: db.InstanceID, EntryUUID: fmt.Sprintf("%x", entry.UUID[:]), RPID: rpID, CredentialID: pk.CredentialID, UserHandle: pk.UserHandle}}
 				if created := entry.GetContent(KPEXPasskeyCreated); created != "" {
 					var err error
 					c.created, err = time.Parse(time.RFC3339Nano, created)
 					if err != nil {
-						return fmt.Errorf("fido2: invalid credential creation time: %w", err)
+						slog.Warn("fido2: skipping entry with invalid creation time", "database", db.Name, "entry", entry.GetTitle())
+						continue
 					}
 				} else if entry.Times.CreationTime != nil {
 					// Legacy/imported credentials have only the KeePass entry time.
@@ -302,16 +305,29 @@ func (s *Fido2Service) assertResident(ref hid.CredentialReference, original []hi
 		if uv {
 			flags |= FlagUV
 		}
-		auth := buildAuthenticatorData(ref.RPID, flags, pk.SignCount+1, nil)
+		// BE/BS from the entry's stored flags (KeePassXC interop).
+		if pk.BE {
+			flags |= FlagBE
+		}
+		if pk.BS {
+			flags |= FlagBS
+		}
+		signCount := pk.SignCount + 1
+		if !shouldPersistCounter(pk) {
+			signCount = 0 // KeePassXC-made entry without a counter: sign 0, persist nothing
+		}
+		auth := buildAuthenticatorData(ref.RPID, flags, signCount, nil)
 		signature, err := signWithPrivateKey(pk.PrivateKeyPEM, auth, hash)
 		if err != nil {
 			return err
 		}
-		result = hid.ResidentAssertion{CredentialID: id, UserHandle: handle, AuthData: auth, Signature: signature}
+		result = hid.ResidentAssertion{CredentialID: id, UserHandle: handle, AuthData: auth, Signature: signature, SignCount: signCount}
 		if uv {
 			result.Name, result.DisplayName = pk.Username, pk.DisplayName
 		}
-		setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", pk.SignCount+1), false)
+		if shouldPersistCounter(pk) {
+			setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", signCount), false)
+		}
 		now := wrappers.Now()
 		entry.Times.LastModificationTime = &now
 		return nil

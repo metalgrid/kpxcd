@@ -271,7 +271,7 @@ Emitted when the daemon is shutting down.
 | Action ID | Default | Description |
 |-----------|---------|-------------|
 | `org.keepassxc.daemon.get-entry.secret` | `auth_self` | Secret Service read confirmation when `require_confirmation = true` |
-| `org.keepassxc.daemon.passkey.create` | `auth_self` | Reserved; D-Bus method currently returns not implemented |
-| `org.keepassxc.daemon.passkey.assert` | `yes` | Reserved; D-Bus method currently returns not implemented |
+| `org.keepassxc.daemon.passkey.create` | `auth_self` | Create a passkey (polkit-gated; enforced by the daemon) |
+| `org.keepassxc.daemon.passkey.assert` | `auth_self` | Sign a passkey assertion (polkit-gated; enforced by the daemon) |
 
 `yes` = allowed by default. `auth_self` = requires the user to authenticate with their own password.
