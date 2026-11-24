@@ -147,6 +147,17 @@ List SSH keys loaded in the built-in agent. If `uuid` is non-empty, only loaded 
 ]
 ```
 
+#### `SshSetAutoload(uuid: s, entry: s, on: b, override_deny: b) → b`
+
+Set or clear auto-load for one entry (writes the `KPXCD_SSH_KEY` marker and
+`KeeAgent.settings` with `AddAtDatabaseOpen`). A KeeAgent deny requires
+`override_deny=true`.
+
+#### `SshExportKey(uuid: s, entry: s) → ay`
+
+Export one stored SSH private key as OpenSSH PEM. Gated by polkit
+`org.keepassxc.daemon.ssh.export` (auth_self) on every call.
+
 #### `SshAddKey(uuid: s, entry_path: s, lifetime: i, confirm: b) → b`
 
 Add an SSH key from an entry to the agent. `lifetime` and `confirm` are accepted for OpenSSH-agent compatibility, but the built-in agent does not enforce them yet.
@@ -166,11 +177,8 @@ Remove an SSH key from the agent by its fingerprint.
 
 **Authorization:** same-UID D-Bus caller check.
 
-#### `SshExportKey(fingerprint: s) → ay`
-
-Disabled. The daemon returns a failure; kpxcd exposes loaded SSH keys for signing, not private-key extraction.
-
-**Authorization:** same-UID D-Bus caller check.
+(The old disabled `SshExportKey(fingerprint)` method was replaced by the
+polkit-gated `SshExportKey(uuid, entry)` documented above.)
 
 ### FIDO2 / Passkey Methods
 

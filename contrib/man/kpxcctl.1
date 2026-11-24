@@ -91,13 +91,30 @@ specified entry, and set KeeAgent metadata. The public key is not stored
 separately; it can be derived from the private key attachment.
 
 .TP
-.B kpxcctl ssh import <uuid> <entry-path> <file> [\-\-passphrase] [\-\-delete-after]
+.B kpxcctl ssh import [uuid]
+Show a menu of private keys found in ~/.ssh and import the selected ones.
+Skips keys already stored (matched by fingerprint) and unsupported sk-* keys.
+.TP
+.B kpxcctl ssh autoload [uuid]
+Show a menu of the database's keys and toggle which auto-load at unlock.
+.TP
+.B kpxcctl ssh autoload <uuid> <entry> on|off [\-\-override-deny]
+Set or clear auto-load for one entry (writes the KPXCD_SSH_KEY marker and
+KeeAgent.settings). Applies at next unlock.
+.TP
+.B kpxcctl ssh import <uuid> <entry-path> <file> [\-\-delete-after]
 Import an existing SSH private key into the database. The key file is
 read, parsed, attached to the entry, and KeeAgent metadata is set.
 With \fB\-\-delete-after\fR, the source file is removed after successful import.
 
 .TP
-.B kpxcctl ssh export <fingerprint> <file>
+.B kpxcctl ssh export [uuid]
+Show a menu of stored keys and export one (polkit-gated).
+.TP
+.B kpxcctl ssh export <uuid> <entry> <file> [\-\-force] [\-\-no-passphrase]
+Export one stored key to OpenSSH format. Gated by polkit auth_self per call.
+Output is created 0600 with O_EXCL (never stdout), encrypted with a passphrase
+unless --no-passphrase.
 Disabled. kpxcd does not export loaded SSH private key material over D-Bus.
 
 .TP

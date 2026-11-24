@@ -36,6 +36,23 @@ Security and correctness fixes from an independent two-reviewer audit:
   still read. The polkit policy declares only actions the daemon enforces.
 - The PAM socket read is bounded by a deadline.
 
+SSH rework (self-sufficient; KeePassXC is never required):
+
+- Fixed the KeeAgent parser to read real KeePassXC EntrySettings XML
+  (previously only our own nonstandard form parsed, so KeePassXC-annotated
+  vaults loaded no keys); legacy form is read-only.
+- SSH keys are discovered via KeeAgent settings when present (deny always
+  wins), otherwise via the kpxcd KPXCD_SSH_KEY marker; bare attachments no
+  longer auto-load. Manage them with `kpxcctl ssh autoload` (menu or
+  explicit on/off) — applies at next unlock.
+- `kpxcctl ssh import` without arguments scans ~/.ssh and offers a menu,
+  skipping keys already stored; `ssh generate`/`ssh import` write both the
+  kpxcd marker and valid KeeAgent.settings, and refuse to overwrite an
+  existing different key.
+- `kpxcctl ssh export` is now available, gated by polkit auth_self
+  (org.keepassxc.daemon.ssh.export), writing 0600 O_EXCL files, encrypted
+  with a passphrase by default.
+
 - Added per-app notification suppression for Secret Service access: the first
   secret read by an app notifies, repeat reads within `notify_cache_ttl`
   seconds are silent, and each read refreshes the window.

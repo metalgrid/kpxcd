@@ -56,7 +56,7 @@
 |---|---|---|
 | Agent mode (kpxcd is the agent) | ✅ | Unix socket at `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
 | Client/proxy mode | ✅ | Push keys into existing agent (e.g. ssh-agent, gnome-keyring) |
-| Key extraction from KeePass | ✅ | KeeAgent XML metadata only; entries must set allowUseOfSshKey (addAtDatabaseOpen for auto-load) |
+| Key discovery | ✅ | KeeAgent EntrySettings (deny wins) or kpxcd KPXCD_SSH_KEY marker; no bare-attachment fallback; `ssh autoload` manages it |
 | RSA, Ed25519, ECDSA keys | ✅ | Standard OpenSSH key types |
 | Sign inside `security.Do()` | ✅ | Private key material in secret scope |
 | Remove keys on database lock | ✅ | Configurable `remove_on_lock` |
@@ -148,6 +148,8 @@ See [passkey limits](passkeys.md) and [conformance evidence](fido2-conformance.m
 | `kpxcctl ssh list/add/remove` | ✅ | Wired to AgentServer IdentityManager |
 | `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |
 | `kpxcctl ssh generate` | ✅ | In-place key generation with KeeAgent metadata |
-| `kpxcctl ssh import/export` | ✅ | PEM key import/export with attachment handling |
+| `kpxcctl ssh import` | ✅ | Menu over ~/.ssh, skips stored keys; single-file form kept |
+| `kpxcctl ssh autoload` | ✅ | Menu to toggle auto-load per entry |
+| `kpxcctl ssh export` | ✅ | Polkit-gated (auth_self), 0600 O_EXCL, passphrase-encrypted by default |
 | `kpxcctl ssh diag` | ✅ | Agent diagnostics |
 | Database reload on file change | ✅ | Re-decodes with the retained credential; keeps previous content on failure |
