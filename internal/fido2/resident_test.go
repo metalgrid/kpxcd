@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -566,4 +567,49 @@ var _ = Describe("Step 5 resident storage", func() {
 			Expect(result.DisplayName).To(BeEmpty())
 		}
 	}, Entry("verified", true), Entry("unverified", false))
+})
+
+var _ = Describe("assertResident counterless foreign entry (Z1)", func() {
+	It("signs with counter 0 and leaves the file bytes unchanged", func() {
+		pool, path := newTestPoolWithDB()
+		// Replace the default entry with a KeePassXC-style one: no PUB_KEY,
+		// no counter, BE/BS flags set.
+		odb, err := pool.Get(firstPoolUUID(pool))
+		Expect(err).NotTo(HaveOccurred())
+		pk := &PasskeyEntry{
+			RPID: "example.com", Username: "u", UserHandle: "aGFuZGxl", CredentialID: "Y3JlZA",
+			PrivateKeyPEM: testPrivPEM,
+		}
+		e := newPasskeyEntry(pk)
+		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyCounter} {
+			if idx := e.GetIndex(key); idx >= 0 {
+				e.Values = append(e.Values[:idx], e.Values[idx+1:]...)
+			}
+		}
+		setEntryValue(&e, KPEXPasskeyFlagBE, "1", false)
+		setEntryValue(&e, KPEXPasskeyFlagBS, "1", false)
+		Expect(odb.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
+			kdb.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{e}
+			return nil
+		})).To(Succeed())
+
+		before, err := os.ReadFile(path)
+		Expect(err).NotTo(HaveOccurred())
+
+		svc := NewFido2Service(&config.Fido2Config{Enabled: true}, pool)
+		refs, err := svc.residentCredentials("example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(refs).To(HaveLen(1))
+
+		hash := sha256.Sum256([]byte("cd"))
+		res, err := svc.assertResident(refs[0], refs, hash[:], true, false)
+		Expect(err).NotTo(HaveOccurred(), "counterless foreign entry must sign, not ErrSkipSave")
+		Expect(res.Signature).NotTo(BeEmpty())
+		Expect(res.AuthData[32] & (FlagBE | FlagBS)).To(Equal(byte(FlagBE | FlagBS)))
+		Expect(binary.BigEndian.Uint32(res.AuthData[33:37])).To(Equal(uint32(0)), "counter must be 0")
+
+		after, err := os.ReadFile(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(after).To(Equal(before), "counterless sign must not rewrite the vault")
+	})
 })

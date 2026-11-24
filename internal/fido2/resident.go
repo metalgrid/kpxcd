@@ -119,7 +119,7 @@ func (s *Fido2Service) persistRegistration(target *dbpool.OpenDatabase, pk *Pass
 		// attachments, history and unrelated metadata on an imported KeePass entry.
 		// Drop superseded legacy kpxcd fields so no stale private key or
 		// credential ID remains on the entry.
-		for _, key := range []string{legacyPasskeyRPID, legacyPasskeyRPName, legacyPasskeyUser, legacyPasskeyHandle, legacyPasskeyCredID, legacyPasskeyPrivKey} {
+		for _, key := range []string{legacyPasskeyRPID, legacyPasskeyRPName, legacyPasskeyUser, legacyPasskeyHandle, legacyPasskeyCredID, legacyPasskeyPrivKey, KPXCDPasskeyCounterless} {
 			if idx := entry.GetIndex(key); idx >= 0 {
 				entry.Values = append(entry.Values[:idx], entry.Values[idx+1:]...)
 			}
