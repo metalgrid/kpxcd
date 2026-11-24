@@ -4,6 +4,7 @@
 package dbusapi
 
 import (
+	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/tobischo/gokeepasslib/v3"
+	"golang.org/x/crypto/ssh"
 )
 
 // DaemonDBus implements the org.keepassxc.Daemon DBus interface.
@@ -243,19 +245,20 @@ func (d *DaemonDBus) GetEntry(sender dbus.Sender, uuid string, entryPath string)
 		db.RUnlock()
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
-	// Search for the entry by path while holding the read lock.
+	// Search for the entry and copy out its fields while holding the read
+	// lock: the entry's Values slice shares backing with the live database.
 	entry := findEntryByPathLocked(db, entryPath)
-	db.RUnlock()
 	if entry == nil {
+		db.RUnlock()
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
-
 	result := map[string]dbus.Variant{
 		"title":    dbus.MakeVariant(entry.GetTitle()),
 		"username": dbus.MakeVariant(entry.GetContent("UserName")),
 		"url":      dbus.MakeVariant(entry.GetContent("URL")),
 		"uuid":     dbus.MakeVariant(string(entry.UUID[:])),
 	}
+	db.RUnlock()
 
 	return result, nil
 }
@@ -382,21 +385,29 @@ func (d *DaemonDBus) SshAddKey(sender dbus.Sender, uuid string, entryPath string
 		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
 	}
-	// Extract while holding the read lock: entry points into database content.
+	// Extract and publish while holding the read lock: the entry points into
+	// database content, and AddIdentity must not land after a concurrent
+	// database lock finished its removal. The manager never calls back into
+	// the pool, so holding db.RLock across it cannot deadlock.
 	key, err := sshagent.ExtractKeyFromEntry(entry, db.Db)
-	db.RUnlock()
 	if err != nil {
+		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to extract key: %w", err))
 	}
 	if key == nil {
+		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry does not contain an SSH key"))
 	}
 	key.SetDBUUID(db.UUID)
 
 	if err := d.sshAgent.Manager().AddIdentity(key, lifetime, confirm, d.config.SSHAgent.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
+		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to add key to agent: %w", err))
 	}
-	slog.Info("DBus: SSH key added", "fingerprint", key.Fingerprint(), "db", db.Name, "entry", entryPath)
+	fingerprint := key.Fingerprint()
+	dbName := db.Name
+	db.RUnlock()
+	slog.Info("DBus: SSH key added", "fingerprint", fingerprint, "db", dbName, "entry", entryPath)
 	return true, nil
 }
 
@@ -586,6 +597,15 @@ func (d *DaemonDBus) SshImportKey(sender dbus.Sender, uuid string, entryPath str
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to parse key: %w", err))
 	}
+	// Store the key unencrypted (protected at rest by the KDBX encryption):
+	// the agent resolves keys with the entry password or none, so persisting
+	// the original passphrase-protected bytes would make the key unusable
+	// after the next unlock.
+	plainBlock, err := ssh.MarshalPrivateKey(key.PrivateKey, "")
+	if err != nil {
+		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: failed to re-encode key: %w", err))
+	}
+	keyData = pem.EncodeToMemory(plainBlock)
 
 	if err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
 		if kdb.Content == nil || kdb.Content.Root == nil || len(kdb.Content.Root.Groups) == 0 {
