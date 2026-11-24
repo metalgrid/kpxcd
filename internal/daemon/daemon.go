@@ -35,19 +35,19 @@ type DaemonApp struct {
 	// cfg is swapped atomically on SIGHUP; read it via cfg(), never directly.
 	cfg        atomic.Pointer[config.Config]
 	configPath string
-	pool      *dbpool.DatabasePool
-	dbusAPI   *dbusapi.DaemonDBus
-	secSvc    *secretservice.SecretService
-	sshAgent  *sshagent.AgentServer
-	sshClient *sshagent.AgentClient
-	fido2Svc  *fido2.Fido2Service
-	fido2Auth *hid.Authenticator
-	fido2Gate *fido2.PresenceGate
-	fido2Ctx  context.Context
-	fido2Stop context.CancelFunc
-	pamSocket *PAMSocketServer
-	dbusConn  *dbus.Conn
-	done      chan struct{}
+	pool       *dbpool.DatabasePool
+	dbusAPI    *dbusapi.DaemonDBus
+	secSvc     *secretservice.SecretService
+	sshAgent   *sshagent.AgentServer
+	sshClient  *sshagent.AgentClient
+	fido2Svc   *fido2.Fido2Service
+	fido2Auth  *hid.Authenticator
+	fido2Gate  *fido2.PresenceGate
+	fido2Ctx   context.Context
+	fido2Stop  context.CancelFunc
+	pamSocket  *PAMSocketServer
+	dbusConn   *dbus.Conn
+	done       chan struct{}
 }
 
 // cfg returns the current configuration. Safe for concurrent use; the

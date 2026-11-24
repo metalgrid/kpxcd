@@ -532,12 +532,12 @@ var _ = Describe("COSE public key encoding", func() {
 
 var _ = Describe("passkey entry field names", func() {
 	pk := &PasskeyEntry{
-		RPID:         "example.com",
-		RPName:       "Example",
-		Username:     "user",
-		DisplayName:  "User",
-		UserHandle:   "aGFuZGxl",
-		CredentialID: "Y3JlZA",
+		RPID:          "example.com",
+		RPName:        "Example",
+		Username:      "user",
+		DisplayName:   "User",
+		UserHandle:    "aGFuZGxl",
+		CredentialID:  "Y3JlZA",
 		PrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
 		PublicKeyCOSE: []byte{0xa5},
 	}

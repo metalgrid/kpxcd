@@ -67,12 +67,12 @@ const (
 	KPEXPrefix = "KPEX_"
 
 	// KeePassXC-compatible field names (written).
-	KPEXPasskeyRPID        = "KPEX_PASSKEY_RELYING_PARTY"
-	KPEXPasskeyUser        = "KPEX_PASSKEY_USERNAME"
-	KPEXPasskeyHandle      = "KPEX_PASSKEY_USER_HANDLE"
-	KPEXPasskeyCredID      = "KPEX_PASSKEY_CREDENTIAL_ID"
-	KPEXPasskeyPrivKey     = "KPEX_PASSKEY_PRIVATE_KEY_PEM"
-	KPEXPasskeyPubKey      = "KPEX_PASSKEY_PUB_KEY"
+	KPEXPasskeyRPID    = "KPEX_PASSKEY_RELYING_PARTY"
+	KPEXPasskeyUser    = "KPEX_PASSKEY_USERNAME"
+	KPEXPasskeyHandle  = "KPEX_PASSKEY_USER_HANDLE"
+	KPEXPasskeyCredID  = "KPEX_PASSKEY_CREDENTIAL_ID"
+	KPEXPasskeyPrivKey = "KPEX_PASSKEY_PRIVATE_KEY_PEM"
+	KPEXPasskeyPubKey  = "KPEX_PASSKEY_PUB_KEY"
 
 	// Legacy kpxcd names (read-only fallback).
 	legacyPasskeyRPID    = "KPEX_PASSKEY_RPID"

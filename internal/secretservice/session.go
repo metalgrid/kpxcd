@@ -25,7 +25,7 @@ type Session struct {
 	closed atomic.Bool
 	// onClose, if set, runs once when the session is closed (used to remove
 	// the session from the service map).
-	onClose func()
+	onClose   func()
 	closeOnce sync.Once
 }
 
