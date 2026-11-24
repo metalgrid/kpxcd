@@ -235,6 +235,17 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 		return "", fmt.Errorf("dbpool: fingerprint %s: %w", path, err)
 	}
 
+	// Retain a private copy of the credential for Reload; the caller keeps
+	// ownership of the original (tests destroy it themselves).
+	storedCred := cred
+	if cred.Password != nil {
+		ss, err := security.NewSecureString(string(cred.Password.Bytes()))
+		if err != nil {
+			return "", fmt.Errorf("dbpool: copy credential %s: %w", path, err)
+		}
+		storedCred.Password = ss
+	}
+
 	odb := &OpenDatabase{
 		UUID:        uuid,
 		InstanceID:  nextInstanceID.Add(1),
@@ -243,20 +254,23 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 		Locked:      false,
 		Db:          db,
 		Fingerprint: fingerprint,
-		cred:        cred,
+		cred:        storedCred,
 	}
 
-	// Set up file watcher for external changes.
+	// Set up file watcher for external changes. The event channel is read
+	// under the pool lock so Close's nil-ing cannot race the watcher start.
+	p.mu.RLock()
+	eventCh := p.event
+	p.mu.RUnlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		watchFile(ctx, path, p.event, uuid)
+		watchFile(ctx, path, eventCh, uuid)
 	}()
 	odb.Watcher = &fileWatcher{cancel: cancel, done: done}
 
 	p.mu.Lock()
-	eventCh := p.event
 	p.dbs[uuid] = odb
 	p.mu.Unlock()
 
