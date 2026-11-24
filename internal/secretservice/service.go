@@ -208,27 +208,24 @@ func (ss *SecretService) onDatabaseLocked(uuid string) {
 	}
 }
 
-// onDatabaseReloaded removes and re-creates the collection for the database.
+// onDatabaseReloaded emits CollectionChanged for the database's collection.
+// Collections read through to the live database, so no teardown/recreate is
+// needed — and tearing down would drop custom aliases.
 func (ss *SecretService) onDatabaseReloaded(uuid string) {
-	odb, err := ss.pool.Get(uuid)
-	if err != nil {
-		return
-	}
-	ss.mu.Lock()
-	for path, coll := range ss.collections {
+	ss.mu.RLock()
+	var path dbus.ObjectPath
+	for p, coll := range ss.collections {
 		if coll.db.UUID == uuid {
-			ss.removeCollectionLocked(path)
+			path = p
 			break
 		}
 	}
-	ss.mu.Unlock()
-
-	odb.RLock()
-	if !odb.Locked {
-		odb.RUnlock()
-		ss.createCollection(odb)
-	} else {
-		odb.RUnlock()
+	ss.mu.RUnlock()
+	if path == "" || ss.conn == nil {
+		return
+	}
+	if err := ss.conn.Emit(ServicePath, InterfaceService+".CollectionChanged", path); err != nil {
+		slog.Warn("secretservice: emit CollectionChanged", "error", err)
 	}
 }
 
@@ -463,6 +460,13 @@ func (ss *SecretService) registerSession(path dbus.ObjectPath, sess *Session) {
 		ss.sessionsMu.Lock()
 		delete(ss.sessions, path)
 		ss.sessionsMu.Unlock()
+		// Unexport the session object and wipe its key: Close must not leave
+		// the AES key reachable on the bus or in memory.
+		if ss.conn != nil {
+			_ = ss.conn.Export(nil, path, InterfaceSession)
+			_ = ss.conn.Export(nil, path, "org.freedesktop.DBus.Introspectable")
+		}
+		sess.wipeKey()
 	}
 	ss.sessionsMu.Lock()
 	ss.sessions[path] = sess
@@ -552,8 +556,9 @@ func (ss *SecretService) handleDHKeyExchange(input dbus.Variant, sessionPath dbu
 	clientPub := new(big.Int).SetBytes(clientPubBytes)
 	prime := dhPrime()
 	// Reject out-of-range public keys instead of computing a degenerate
-	// shared secret (fail closed on malformed input).
-	if clientPub.Sign() <= 0 || clientPub.Cmp(prime) >= 0 || new(big.Int).Sub(clientPub, big.NewInt(1)).Sign() < 0 {
+	// shared secret (fail closed on malformed input): valid range [2, p-2].
+	two := big.NewInt(2)
+	if clientPub.Cmp(two) < 0 || clientPub.Cmp(new(big.Int).Sub(prime, two)) > 0 {
 		slog.Warn("secretservice: DH exchange: client public key out of range")
 		return dbus.Variant{}
 	}

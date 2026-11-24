@@ -75,6 +75,14 @@ func (s *Session) Close() *dbus.Error {
 // isClosed reports whether the session was closed.
 func (s *Session) isClosed() bool { return s.closed.Load() }
 
+// wipeKey zeroes the session key material.
+func (s *Session) wipeKey() {
+	for i := range s.key {
+		s.key[i] = 0
+	}
+	s.key = nil
+}
+
 // Encrypt encrypts the given plaintext using AES-CBC with the session key.
 // Returns (iv, ciphertext, error). The IV is prepended to the ciphertext.
 func (s *Session) Encrypt(plaintext []byte) ([]byte, []byte, error) {
