@@ -79,6 +79,30 @@ func (c *AgentClient) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 	}
 }
 
+// OnDatabaseReloaded reconciles the upstream agent with externally reloaded
+// content: keys removed from the database are removed from the agent too.
+func (c *AgentClient) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
+	if !c.config.Enabled {
+		return
+	}
+	db.RLock()
+	keys, err := ExtractAutoLoadKeysFromDatabase(db.Db)
+	db.RUnlock()
+	if err != nil {
+		slog.Warn("SSH agent client: failed to re-extract keys after reload", "db", db.Name, "error", err)
+		return
+	}
+	c.RemoveKeysForDB(db.UUID)
+	for _, key := range keys {
+		key.SetDBUUID(db.UUID)
+		if err := c.AddKey(key); err != nil {
+			slog.Warn("SSH agent client: failed to re-add key after reload",
+				"fingerprint", key.Fingerprint(), "error", err)
+		}
+	}
+	slog.Info("SSH agent client: keys reconciled after reload", "db", db.Name, "count", len(keys))
+}
+
 // OnDatabaseLocked removes SSH keys belonging to a locked database
 // from the upstream agent.
 func (c *AgentClient) OnDatabaseLocked(db *dbpool.OpenDatabase) {

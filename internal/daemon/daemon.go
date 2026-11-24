@@ -414,12 +414,26 @@ func (app *DaemonApp) handlePoolEvent(evt dbpool.Event) {
 		// The file changed on disk: re-decode it with the retained credential
 		// before notifying services, so they see the new content. On failure
 		// the pool keeps the old content and the error is logged here.
-		if err := app.pool.Reload(evt.UUID); err != nil {
+		changed, err := app.pool.Reload(evt.UUID)
+		if err != nil {
 			slog.Warn("database reload failed", "name", evt.Name, "uuid", evt.UUID, "error", err)
-		} else {
-			slog.Info("database reloaded from disk", "name", evt.Name, "uuid", evt.UUID)
+			break
 		}
+		if !changed {
+			break // our own save or unchanged file: nothing to reconcile
+		}
+		slog.Info("database reloaded from disk", "name", evt.Name, "uuid", evt.UUID)
 
+		// Reconcile SSH identities with the new content: keys removed
+		// externally must not stay loaded.
+		if odb, err := app.pool.Get(evt.UUID); err == nil {
+			if app.sshAgent != nil {
+				app.sshAgent.OnDatabaseReloaded(odb)
+			}
+			if app.sshClient != nil {
+				app.sshClient.OnDatabaseReloaded(odb)
+			}
+		}
 		if app.secSvc != nil {
 			app.secSvc.HandlePoolEvent(evt)
 		}

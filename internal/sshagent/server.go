@@ -355,6 +355,32 @@ func (s *AgentServer) OnDatabaseUnlocked(db *dbpool.OpenDatabase) {
 	}
 }
 
+// OnDatabaseReloaded reconciles the agent with externally reloaded content:
+// keys removed from the database must not stay loaded.
+func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
+	if !s.config.Enabled {
+		return
+	}
+	db.RLock()
+	keys, err := ExtractAutoLoadKeysFromDatabase(db.Db)
+	db.RUnlock()
+	if err != nil {
+		slog.Warn("SSH agent: failed to re-extract keys after reload", "error", err)
+		return
+	}
+	s.manager.RemoveIdentitiesForDatabase(db.UUID)
+	for _, key := range keys {
+		key.SetDBUUID(db.UUID)
+		lifetime := uint32(s.config.Lifetime)
+		if err := s.manager.AddIdentity(key, lifetime, s.config.ConfirmOnUse,
+			s.config.RemoveOnLock, db.UUID, key.EntryUUID()); err != nil {
+			slog.Warn("SSH agent: failed to re-add identity after reload",
+				"fingerprint", key.Fingerprint(), "error", err)
+		}
+	}
+	slog.Info("SSH agent: identities reconciled after reload", "uuid", db.UUID, "count", len(keys))
+}
+
 // OnDatabaseLocked removes SSH keys from a locked database.
 func (s *AgentServer) OnDatabaseLocked(db *dbpool.OpenDatabase) {
 	if !s.config.Enabled {
