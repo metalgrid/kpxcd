@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/metalgrid/kpxcd/internal/pamcred"
@@ -118,6 +119,9 @@ func (s *PAMSocketServer) serve() {
 func (s *PAMSocketServer) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	// Bound the read so a client that connects and never sends cannot hold
+	// the handler (and the token buffer) forever.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	token := make([]byte, pamcred.PAMTokenLen)
 	if _, err := io.ReadFull(conn, token); err != nil {
 		slog.Warn("PAM socket read error", "error", err)
