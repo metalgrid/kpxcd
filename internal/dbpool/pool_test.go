@@ -305,18 +305,24 @@ var _ = Describe("Pool.Reload", func() {
 		Expect(gokeepasslib.NewEncoder(nf).Encode(newDB)).To(Succeed())
 		Expect(nf.Close()).To(Succeed())
 
-		Expect(pool.Reload(uuid)).To(Succeed())
+		changed, err := pool.Reload(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeTrue())
 		odb, err = pool.Get(uuid)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(odb.RootEntries()).To(HaveLen(1))
 		Expect(odb.RootEntries()[0].GetTitle()).To(Equal("After"))
 
 		// Reloading again with an unchanged file is a no-op.
-		Expect(pool.Reload(uuid)).To(Succeed())
+		changed, err = pool.Reload(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeFalse())
 
 		// A file that is no longer a valid KDBX keeps the previous content.
 		Expect(os.WriteFile(dbPath, []byte("not a kdbx"), 0o600)).To(Succeed())
-		Expect(pool.Reload(uuid)).NotTo(Succeed())
+		changed, err = pool.Reload(uuid)
+		Expect(err).To(HaveOccurred())
+		Expect(changed).To(BeFalse())
 		odb, err = pool.Get(uuid)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(odb.RootEntries()[0].GetTitle()).To(Equal("After"))
@@ -328,6 +334,7 @@ var _ = Describe("Pool.Reload", func() {
 		<-eventCh
 		Expect(pool.Lock(uuid)).To(Succeed())
 		<-eventCh
-		Expect(pool.Reload(uuid)).NotTo(Succeed())
+		_, err := pool.Reload(uuid)
+		Expect(err).To(HaveOccurred())
 	})
 })

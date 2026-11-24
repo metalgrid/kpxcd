@@ -533,44 +533,44 @@ func decodeDatabase(f *os.File, cred Credential) (string, *gokeepasslib.Database
 // credential, used when the file watcher reports an external modification.
 // The in-memory content is replaced only when the file changed and decoding
 // succeeds; on any failure the previous content is kept and an error is
-// returned. A no-op when the fingerprint already matches (e.g. our own save).
-func (p *DatabasePool) Reload(uuid string) error {
+// returned. It reports whether the in-memory content actually changed.
+func (p *DatabasePool) Reload(uuid string) (bool, error) {
 	p.mu.RLock()
 	odb, ok := p.dbs[uuid]
 	p.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("dbpool: database %s not found", uuid)
+		return false, fmt.Errorf("dbpool: database %s not found", uuid)
 	}
 
 	odb.mu.Lock()
 	defer odb.mu.Unlock()
 	if odb.Locked || odb.Db == nil {
-		return fmt.Errorf("dbpool: database %s is locked", uuid)
+		return false, fmt.Errorf("dbpool: database %s is locked", uuid)
 	}
 
 	f, err := os.Open(odb.Path)
 	if err != nil {
-		return fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
+		return false, fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
 	}
 	defer f.Close()
 
 	fp, err := FingerprintOpenFile(f)
 	if err != nil {
-		return fmt.Errorf("dbpool: reload %s: fingerprint: %w", odb.Path, err)
+		return false, fmt.Errorf("dbpool: reload %s: fingerprint: %w", odb.Path, err)
 	}
 	if odb.Fingerprint.Equal(fp) {
-		return nil
+		return false, nil // unchanged (e.g. our own save)
 	}
 
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
+		return false, fmt.Errorf("dbpool: reload %s: %w", odb.Path, err)
 	}
 	newUUID, newDB, err := decodeDatabase(f, odb.cred)
 	if err != nil {
-		return fmt.Errorf("dbpool: reload %s: keeping previous content: %w", odb.Path, err)
+		return false, fmt.Errorf("dbpool: reload %s: keeping previous content: %w", odb.Path, err)
 	}
 	if newUUID != odb.UUID {
-		return fmt.Errorf("dbpool: reload %s: file now holds a different database; keeping previous content", odb.Path)
+		return false, fmt.Errorf("dbpool: reload %s: file now holds a different database; keeping previous content", odb.Path)
 	}
 
 	security.Do(func() {
@@ -578,7 +578,7 @@ func (p *DatabasePool) Reload(uuid string) error {
 	})
 	odb.Db = newDB
 	odb.Fingerprint = fp
-	return nil
+	return true, nil
 }
 
 // buildCredentials converts a Credential into gokeepasslib DBCredentials.
