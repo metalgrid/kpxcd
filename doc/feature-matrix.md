@@ -10,7 +10,7 @@
 | Lock all databases | ✅ | `kpxcctl lock all` |
 | Idle timeout auto-lock | ✅ | Configurable `idle_timeout` |
 | Screen lock integration | ❌ | `lock_on_screenlock` is parsed but not wired yet |
-| File watcher (external edits) | ✅ | 30s polling, detects KeePassXC GUI changes |
+| File watcher (external edits) | ✅ | inotify; external changes trigger an in-memory reload with the retained credential |
 | Atomic save with conflict detection | ✅ | Fingerprint-based optimistic locking |
 | Adopt existing database as PAM default | ✅ | `kpxcctl adopt-default --replace <path>` |
 
@@ -56,7 +56,7 @@
 |---|---|---|
 | Agent mode (kpxcd is the agent) | ✅ | Unix socket at `$XDG_RUNTIME_DIR/kpxcd/ssh.sock` |
 | Client/proxy mode | ✅ | Push keys into existing agent (e.g. ssh-agent, gnome-keyring) |
-| Key extraction from KeePass | ✅ | KeeAgent XML metadata, plus permissive attachment heuristics |
+| Key extraction from KeePass | ✅ | KeeAgent XML metadata only; entries must set allowUseOfSshKey (addAtDatabaseOpen for auto-load) |
 | RSA, Ed25519, ECDSA keys | ✅ | Standard OpenSSH key types |
 | Sign inside `security.Do()` | ✅ | Private key material in secret scope |
 | Remove keys on database lock | ✅ | Configurable `remove_on_lock` |
@@ -150,4 +150,4 @@ See [passkey limits](passkeys.md) and [conformance evidence](fido2-conformance.m
 | `kpxcctl ssh generate` | ✅ | In-place key generation with KeeAgent metadata |
 | `kpxcctl ssh import/export` | ✅ | PEM key import/export with attachment handling |
 | `kpxcctl ssh diag` | ✅ | Agent diagnostics |
-| Database reload on file change | ❌ | Watcher detects changes but doesn't reload in-memory |
+| Database reload on file change | ✅ | Re-decodes with the retained credential; keeps previous content on failure |
