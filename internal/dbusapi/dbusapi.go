@@ -870,7 +870,6 @@ func (d *DaemonDBus) ImportPasskey(sender dbus.Sender, uuid string, rpID string,
 	return true, nil
 }
 
-// findEntryByPath is unused; lock-holding callers use findEntryByPathLocked.
 // findEntryByPathLocked is findEntryByPath without taking the database lock:
 // the caller must already hold RLock or Lock on db.
 func findEntryByPathLocked(db *dbpool.OpenDatabase, path string) *gokeepasslib.Entry {

@@ -50,7 +50,7 @@ type DaemonApp struct {
 	done       chan struct{}
 }
 
-// cfg returns the current configuration. Safe for concurrent use; the
+// currentCfg returns the current configuration. Safe for concurrent use; the
 // pointer is swapped atomically on SIGHUP reload.
 func (app *DaemonApp) currentCfg() *config.Config { return app.cfg.Load() }
 

@@ -10,6 +10,11 @@
 | Override | `kpxcd --config <path>` |
 | XDG | `$XDG_CONFIG_HOME/kpxcd/config.toml` (if `XDG_CONFIG_HOME` is set) |
 
+
+
+> **Reload scope:** SIGHUP reloads the log level and the Secret Service
+> settings. SSH agent, FIDO2, and D-Bus settings are read at startup only —
+> restart the daemon to apply changes to them.
 If the default config file does not exist, `kpxcd` creates it from its embedded defaults with parent directory mode `0700` and file mode `0600`.
 
 ## Full Example
@@ -151,11 +156,6 @@ This is a TOML array of tables — repeat the `[[database]]` header for each dat
 | `name` | string | filename | Human-readable name for the database. |
 | `default` | bool | `false` | Mark this as the default database. At most one database may be default. |
 | `auto_unlock` | bool | `false` | Attempt to unlock this database when the daemon starts. |
-
-> **Reload scope:** SIGHUP reloads the log level and the Secret Service
-> settings. SSH agent, FIDO2, and D-Bus settings are read at startup only —
-> restart the daemon to apply changes to them.
-
 | `unlock_credential` | string | `"prompt"` | How to obtain the password for auto-unlock. One of: `pam`, `systemd-credential`, `keyfile`, `prompt`, `none`. |
 | `systemd_credential_name` | string | `""` | Name of the systemd credential holding the password. Only used when `unlock_credential = "systemd-credential"`. |
 | `keyfile` | string | `""` | Path to a keyfile. Used when `unlock_credential = "keyfile"` or as a secondary factor. |
