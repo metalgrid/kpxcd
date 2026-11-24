@@ -110,6 +110,19 @@ func (m *IdentityManager) FindIdentityByBlob(blob []byte) *LoadedKey {
 	return nil
 }
 
+// RemoveAllIdentitiesForDatabase removes every key belonging to a database,
+// regardless of AutoRemove. Used on reload: externally deleted keys must not
+// stay usable. AutoRemove only governs what a lock removes.
+func (m *IdentityManager) RemoveAllIdentitiesForDatabase(dbUUID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for fp, lk := range m.keys {
+		if lk.DBUUID == dbUUID {
+			delete(m.keys, fp)
+		}
+	}
+}
+
 // RemoveIdentitiesForDatabase removes all keys belonging to a specific database.
 func (m *IdentityManager) RemoveIdentitiesForDatabase(dbUUID string) {
 	m.mu.Lock()

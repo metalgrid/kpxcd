@@ -368,7 +368,9 @@ func (s *AgentServer) OnDatabaseReloaded(db *dbpool.OpenDatabase) {
 		slog.Warn("SSH agent: failed to re-extract keys after reload", "error", err)
 		return
 	}
-	s.manager.RemoveIdentitiesForDatabase(db.UUID)
+	// Remove every identity of this database (not only AutoRemove ones), then
+	// re-add what the reloaded content still contains.
+	s.manager.RemoveAllIdentitiesForDatabase(db.UUID)
 	for _, key := range keys {
 		key.SetDBUUID(db.UUID)
 		lifetime := uint32(s.config.Lifetime)
