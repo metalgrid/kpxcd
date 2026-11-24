@@ -3,9 +3,12 @@
 package dbusapi
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,6 +19,7 @@ import (
 	"github.com/metalgrid/kpxcd/internal/config"
 	"github.com/metalgrid/kpxcd/internal/dbpool"
 	"github.com/metalgrid/kpxcd/internal/fido2"
+	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
 )
 
@@ -181,7 +185,7 @@ var _ = Describe("attachSSHKey collision rules", func() {
 		return e
 	}
 	genPEM := func() []byte {
-		_, pemBytes, err := sshagent.GenerateSSHKeyPair("ed25519", 0)
+		_, pemBytes, err := sshagent.GenerateSSHKeyPair("ed25519", 0, "")
 		Expect(err).NotTo(HaveOccurred())
 		return pemBytes
 	}
@@ -222,3 +226,130 @@ var _ = Describe("attachSSHKey collision rules", func() {
 		Expect(err.Error()).To(ContainSubstring("deny"))
 	})
 })
+
+var _ = Describe("SshSetAutoload / scan round-trip", func() {
+	newVaultWithEntry := func(marker, settingsXML, legacyXML string, withKey bool) (*DaemonDBus, *dbpool.DatabasePool, string, string) {
+		dir := GinkgoT().TempDir()
+		path := filepath.Join(dir, "v.kdbx")
+		kdb := gokeepasslib.NewDatabase()
+		kdb.Credentials = gokeepasslib.NewPasswordCredentials("pw")
+		entry := gokeepasslib.NewEntry()
+		entry.Values = append(entry.Values, gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "k"}})
+		if marker != "" {
+			entry.Values = append(entry.Values, gokeepasslib.ValueData{Key: sshagent.MarkerSSHKey, Value: gokeepasslib.V{Content: marker}})
+		}
+		if withKey {
+			_, pemBytes, err := sshagent.GenerateSSHKeyPair("ed25519", 0, "")
+			Expect(err).NotTo(HaveOccurred())
+			bin := kdb.AddBinary(pemBytes)
+			entry.Binaries = append(entry.Binaries, bin.CreateReference("id_ed25519"))
+		}
+		if settingsXML != "" {
+			bin := kdb.AddBinary([]byte(settingsXML))
+			entry.Binaries = append(entry.Binaries, bin.CreateReference(sshagent.KeeAgentSettingsAttachment))
+		}
+		if legacyXML != "" {
+			entry.CustomData = append(entry.CustomData, gokeepasslib.CustomData{Key: sshagent.KeeAgentSettingsAttachment, Value: legacyXML})
+		}
+		kdb.Content.Root.Groups[0].Entries = []gokeepasslib.Entry{entry}
+		Expect(kdb.LockProtectedEntries()).To(Succeed())
+		f, err := os.Create(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gokeepasslib.NewEncoder(f).Encode(kdb)).To(Succeed())
+		Expect(f.Close()).To(Succeed())
+
+		pool := dbpool.NewDatabasePool(nil)
+		ss, err := security.NewSecureString("pw")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(ss.Destroy)
+		uuid, err := pool.Open(path, dbpool.PasswordCredential(ss))
+		Expect(err).NotTo(HaveOccurred())
+		return NewDaemonDBus(config.DefaultConfig(), pool, nil, nil), pool, uuid, path
+	}
+
+	entryUUIDHex := func(pool *dbpool.DatabasePool, uuid string) string {
+		odb, err := pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		odb.RLock()
+		defer odb.RUnlock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		return fmt.Sprintf("%x", e.UUID[:])
+	}
+
+	It("autoload ON on a bare key works via the scan-reported UUID (N1)", func() {
+		d, pool, uuid, _ := newVaultWithEntry("", "", "", true)
+		eid := entryUUIDHex(pool, uuid)
+		// scan reports the same UUID the lookup accepts
+		rows, derr := d.SshScanDatabase("", uuid)
+		Expect(derr).To(BeNil())
+		Expect(rows).To(HaveLen(1))
+		scanUUID := getVariantStringDBus(rows[0]["uuid"])
+		Expect(scanUUID).To(Equal(eid))
+		ok, serr := d.SshSetAutoload("", uuid, scanUUID, true, false)
+		Expect(serr).To(BeNil())
+		Expect(ok).To(BeTrue())
+		// marker now set, settings written
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(Equal("id_ed25519"))
+		odb.RUnlock()
+	})
+
+	It("denied entry: ON without override fails and changes nothing; with override succeeds", func() {
+		d, pool, uuid, _ := newVaultWithEntry("", `<EntrySettings><AllowUseOfSshKey>false</AllowUseOfSshKey></EntrySettings>`, "", true)
+		eid := entryUUIDHex(pool, uuid)
+		ok, serr := d.SshSetAutoload("", uuid, eid, true, false)
+		Expect(serr).To(HaveOccurred())
+		Expect(ok).To(BeFalse())
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(BeEmpty(), "failed call must not write the marker")
+		odb.RUnlock()
+		ok, serr = d.SshSetAutoload("", uuid, eid, true, true)
+		Expect(serr).To(BeNil())
+		Expect(ok).To(BeTrue())
+	})
+
+	It("OFF never flips Allow and clears the marker; legacy entry gets real settings", func() {
+		d, pool, uuid, _ := newVaultWithEntry("id_ed25519", "", `<KeeAgent><allowUseOfSshKey>true</allowUseOfSshKey><location><selectedType>attachment</selectedType><attachment>id_ed25519</attachment></location></KeeAgent>`, true)
+		eid := entryUUIDHex(pool, uuid)
+		ok, serr := d.SshSetAutoload("", uuid, eid, false, false)
+		Expect(serr).To(BeNil())
+		Expect(ok).To(BeTrue())
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(BeEmpty())
+		Expect(e.CustomData).To(BeEmpty(), "legacy custom data replaced")
+		hasSettings := false
+		for _, b := range e.Binaries {
+			if strings.EqualFold(b.Name, sshagent.KeeAgentSettingsAttachment) {
+				hasSettings = true
+			}
+		}
+		Expect(hasSettings).To(BeTrue())
+		odb.RUnlock()
+	})
+
+	It("unreadable settings: ON without override fails; OFF is a no-op", func() {
+		d, pool, uuid, _ := newVaultWithEntry("id_ed25519", "garbage <<<", "", true)
+		eid := entryUUIDHex(pool, uuid)
+		_, serr := d.SshSetAutoload("", uuid, eid, true, false)
+		Expect(serr).To(HaveOccurred())
+		ok, serr := d.SshSetAutoload("", uuid, eid, false, false)
+		Expect(serr).To(BeNil())
+		Expect(ok).To(BeTrue())
+		odb, _ := pool.Get(uuid)
+		odb.RLock()
+		e := odb.Db.Content.Root.Groups[0].Entries[0]
+		Expect(e.GetContent(sshagent.MarkerSSHKey)).To(Equal("id_ed25519"), "OFF on unreadable must leave the marker alone")
+		odb.RUnlock()
+	})
+})
+
+func getVariantStringDBus(v dbus.Variant) string {
+	s, _ := v.Value().(string)
+	return s
+}

@@ -5,6 +5,8 @@ package dbusapi
 
 import (
 	"encoding/pem"
+	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -380,10 +382,12 @@ func (d *DaemonDBus) SshAddKey(sender dbus.Sender, uuid string, entryPath string
 		db.RUnlock()
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
-	entry := findEntryByPathLocked(db, entryPath)
-	if entry == nil {
+	db.RUnlock()
+	db.RLock()
+	entry, lerr := lookupEntry(db.Db, entryPath)
+	if lerr != nil {
 		db.RUnlock()
-		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryPath))
+		return false, dbus.MakeFailedError(lerr)
 	}
 	// Extract and publish while holding the read lock: the entry points into
 	// database content, and AddIdentity must not land after a concurrent
@@ -469,7 +473,7 @@ func (d *DaemonDBus) SshGenerateKey(sender dbus.Sender, uuid string, entryPath s
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: database is locked"))
 	}
 
-	key, pemBytes, err := sshagent.GenerateSSHKeyPair(keyType, int(bits))
+	key, pemBytes, err := sshagent.GenerateSSHKeyPair(keyType, int(bits), comment)
 	if err != nil {
 		return false, dbus.MakeFailedError(fmt.Errorf("dbusapi: key generation failed: %w", err))
 	}
@@ -571,7 +575,7 @@ func lookupEntry(kdb *gokeepasslib.Database, ref string) (*gokeepasslib.Entry, e
 	if byTitle != nil {
 		return byTitle, nil
 	}
-	return nil, fmt.Errorf("dbusapi: entry not found: %s", ref)
+	return nil, fmt.Errorf("%w: %s", errEntryNotFound, ref)
 }
 
 // findOrCreateEntry finds an entry by title (via lookupEntry) or creates it
@@ -582,6 +586,8 @@ func findOrCreateEntry(kdb *gokeepasslib.Database, title string) (*gokeepasslib.
 	}
 	if entry, err := lookupEntry(kdb, title); err == nil {
 		return entry, nil
+	} else if !errors.Is(err, errEntryNotFound) {
+		return nil, err
 	}
 	group := &kdb.Content.Root.Groups[0]
 	newEntry := gokeepasslib.NewEntry()
@@ -597,7 +603,10 @@ func findOrCreateEntry(kdb *gokeepasslib.Database, title string) (*gokeepasslib.
 // place (preserving unrelated fields) and drops the legacy custom-data form.
 // Refuses SelectedType=file.
 func writeKeeAgentSettings(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry, mutate func(*sshagent.EntrySettings)) error {
-	settings := existingEntrySettings(kdb, entry)
+	settings, serr := existingEntrySettings(kdb, entry)
+	if serr != nil {
+		return serr
+	}
 	if settings == nil {
 		settings = &sshagent.EntrySettings{
 			AllowUseOfSshKey:           true,
@@ -643,7 +652,12 @@ func writeKeeAgentSettings(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry
 // silently would destroy the old private key), and refuses KeeAgent-denied
 // entries.
 func attachSSHKey(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry, pemBytes []byte) error {
-	if existing := existingEntrySettings(kdb, entry); existing != nil && !existing.AllowUseOfSshKey {
+	// N2: unreadable settings count as denied for writes (fail closed).
+	existing, serr := existingEntrySettings(kdb, entry)
+	if serr != nil {
+		return fmt.Errorf("dbusapi: %w; refusing to touch the entry", serr)
+	}
+	if existing != nil && !existing.AllowUseOfSshKey {
 		return fmt.Errorf("dbusapi: KeeAgent settings deny this entry; not overwriting the key")
 	}
 	newKey, err := sshagent.ParsePrivateKey(pemBytes, "")
@@ -689,37 +703,54 @@ func attachSSHKey(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry, pemByte
 		entry.Binaries = append(entry.Binaries, ref)
 	}
 
+	// N5: all validation passed; marshal settings before mutating anything.
+	settingsXML, err := sshagent.MarshalEntrySettings(&sshagent.EntrySettings{
+		AllowUseOfSshKey:      true,
+		AddAtDatabaseOpen:     true,
+		RemoveAtDatabaseClose: true,
+		Location:              sshagent.EntryLocation{SelectedType: "attachment", AttachmentName: "ssh-key"},
+	})
+	if err != nil {
+		return err
+	}
 	setEntryValue(entry, sshagent.MarkerSSHKey, "ssh-key", false)
 	return writeKeeAgentSettings(kdb, entry, func(st *sshagent.EntrySettings) {
 		st.AllowUseOfSshKey = true
 		st.AddAtDatabaseOpen = true
 		st.Location = sshagent.EntryLocation{SelectedType: "attachment", AttachmentName: "ssh-key"}
+		_ = settingsXML
 	})
 }
 
 // existingEntrySettings parses the entry's current KeeAgent.settings
 // attachment, if any.
-func existingEntrySettings(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry) *sshagent.EntrySettings {
+// existingEntrySettings returns the entry's KeeAgent.settings attachment.
+// A present-but-unreadable attachment is an error, not nil: nil would make
+// callers treat a possible deny as absent (fail open).
+func existingEntrySettings(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry) (*sshagent.EntrySettings, error) {
 	for _, ref := range entry.Binaries {
 		if !strings.EqualFold(ref.Name, sshagent.KeeAgentSettingsAttachment) {
 			continue
 		}
 		binary := kdb.FindBinary(ref.Value.ID)
 		if binary == nil {
-			return nil
+			return nil, fmt.Errorf("dbusapi: KeeAgent.settings attachment not found in database")
 		}
 		content, err := binary.GetContentBytes()
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("dbusapi: decode KeeAgent.settings: %w", err)
 		}
 		s, err := sshagent.ParseEntrySettings(content)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("dbusapi: KeeAgent.settings unreadable: %w", err)
 		}
-		return s
+		return s, nil
 	}
-	return nil
+	return nil, nil
 }
+
+// errEntryNotFound is the sentinel lookupEntry returns for a missing entry.
+var errEntryNotFound = fmt.Errorf("dbusapi: entry not found")
 
 // setEntryValue sets an entry value field, replacing an existing one.
 func setEntryValue(entry *gokeepasslib.Entry, key, value string, protected bool) {
@@ -781,11 +812,15 @@ func (d *DaemonDBus) SshExportKey(sender dbus.Sender, uuid string, entryRef stri
 	entry, lerr := lookupEntry(db.Db, entryRef)
 	var key *sshagent.Key
 	if lerr == nil {
-		key, err = sshagent.ExtractKeyFromEntry(entry, db.Db)
+		// P5: export ignores the agent-use deny (export itself is polkit-gated).
+		key, err = sshagent.ExtractKeyForExport(entry, db.Db)
 	}
 	db.RUnlock()
-	if entry == nil || key == nil || err != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: no SSH key for entry %s", entryRef))
+	if lerr != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: entry not found: %s", entryRef))
+	}
+	if key == nil || err != nil {
+		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: no loadable SSH key for entry %s", entryRef))
 	}
 	if key.PrivateKey == nil {
 		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: key has no private material (encrypted key without passphrase)"))
@@ -808,8 +843,9 @@ func (d *DaemonDBus) SshExportKey(sender dbus.Sender, uuid string, entryRef stri
 
 // SshSetAutoload sets or clears an entry's auto-load marker. On: writes the
 // kpxcd marker for the entry's actual key attachment and sets
-// AddAtDatabaseOpen=true (a KeeAgent deny requires overrideDeny). Off: only
-// clears the marker and AddAtDatabaseOpen — Allow is never changed by "off".
+// AddAtDatabaseOpen=true (a deny or unreadable settings needs overrideDeny).
+// Off: clears the marker and AddAtDatabaseOpen; Allow is never changed by
+// "off"; legacy <KeeAgent> custom-data entries get real settings written.
 func (d *DaemonDBus) SshSetAutoload(sender dbus.Sender, uuid string, entryRef string, on bool, overrideDeny bool) (bool, *dbus.Error) {
 	if err := d.authorize(sender); err != nil {
 		return false, dbus.MakeFailedError(err)
@@ -827,29 +863,54 @@ func (d *DaemonDBus) SshSetAutoload(sender dbus.Sender, uuid string, entryRef st
 		if err != nil {
 			return err
 		}
-		current := existingEntrySettings(kdb, entry)
+		current, serr := existingEntrySettings(kdb, entry)
+		if serr != nil {
+			// Unreadable settings: treat as denied for ON, leave alone for OFF.
+			if on && !overrideDeny {
+				return fmt.Errorf("dbusapi: KeeAgent.settings unreadable; pass overrideDeny to override")
+			}
+			if !on {
+				return nil
+			}
+			current = nil
+		}
 		denied := current != nil && !current.AllowUseOfSshKey
 		if denied && on && !overrideDeny {
 			return fmt.Errorf("dbusapi: KeeAgent settings deny this entry; pass overrideDeny to override")
 		}
+
 		if !on {
-			// Off never touches Allow.
+			// Off never touches Allow. Legacy custom-data entries need real
+			// settings written so they stop auto-loading.
+			legacy := legacyKeeAgent(kdb, entry)
+			if current == nil && legacy == nil {
+				if idx := entry.GetIndex(sshagent.MarkerSSHKey); idx >= 0 {
+					entry.Values = append(entry.Values[:idx], entry.Values[idx+1:]...)
+				}
+				return nil
+			}
 			if idx := entry.GetIndex(sshagent.MarkerSSHKey); idx >= 0 {
 				entry.Values = append(entry.Values[:idx], entry.Values[idx+1:]...)
 			}
-			if current != nil {
-				return writeKeeAgentSettings(kdb, entry, func(st *sshagent.EntrySettings) {
-					st.AddAtDatabaseOpen = false
-				})
+			base := current
+			if base == nil {
+				base = &sshagent.EntrySettings{
+					AllowUseOfSshKey:           legacy.allow,
+					LifetimeConstraintDuration: 600,
+					Location:                   sshagent.EntryLocation{SelectedType: "attachment", AttachmentName: legacy.attachment},
+				}
 			}
-			return nil // bare entry: nothing to change
+			return writeKeeAgentSettings(kdb, entry, func(st *sshagent.EntrySettings) {
+				st.AddAtDatabaseOpen = false
+			})
 		}
-		// On: choose the entry's actual key attachment and verify it parses.
+
+		// On: choose and verify the key attachment BEFORE any write (N3/N5).
 		name, err := sshagent.ChooseKeyAttachment(entry, kdb)
 		if err != nil {
 			return err
 		}
-		if _, err := sshagent.ExtractKeyFromEntry(entry, kdb); err != nil {
+		if err := sshagent.VerifyKeyAttachment(entry, kdb, name); err != nil {
 			return fmt.Errorf("dbusapi: chosen key does not load: %w", err)
 		}
 		setEntryValue(entry, sshagent.MarkerSSHKey, name, false)
@@ -863,6 +924,29 @@ func (d *DaemonDBus) SshSetAutoload(sender dbus.Sender, uuid string, entryRef st
 	}
 	slog.Info("DBus: SSH autoload changed", "db", db.Name, "entry", entryRef, "on", on)
 	return true, nil
+}
+
+// legacyKeeAgent reads the old <KeeAgent> custom-data form, if present.
+func legacyKeeAgent(kdb *gokeepasslib.Database, entry *gokeepasslib.Entry) *struct {
+	allow      bool
+	attachment string
+} {
+	for _, cd := range entry.CustomData {
+		if !strings.EqualFold(cd.Key, sshagent.KeeAgentSettingsAttachment) {
+			continue
+		}
+		var l struct {
+			Allow      bool   `xml:"allowUseOfSshKey"`
+			Attachment string `xml:"location>attachment"`
+		}
+		if err := xml.Unmarshal([]byte(cd.Value), &l); err == nil {
+			return &struct {
+				allow      bool
+				attachment string
+			}{allow: l.Allow, attachment: l.Attachment}
+		}
+	}
+	return nil
 }
 
 // polkit action IDs for passkey operations (contrib/polkit policy).
