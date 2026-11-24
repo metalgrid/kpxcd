@@ -64,7 +64,6 @@ type CredentialReference struct {
 type ResidentAssertion struct {
 	CredentialID, UserHandle, AuthData, Signature []byte
 	Name, DisplayName                             string
-	SignCount                                     uint32
 }
 
 // CredentialStore is the persisted-credential surface the CTAP commands

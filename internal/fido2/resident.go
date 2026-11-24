@@ -321,16 +321,28 @@ func (s *Fido2Service) assertResident(ref hid.CredentialReference, original []hi
 		if err != nil {
 			return err
 		}
-		result = hid.ResidentAssertion{CredentialID: id, UserHandle: handle, AuthData: auth, Signature: signature, SignCount: signCount}
+		result = hid.ResidentAssertion{CredentialID: id, UserHandle: handle, AuthData: auth, Signature: signature}
 		if uv {
 			result.Name, result.DisplayName = pk.Username, pk.DisplayName
 		}
 		if shouldPersistCounter(pk) {
 			setEntryValue(entry, KPEXPasskeyCounter, fmt.Sprintf("%d", signCount), false)
+			// Backfill backup flags on kpxcd-made entries (same as the
+			// allow-list path).
+			if entry.GetContent(KPEXPasskeyPubKey) != "" {
+				if entry.GetContent(KPEXPasskeyFlagBE) == "" {
+					setEntryValue(entry, KPEXPasskeyFlagBE, "0", false)
+				}
+				if entry.GetContent(KPEXPasskeyFlagBS) == "" {
+					setEntryValue(entry, KPEXPasskeyFlagBS, "0", false)
+				}
+			}
+			now := wrappers.Now()
+			entry.Times.LastModificationTime = &now
+			return nil
 		}
-		now := wrappers.Now()
-		entry.Times.LastModificationTime = &now
-		return nil
+		// Y3: counterless foreign entry — sign 0, persist nothing, skip the save.
+		return dbpool.ErrSkipSave
 	})
 	if err != nil {
 		return hid.ResidentAssertion{}, err

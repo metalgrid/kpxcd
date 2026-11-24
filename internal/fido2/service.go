@@ -92,6 +92,8 @@ const (
 	// and defaults to 1 when absent; kpxcd registers BE=0/BS=0 and writes "0".
 	KPEXPasskeyFlagBE = "KPEX_PASSKEY_FLAG_BE"
 	KPEXPasskeyFlagBS = "KPEX_PASSKEY_FLAG_BS"
+	// KPXCDPasskeyCounterless marks entries whose counter stays 0 (Bitwarden imports with counter 0): sign 0, never persist.
+	KPXCDPasskeyCounterless = "KPXCD_PASSKEY_COUNTERLESS"
 )
 
 // entryContent returns the first non-empty value among keys (new name first,
@@ -126,6 +128,11 @@ type PasskeyEntry struct {
 	KpxcdMade bool
 	// HasCounter: the entry carries a persisted sign counter.
 	HasCounter bool
+	// Counterless: sign with counter 0 and never persist one (foreign
+	// entries and Bitwarden imports with counter 0).
+	Counterless bool
+	// Imported: came from a Bitwarden export; registers BE=1/BS=1.
+	Imported bool
 }
 
 // ErrNoCredentials is returned when no stored credential matches an
@@ -240,8 +247,6 @@ type SignAssertionInput struct {
 	ClientDataHash []byte // SHA-256 of the client data JSON (32 bytes)
 	UserPresent    bool
 	UserVerified   bool
-	BackupEligible bool
-	BackupState    bool
 }
 
 // AssertionResult is one signed WebAuthn assertion. All byte fields are
@@ -461,6 +466,7 @@ func (s *Fido2Service) ImportPasskey(dbUUID string, in ImportPasskeyInput) (*Pas
 		Subject:       in.UserDisplayName,
 		DisplayName:   in.UserDisplayName,
 		DBUUID:        dbUUID,
+		Imported:      true,
 	}
 	if err := s.pool.WithUnlockedDatabases(func(dbs []*dbpool.OpenDatabase) error {
 		for _, available := range dbs {
@@ -532,6 +538,15 @@ func persistPasskeyWithCount(db *dbpool.OpenDatabase, pk *PasskeyEntry) error {
 	err := db.UpdateAndSave(func(kdb *gokeepasslib.Database) error {
 		group := findOrCreatePasskeyGroup(kdb)
 		entry := newPasskeyEntry(pk)
+		if pk.Imported {
+			// Bitwarden registers backupEligibility/backupState = true.
+			setEntryValue(&entry, KPEXPasskeyFlagBE, "1", false)
+			setEntryValue(&entry, KPEXPasskeyFlagBS, "1", false)
+			if pk.SignCount == 0 {
+				// Bitwarden keeps counter 0 until it increments; never start one.
+				setEntryValue(&entry, KPXCDPasskeyCounterless, "1", false)
+			}
+		}
 		setEntryValue(&entry, KPEXPasskeyCounter, fmt.Sprintf("%d", pk.SignCount), false)
 		group.Entries = append(group.Entries, entry)
 		return nil
@@ -712,6 +727,7 @@ func extractPasskeyFromEntry(entry *gokeepasslib.Entry) (*PasskeyEntry, error) {
 	pk.SignCount = count
 	pk.HasCounter = entry.GetContent(KPEXPasskeyCounter) != ""
 	pk.KpxcdMade = entry.GetContent(KPEXPasskeyPubKey) != ""
+	pk.Counterless = entry.GetContent(KPXCDPasskeyCounterless) == "1" || (!pk.KpxcdMade && !pk.HasCounter)
 	pk.BE, pk.BS = backupFlags(entry, pk.KpxcdMade)
 
 	pk.Subject = entry.GetTitle()
@@ -772,7 +788,7 @@ func flagField(entry *gokeepasslib.Entry, key string, defaultVal bool) bool {
 // counter keep incrementing it; KeePassXC-made entries without one send 0 and
 // write nothing, matching KeePassXC's counterless behavior.
 func shouldPersistCounter(pk *PasskeyEntry) bool {
-	return pk.KpxcdMade || pk.HasCounter
+	return !pk.Counterless && (pk.KpxcdMade || pk.HasCounter)
 }
 
 // newPasskeyEntry builds the KeePass entry for a freshly created passkey.

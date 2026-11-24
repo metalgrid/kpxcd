@@ -685,8 +685,8 @@ var _ = Describe("KeePassXC backup-flag and counter interop (X1)", func() {
 		e := buildEntry(map[string]string{
 			KPEXPasskeyFlagBE: "1", KPEXPasskeyFlagBS: "1",
 		})
-		// KeePassXC entries have no kpxcd PUB_KEY / flag / counter fields: remove them
-		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyCounter, KPEXPasskeyFlagBE, KPEXPasskeyFlagBS} {
+		// KeePassXC entries have no kpxcd PUB_KEY or counter field: remove those, keep the flags
+		for _, key := range []string{KPEXPasskeyPubKey, KPEXPasskeyCounter} {
 			if idx := e.GetIndex(key); idx >= 0 {
 				e.Values = append(e.Values[:idx], e.Values[idx+1:]...)
 			}
