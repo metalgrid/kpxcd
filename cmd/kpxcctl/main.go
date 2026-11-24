@@ -96,7 +96,6 @@ Commands:
   ssh import <uuid> <entry> <file> [--passphrase] [--delete-after]
                              Import an existing SSH private key into the database
   ssh export <fingerprint> <file>  (disabled: private-key export is not supported)
-                             Test-sign a challenge with a loaded key
   ssh diag                   Show SSH agent diagnostics
   passkey list                             List stored passkeys
   passkey create <uuid> <rpID> <username> [displayName]
