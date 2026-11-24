@@ -262,12 +262,7 @@ Emitted when the daemon is shutting down.
 
 | Action ID | Default | Description |
 |-----------|---------|-------------|
-| `org.keepassxc.daemon.unlock` | `auth_self` | Unlock a database |
-| `org.keepassxc.daemon.lock` | `yes` | Lock a database |
 | `org.keepassxc.daemon.get-entry.secret` | `auth_self` | Secret Service read confirmation when `require_confirmation = true` |
-| `org.keepassxc.daemon.get-totp` | `auth_self` | Reserved for future TOTP retrieval |
-| `org.keepassxc.daemon.ssh.add` | `yes` | Add an SSH key |
-| `org.keepassxc.daemon.ssh.remove` | `auth_self` | Remove an SSH key |
 | `org.keepassxc.daemon.passkey.create` | `auth_self` | Reserved; D-Bus method currently returns not implemented |
 | `org.keepassxc.daemon.passkey.assert` | `yes` | Reserved; D-Bus method currently returns not implemented |
 
