@@ -108,13 +108,18 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 	// Content.Meta.Binaries — snapshot whichever this file uses.
 	var originalRoot *gokeepasslib.RootData
 	var originalBinaries gokeepasslib.Binaries
+	hadBinariesTable := false
 	binariesPtr := binariesTable(o.Db)
 	if o.Db.Content != nil {
 		if o.Db.Content.Root != nil {
 			originalRoot = cloneRootData(o.Db.Content.Root)
 		}
 		if binariesPtr != nil {
-			originalBinaries = append(gokeepasslib.Binaries(nil), *binariesPtr...)
+			// Copy even when empty: hadBinariesTable (not a nil slice) decides
+			// restoration, so a failed first attachment save still rolls back.
+			hadBinariesTable = true
+			originalBinaries = make(gokeepasslib.Binaries, len(*binariesPtr))
+			copy(originalBinaries, *binariesPtr)
 		}
 	}
 	if mutate != nil {
@@ -127,7 +132,7 @@ func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database
 			if originalRoot != nil {
 				o.Db.Content.Root = originalRoot
 			}
-			if originalBinaries != nil && binariesPtr != nil {
+			if hadBinariesTable && binariesPtr != nil {
 				*binariesPtr = originalBinaries
 			}
 		}

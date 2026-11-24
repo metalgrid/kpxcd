@@ -338,3 +338,30 @@ var _ = Describe("Pool.Reload", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+var _ = Describe("Pool.Open reopen", func() {
+	It("replaces an already-open database without a stale lock event", func() {
+		eventCh := make(chan Event, 10)
+		pool, uuid, odb := openTestKDBX("reopen.kdbx", "pw", nil, eventCh)
+		<-eventCh // unlock event
+
+		// Reopen the same file: the old instance must be torn down and no
+		// Locked event may be emitted for it.
+		ss, err := security.NewSecureString("pw")
+		Expect(err).NotTo(HaveOccurred())
+		defer ss.Destroy()
+		_, err = pool.Open(odb.Path, PasswordCredential(ss))
+		Expect(err).NotTo(HaveOccurred())
+
+		odb2, err := pool.Get(uuid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(odb2).NotTo(BeIdenticalTo(odb))
+		Expect(odb.IsLocked()).To(BeTrue(), "old instance must be torn down")
+
+		select {
+		case ev := <-eventCh:
+			Expect(ev.Type).To(Equal(EventDatabaseUnlocked), "no Locked event may follow a reopen")
+		default:
+		}
+	})
+})

@@ -209,9 +209,10 @@ const (
 	EventDatabaseError
 )
 
-// NewDatabasePool creates an empty database pool. The event channel must be
-// drained by the caller; Open/Lock block until an event is consumed, so a
-// full channel with no consumer stalls them. Close stops event delivery.
+// NewDatabasePool creates an empty database pool. Events are queued and
+// forwarded to eventChan by a dispatcher goroutine, so producers never block
+// on the consumer; the consumer must still drain eventChan. Close stops
+// event delivery.
 func NewDatabasePool(eventChan chan Event) *DatabasePool {
 	p := &DatabasePool{
 		dbs:    make(map[string]*OpenDatabase),
@@ -232,6 +233,11 @@ func NewDatabasePool(eventChan chan Event) *DatabasePool {
 func (p *DatabasePool) enqueue(ev Event) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.enqueueLocked(ev)
+}
+
+// enqueueLocked is enqueue for callers already holding p.mu.
+func (p *DatabasePool) enqueueLocked(ev Event) {
 	if p.stopped || p.event == nil {
 		return
 	}
@@ -255,7 +261,11 @@ func (p *DatabasePool) dispatchEvents(eventCh chan Event) {
 		p.queue = nil
 		p.mu.Unlock()
 		for _, ev := range queue {
-			eventCh <- ev
+			select {
+			case eventCh <- ev:
+			case <-p.stopCh:
+				return
+			}
 		}
 	}
 }
@@ -319,12 +329,40 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 	odb.Watcher = &fileWatcher{cancel: cancel, done: done}
 
 	p.mu.Lock()
+	// Reopening an already-open database: tear the old instance down (watcher,
+	// content, retained credential) without emitting a Locked event, so a
+	// stale event cannot remove the fresh instance's state.
+	if old, ok := p.dbs[uuid]; ok {
+		old.mu.Lock()
+		old.destroyLocked()
+		old.mu.Unlock()
+	}
 	p.dbs[uuid] = odb
+	// Enqueue under the same lock as the state change so event order always
+	// matches pool state order (a stale lock event must not follow a reopen).
+	p.enqueueLocked(Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path})
 	p.mu.Unlock()
 
-	p.enqueue(Event{Type: EventDatabaseUnlocked, UUID: uuid, Name: odb.Name, Path: path})
-
 	return uuid, nil
+}
+
+// destroyLocked wipes the database content, destroys the retained credential
+// copy, and stops the file watcher. The caller must hold o.mu.
+func (o *OpenDatabase) destroyLocked() {
+	security.Do(func() {
+		wipeDatabaseContent(o.Db)
+		o.Db = nil
+	})
+	o.Locked = true
+	if o.cred.Password != nil {
+		o.cred.Password.Destroy()
+	}
+	o.cred = Credential{}
+	if o.Watcher != nil {
+		o.Watcher.cancel()
+		<-o.Watcher.done
+		o.Watcher = nil
+	}
 }
 
 // Lock locks a database by UUID, clearing decrypted data from memory.
@@ -337,32 +375,14 @@ func (p *DatabasePool) Lock(uuid string) error {
 	}
 
 	odb.mu.Lock()
-	security.Do(func() {
-		wipeDatabaseContent(odb.Db)
-		odb.Db = nil
-	})
-	odb.Locked = true
-	// The unlock credential is only needed to reload after an external
-	// change; it does not survive locking.
-	if odb.cred.Password != nil {
-		odb.cred.Password.Destroy()
-	}
-	odb.cred = Credential{}
-
-	// Stop file watcher.
-	if odb.Watcher != nil {
-		odb.Watcher.cancel()
-		<-odb.Watcher.done
-		odb.Watcher = nil
-	}
+	odb.destroyLocked()
 
 	name, path := odb.Name, odb.Path
 	odb.mu.Unlock()
+	// Enqueue while still holding p.mu: the state change and the event must
+	// be one critical section so a reopen cannot be overtaken by this lock.
+	p.enqueueLocked(Event{Type: EventDatabaseLocked, UUID: uuid, Name: name, Path: path})
 	p.mu.Unlock()
-
-	// Queued (never dropped, never blocking the caller): remove_on_lock key
-	// removal and Secret Service cleanup depend on this event.
-	p.enqueue(Event{Type: EventDatabaseLocked, UUID: uuid, Name: name, Path: path})
 
 	return nil
 }

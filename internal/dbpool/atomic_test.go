@@ -129,12 +129,6 @@ var _ = Describe("Step 5 atomic ownership boundary", func() {
 
 	DescribeTable("refuses an unlocked instance displaced directly by Open", func(copied bool) {
 		pool, uuid, selected := openTestKDBX("selected.kdbx", "password", nil, nil)
-		// Open currently replaces same-UUID membership without closing the old
-		// watcher. Own that displaced fixture resource explicitly in this spec.
-		DeferCleanup(func() {
-			selected.Watcher.cancel()
-			<-selected.Watcher.done
-		})
 		before, err := os.ReadFile(selected.Path)
 		Expect(err).NotTo(HaveOccurred())
 		path := selected.Path
@@ -148,7 +142,9 @@ var _ = Describe("Step 5 atomic ownership boundary", func() {
 		newID, err := pool.Open(path, PasswordCredential(password))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(newID).To(Equal(uuid))
-		Expect(selected.Locked).To(BeFalse())
+		// Open tears the displaced instance down: locked, watcher stopped.
+		Expect(selected.Locked).To(BeTrue())
+		Expect(selected.Watcher).To(BeNil())
 		called := false
 		err = pool.UpdateAndSaveWithUnlockedDatabases(selected, func(map[*OpenDatabase]*gokeepasslib.Database) error {
 			called = true
