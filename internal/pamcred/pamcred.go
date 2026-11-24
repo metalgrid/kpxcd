@@ -66,23 +66,6 @@ func DerivePAMToken(password []byte) []byte {
 	return token
 }
 
-// DerivePAMTokenV2 derives a stronger per-user PAM token from the user's login
-// password. The salt includes the effective UID so the same password produces
-// different tokens for different users and tokens are not portable across
-// accounts. This derivation is intended for fresh installations or for an
-// explicit migration; it is not used by default because existing sealed
-// identities use DerivePAMToken.
-func DerivePAMTokenV2(password []byte) []byte {
-	token := make([]byte, PAMTokenLen)
-	salt := fmt.Sprintf("%s:%d", PAMTokenSalt, os.Getuid())
-	r := hkdf.New(sha256.New, password, []byte(salt), nil)
-	if _, err := io.ReadFull(r, token); err != nil {
-		// hkdf.Reader never errors on reads <= Expand output length.
-		panic(fmt.Sprintf("pamcred: hkdf read failed: %v", err))
-	}
-	return token
-}
-
 // GenerateIdentity returns a new age X25519 identity.
 func GenerateIdentity() (*age.X25519Identity, error) {
 	return age.GenerateX25519Identity()

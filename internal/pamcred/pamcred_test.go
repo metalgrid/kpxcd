@@ -26,16 +26,6 @@ var _ = Describe("DerivePAMToken", func() {
 	})
 })
 
-var _ = Describe("DerivePAMTokenV2", func() {
-	It("is stable per password and UID and differs from the legacy token", func() {
-		first := DerivePAMTokenV2([]byte("login-password"))
-		second := DerivePAMTokenV2([]byte("login-password"))
-		Expect(first).To(Equal(second), "same password and UID must produce the same V2 token")
-		Expect(first).NotTo(Equal(DerivePAMToken([]byte("login-password"))), "V2 token must differ from legacy token")
-		Expect(first).To(HaveLen(PAMTokenLen))
-	})
-})
-
 var _ = Describe("Seal/Open identity", func() {
 	It("round-trips an identity and refuses a wrong token", func() {
 		token := []byte("login-password")

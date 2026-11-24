@@ -71,17 +71,6 @@ func PAMSocketPath() (string, error) {
 	return filepath.Join(dir, "pam.sock"), nil
 }
 
-// PAMTokenPath returns the legacy plaintext token file path.
-// Deprecated: PAM now uses a Unix socket (PAMSocketPath); this file is
-// no longer created or consumed.
-func PAMTokenPath() (string, error) {
-	dir, err := RuntimeKpxcdDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "pam-token"), nil
-}
-
 // EnsurePrivateDir creates a directory tree with private user-only
 // permissions. Existing directories are chmod'd best-effort to the requested
 // mode to avoid accidentally world-readable kpxcd state.

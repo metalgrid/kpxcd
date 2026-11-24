@@ -92,9 +92,6 @@ var _ = Describe("PAM socket", func() {
 		Expect(xdg.DefaultCredentialPath()).To(BeAnExistingFile(), "credential was not created")
 		Expect(app.pool.List()).To(HaveLen(1))
 
-		// No plaintext token file may exist.
-		tokenPath, _ := xdg.PAMTokenPath()
-		Expect(fileExists(tokenPath)).To(BeFalse(), "plaintext PAM token file should not exist")
 	})
 
 	It("unlocks the existing credential on a second login", func() {

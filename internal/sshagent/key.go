@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
@@ -226,28 +225,6 @@ func GenerateTestKey(keyType string) (*Key, error) {
 	}
 
 	return NewKey(priv, "test@"+keyType)
-}
-
-// encodeECDSAPrivateKey encodes an ECDSA private key as PEM.
-func encodeECDSAPrivateKey(key *ecdsa.PrivateKey) (string, error) {
-	der, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return "", err
-	}
-	return "-----BEGIN EC PRIVATE KEY-----\n" +
-		base64.StdEncoding.EncodeToString(der) +
-		"\n-----END EC PRIVATE KEY-----", nil
-}
-
-// encodeEd25519PrivateKey encodes an Ed25519 private key as PEM.
-func encodeEd25519PrivateKey(key ed25519.PrivateKey) (string, error) {
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return "", err
-	}
-	return "-----BEGIN PRIVATE KEY-----\n" +
-		base64.StdEncoding.EncodeToString(der) +
-		"\n-----END PRIVATE KEY-----", nil
 }
 
 // GenerateSSHKeyPair generates a new SSH key pair of the given type.

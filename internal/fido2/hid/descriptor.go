@@ -80,7 +80,6 @@ const (
 
 // CTAPHID capability flags for the INIT reply.
 const (
-	capWink = 0x01
 	capCBOR = 0x04
 	// capNMSG tells hosts CTAPHID_MSG (CTAP1/U2F) is not implemented,
 	// so they skip U2F fallbacks entirely instead of probing it.
