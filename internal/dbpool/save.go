@@ -76,7 +76,10 @@ func (f FileFingerprint) Equal(other FileFingerprint) bool {
 func (o *OpenDatabase) UpdateAndSave(mutate func(db *gokeepasslib.Database) error) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.updateAndSaveLocked(mutate)
+}
 
+func (o *OpenDatabase) updateAndSaveLocked(mutate func(db *gokeepasslib.Database) error) error {
 	if o.Locked || o.Db == nil || o.Db.Content == nil {
 		return fmt.Errorf("dbpool: database %s is locked", o.UUID)
 	}
@@ -149,6 +152,26 @@ func (o *OpenDatabase) saveLocked() error {
 	return nil
 }
 
+// Library Clone means duplicate, not snapshot: restore UUIDs for rollback.
+func restoreGroupIdentities(clone, original *gokeepasslib.Group) {
+	clone.UUID = original.UUID
+	for i := range clone.Entries {
+		restoreEntryIdentity(&clone.Entries[i], &original.Entries[i])
+	}
+	for i := range clone.Groups {
+		restoreGroupIdentities(&clone.Groups[i], &original.Groups[i])
+	}
+}
+
+func restoreEntryIdentity(clone, original *gokeepasslib.Entry) {
+	clone.UUID = original.UUID
+	for i := range clone.Histories {
+		for j := range clone.Histories[i].Entries {
+			restoreEntryIdentity(&clone.Histories[i].Entries[j], &original.Histories[i].Entries[j])
+		}
+	}
+}
+
 func cloneRootData(root *gokeepasslib.RootData) *gokeepasslib.RootData {
 	clone := &gokeepasslib.RootData{
 		Groups:         make([]gokeepasslib.Group, len(root.Groups)),
@@ -156,6 +179,7 @@ func cloneRootData(root *gokeepasslib.RootData) *gokeepasslib.RootData {
 	}
 	for i := range root.Groups {
 		clone.Groups[i] = root.Groups[i].Clone()
+		restoreGroupIdentities(&clone.Groups[i], &root.Groups[i])
 	}
 	copy(clone.DeletedObjects, root.DeletedObjects)
 	return clone

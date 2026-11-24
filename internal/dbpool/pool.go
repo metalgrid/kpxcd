@@ -4,6 +4,7 @@
 package dbpool
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -61,10 +64,13 @@ func YubiKeyCredential(slot int) Credential {
 	return Credential{Kind: CredentialYubiKey, Slot: slot}
 }
 
+var nextInstanceID atomic.Uint64
+
 // OpenDatabase wraps a gokeepasslib.Database with metadata and lifecycle state.
 type OpenDatabase struct {
 	mu          sync.RWMutex
 	UUID        string
+	InstanceID  uint64 // Immutable identity of this particular open, not the file UUID.
 	Name        string
 	Path        string
 	Locked      bool
@@ -240,6 +246,7 @@ func (p *DatabasePool) Open(path string, cred Credential) (string, error) {
 
 	odb := &OpenDatabase{
 		UUID:        uuid,
+		InstanceID:  nextInstanceID.Add(1),
 		Name:        filepath.Base(path),
 		Path:        path,
 		Locked:      false,
@@ -351,6 +358,66 @@ func (p *DatabasePool) List() []*OpenDatabase {
 		result = append(result, odb)
 	}
 	return result
+}
+
+// WithUnlockedDatabases keeps pool membership and lock transitions stable while
+// visit inspects or updates unlocked databases. The callback may take database
+// locks, but must not call pool methods (pool locks precede database locks).
+func (p *DatabasePool) WithUnlockedDatabases(visit func([]*OpenDatabase) error) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var dbs []*OpenDatabase
+	for _, db := range p.dbs {
+		db.mu.RLock()
+		available := !db.Locked && db.Db != nil
+		db.mu.RUnlock()
+		if available {
+			dbs = append(dbs, db)
+		}
+	}
+	return visit(dbs)
+}
+
+// UpdateAndSaveWithUnlockedDatabases holds pool membership stable and locks database
+// contents through validation and a single target save. The target must be this
+// exact open instance. Other unlocked databases are read-only in update; only
+// the target may be mutated. Like UpdateAndSave, validate before mutation.
+// The callback must not call pool or database methods: all locks are already held.
+// Lock order is pool, then databases by InstanceID (target write, others read).
+func (p *DatabasePool) UpdateAndSaveWithUnlockedDatabases(target *OpenDatabase, update func(map[*OpenDatabase]*gokeepasslib.Database) error) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if target == nil || p.dbs[target.UUID] != target {
+		return fmt.Errorf("dbpool: selected registration database is unavailable")
+	}
+	dbs := make([]*OpenDatabase, 0, len(p.dbs))
+	for _, db := range p.dbs {
+		dbs = append(dbs, db)
+	}
+	slices.SortFunc(dbs, func(a, b *OpenDatabase) int { return cmp.Compare(a.InstanceID, b.InstanceID) })
+	for _, db := range dbs {
+		if db == target {
+			db.mu.Lock()
+		} else {
+			db.mu.RLock()
+		}
+	}
+	defer func() {
+		for i := len(dbs) - 1; i >= 0; i-- {
+			if dbs[i] == target {
+				dbs[i].mu.Unlock()
+			} else {
+				dbs[i].mu.RUnlock()
+			}
+		}
+	}()
+	unlocked := make(map[*OpenDatabase]*gokeepasslib.Database)
+	for _, db := range dbs {
+		if !db.Locked && db.Db != nil {
+			unlocked[db] = db.Db
+		}
+	}
+	return target.updateAndSaveLocked(func(_ *gokeepasslib.Database) error { return update(unlocked) })
 }
 
 // Close locks all databases and releases all resources.
