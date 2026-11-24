@@ -149,5 +149,5 @@ See [passkey limits](passkeys.md) and [conformance evidence](fido2-conformance.m
 | `kpxcctl ssh scan/show` | ✅ | Database scanning and key inspection |
 | `kpxcctl ssh generate` | ✅ | In-place key generation with KeeAgent metadata |
 | `kpxcctl ssh import/export` | ✅ | PEM key import/export with attachment handling |
-| `kpxcctl ssh test-sign/diag` | ✅ | Test signing and diagnostics |
+| `kpxcctl ssh diag` | ✅ | Agent diagnostics |
 | Database reload on file change | ❌ | Watcher detects changes but doesn't reload in-memory |

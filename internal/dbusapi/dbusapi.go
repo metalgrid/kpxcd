@@ -19,7 +19,6 @@ import (
 	"github.com/metalgrid/kpxcd/internal/security"
 	"github.com/metalgrid/kpxcd/internal/sshagent"
 	"github.com/tobischo/gokeepasslib/v3"
-	"golang.org/x/crypto/ssh"
 )
 
 // DaemonDBus implements the org.keepassxc.Daemon DBus interface.
@@ -675,32 +674,6 @@ func (d *DaemonDBus) SshExportKey(sender dbus.Sender, fingerprint string) ([]byt
 		return nil, dbus.MakeFailedError(err)
 	}
 	return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh private-key export is disabled"))
-}
-
-// SshTestSign signs test data with a loaded SSH key and returns the signature.
-func (d *DaemonDBus) SshTestSign(sender dbus.Sender, fingerprint string, data []byte) ([]byte, *dbus.Error) {
-	if err := d.authorize(sender); err != nil {
-		return nil, dbus.MakeFailedError(err)
-	}
-	if d.sshAgent == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: ssh agent is not running in agent mode"))
-	}
-
-	lk := d.sshAgent.Manager().FindIdentityByFingerprint(fingerprint)
-	if lk == nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: key not found: %s", fingerprint))
-	}
-
-	var sig *ssh.Signature
-	var signErr error
-	security.Do(func() {
-		sig, signErr = lk.Key.Sign(data)
-	})
-	if signErr != nil {
-		return nil, dbus.MakeFailedError(fmt.Errorf("dbusapi: sign failed: %w", signErr))
-	}
-	slog.Info("DBus: SSH test sign performed", "fingerprint", fingerprint, "sender", string(sender))
-	return ssh.Marshal(sig), nil
 }
 
 // SshRemoveKey removes an SSH key from the agent by fingerprint.

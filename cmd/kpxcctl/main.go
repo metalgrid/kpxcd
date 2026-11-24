@@ -96,7 +96,6 @@ Commands:
   ssh import <uuid> <entry> <file> [--passphrase] [--delete-after]
                              Import an existing SSH private key into the database
   ssh export <fingerprint> <file>  (disabled: private-key export is not supported)
-  ssh test-sign <fingerprint>
                              Test-sign a challenge with a loaded key
   ssh diag                   Show SSH agent diagnostics
   passkey list                             List stored passkeys
@@ -708,25 +707,6 @@ func cmdSSH(args []string) {
 		fmt.Printf("Database:    %s\n", getVariantString((*found)["db_uuid"]))
 		fmt.Printf("Entry:       %s\n", getVariantString((*found)["entry_path"]))
 
-	case "test-sign":
-		if len(subArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "kpxcctl ssh test-sign: missing fingerprint")
-			os.Exit(1)
-		}
-		fingerprint := subArgs[0]
-		testData := []byte("kpxcd-ssh-test-challenge")
-		result := obj.Call(iface+".SshTestSign", 0, fingerprint, testData)
-		if result.Err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: test sign failed: %v\n", result.Err)
-			os.Exit(1)
-		}
-		var sig []byte
-		if err := result.Store(&sig); err != nil {
-			fmt.Fprintf(os.Stderr, "kpxcctl: unexpected response: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Test signature (%d bytes) succeeded\n", len(sig))
-
 	case "diag":
 		result := obj.Call(iface+".SshListKeys", 0, "")
 		var keys []map[string]dbus.Variant
@@ -1129,7 +1109,7 @@ func credentialIDForVault(id string) (string, error) {
 	return normalizeBase64URL(id)
 }
 
-// normalizeBase64URL decodes std-or-url, padded-or-not base64 and// normalizeBase64URL decodes std-or-url, padded-or-not base64 and
+// normalizeBase64URL decodes std-or-url, padded-or-not base64 and
 // re-encodes kpxcd's canonical unpadded base64url form.
 func normalizeBase64URL(s string) (string, error) {
 	trimmed := strings.TrimRight(s, "=")
