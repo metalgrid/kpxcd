@@ -625,16 +625,9 @@ func cmdSSH(args []string) {
 		uuid := subArgs[0]
 		entryPath := subArgs[1]
 		keyFile := subArgs[2]
-		passphrase := ""
 		deleteAfter := false
 		for i := 3; i < len(subArgs); i++ {
-			switch subArgs[i] {
-			case "--passphrase":
-				if i+1 < len(subArgs) {
-					passphrase = subArgs[i+1]
-					i++
-				}
-			case "--delete-after":
+			if subArgs[i] == "--delete-after" {
 				deleteAfter = true
 			}
 		}
@@ -642,6 +635,13 @@ func cmdSSH(args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "kpxcctl: failed to read key file: %v\n", err)
 			os.Exit(1)
+		}
+		// Passphrase is prompted, never taken from argv (visible in ps).
+		passphrase := ""
+		if _, perr := sshagent.ParsePrivateKey(keyData, ""); perr != nil {
+			if _, ok := perr.(*ssh.PassphraseMissingError); ok {
+				passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", keyFile))
+			}
 		}
 		result := obj.Call(iface+".SshImportKey", 0, uuid, entryPath, keyData, passphrase)
 		if result.Err != nil {
@@ -792,9 +792,10 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 	}
 
 	type candidate struct {
-		path string
-		key  *sshagent.Key
-		data []byte
+		path      string
+		key       *sshagent.Key
+		data      []byte
+		encrypted bool
 	}
 	var candidates []candidate
 	var skipped int
@@ -803,20 +804,17 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 		if err != nil {
 			continue
 		}
-		passphrase := ""
 		key, err := sshagent.ParsePrivateKey(data, "")
 		if err != nil {
-			// Maybe encrypted: ask once.
-			if _, ok := err.(*ssh.PassphraseMissingError); ok {
-				passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", filepath.Base(f)))
-				key, err = sshagent.ParsePrivateKey(data, passphrase)
-			}
-		}
-		if err != nil || key == nil || key.Signer == nil {
 			skipped++
 			continue
 		}
-		if strings.Contains(f, "sk-") || strings.HasPrefix(key.Format, "ssh-sk-") {
+		if key == nil {
+			skipped++
+			continue
+		}
+		// M7: sk- is a filename prefix, not a substring of the full path.
+		if strings.HasPrefix(filepath.Base(f), "sk-") {
 			fmt.Printf("  skip %s: security-key (sk-*) keys are not supported\n", filepath.Base(f))
 			skipped++
 			continue
@@ -826,7 +824,9 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 			skipped++
 			continue
 		}
-		candidates = append(candidates, candidate{path: f, key: key, data: data})
+		// B7: an encrypted key parses to a public-only key (Signer == nil);
+		// keep it as a candidate and prompt for the passphrase only if selected.
+		candidates = append(candidates, candidate{path: f, key: key, data: data, encrypted: key.Signer == nil})
 	}
 	if len(candidates) == 0 {
 		fmt.Printf("no importable keys in ~/.ssh (%d skipped)\n", skipped)
@@ -839,7 +839,11 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 
 	items := make([]string, len(candidates))
 	for i, c := range candidates {
-		items[i] = fmt.Sprintf("%s  %s  %s", filepath.Base(c.path), c.key.Format, c.key.Fingerprint())
+		enc := ""
+		if c.encrypted {
+			enc = "  (encrypted)"
+		}
+		items[i] = fmt.Sprintf("%s  %s  %s%s", filepath.Base(c.path), c.key.Format, c.key.Fingerprint(), enc)
 	}
 	fmt.Printf("%d keys found in ~/.ssh:\n", len(candidates))
 	picked, err := selectFromMenu(os.Stdin, "import which? numbers (comma-separated), 'a' for all, enter to cancel: ", items)
@@ -853,7 +857,11 @@ func cmdSSHImportMenu(obj dbus.BusObject, args []string) {
 	for _, idx := range picked {
 		c := candidates[idx]
 		title := fmt.Sprintf("%s (%s)", filepath.Base(c.path), shortFP(c.key.Fingerprint()))
-		call := obj.Call(iface+".SshImportKey", 0, uuid, title, c.data, "")
+		passphrase := ""
+		if c.encrypted {
+			passphrase = readSecretPrompt(fmt.Sprintf("Passphrase for %s: ", filepath.Base(c.path)))
+		}
+		call := obj.Call(iface+".SshImportKey", 0, uuid, title, c.data, passphrase)
 		if call.Err != nil {
 			fmt.Fprintf(os.Stderr, "  fail %s: %v\n", title, call.Err)
 			failed++
@@ -881,8 +889,16 @@ func listDatabases(obj dbus.BusObject) []map[string]dbus.Variant {
 		return nil
 	}
 	var dbs []map[string]dbus.Variant
-	_ = call.Store(&dbs)
-	return dbs
+	if call.Store(&dbs) != nil {
+		return nil
+	}
+	unlocked := dbs[:0]
+	for _, db := range dbs {
+		if !getVariantBool(db["locked"]) {
+			unlocked = append(unlocked, db)
+		}
+	}
+	return unlocked
 }
 
 // cmdSSHAutoload shows a menu of the database's keys and toggles auto-load.
@@ -1057,6 +1073,20 @@ func cmdSSHExport(obj dbus.BusObject, args []string) {
 		os.Exit(1)
 	}
 
+	// B8c: validate the output path before triggering the polkit prompt.
+	if outFile != "" {
+		if fi, serr := os.Lstat(outFile); serr == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: refusing to write through a symlink")
+				os.Exit(1)
+			}
+			if !force && fi.Mode().IsRegular() {
+				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: file exists (use --force to overwrite)")
+				os.Exit(1)
+			}
+		}
+	}
+
 	call := obj.Call(iface+".SshExportKey", 0, uuid, entryRef)
 	if call.Err != nil {
 		fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", call.Err)
@@ -1068,52 +1098,80 @@ func cmdSSHExport(obj dbus.BusObject, args []string) {
 		os.Exit(1)
 	}
 
-	// Encrypt by default; --no-passphrase requires typed consent.
+	// Encrypt by default. An empty passphrase is an error (it would silently
+	// produce an unencrypted key); --no-passphrase requires typed consent.
 	out := pemBytes
 	if !noPassphrase {
-		p1 := readSecretPrompt("Passphrase for exported key (empty = none): ")
+		p1 := readSecretPrompt("Passphrase for exported key: ")
 		p2 := readSecretPrompt("Repeat passphrase: ")
 		if p1 != p2 {
 			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: passphrases do not match")
 			os.Exit(1)
 		}
 		if p1 == "" {
-			noPassphrase = true
-		} else {
-			key, err := sshagent.ParsePrivateKey(pemBytes, "")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: cannot re-encrypt:", err)
-				os.Exit(1)
-			}
-			block, err := ssh.MarshalPrivateKeyWithPassphrase(key.PrivateKey, "", []byte(p1))
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "kpxcctl ssh export: encrypt:", err)
-				os.Exit(1)
-			}
-			out = pem.EncodeToMemory(block)
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: empty passphrase is not allowed; use --no-passphrase with explicit consent")
+			os.Exit(1)
+		}
+		key, err := sshagent.ParsePrivateKey(pemBytes, "")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: cannot re-encrypt:", err)
+			os.Exit(1)
+		}
+		block, err := ssh.MarshalPrivateKeyWithPassphrase(key.PrivateKey, "", []byte(p1))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: encrypt:", err)
+			os.Exit(1)
+		}
+		out = pem.EncodeToMemory(block)
+	} else if stdinIsInteractive() {
+		fmt.Print("Export an UNENCRYPTED private key? Type \"yes\": ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if strings.TrimSpace(line) != "yes" {
+			fmt.Fprintln(os.Stderr, "kpxcctl ssh export: not confirmed")
+			os.Exit(1)
 		}
 	}
-	if noPassphrase && len(pos) == 3 {
-		fmt.Fprintln(os.Stderr, "WARNING: exporting an UNENCRYPTED private key; the file is 0600 but anyone reading it can use the key.")
+	if noPassphrase {
+		fmt.Fprintln(os.Stderr, "WARNING: exporting an UNENCRYPTED private key; the file is 0600 but anyone who can read it can use the key.")
 	}
 
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	}
-	f, err := os.OpenFile(outFile, flags, 0o600)
-	if err != nil {
+	if err := writeExportFile(outFile, out); err != nil {
 		fmt.Fprintln(os.Stderr, "kpxcctl ssh export:", err)
 		os.Exit(1)
 	}
-	if _, err := f.Write(out); err != nil {
-		f.Close()
-		os.Remove(outFile)
-		fmt.Fprintln(os.Stderr, "kpxcctl ssh export: write:", err)
-		os.Exit(1)
-	}
-	f.Close()
 	fmt.Printf("exported %s to %s (mode 0600)\n", entryRef, outFile)
+}
+
+// writeExportFile writes a private key to outFile as a fresh 0600 file
+// renamed over the target: never O_TRUNC (would keep the old mode), never
+// through a symlink.
+func writeExportFile(outFile string, data []byte) error {
+	if fi, err := os.Lstat(outFile); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write through a symlink")
+	}
+	dir := filepath.Dir(outFile)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outFile)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, outFile)
 }
 
 // cmdPasskey handles passkey subcommands: list, create, remove, import.
