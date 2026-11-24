@@ -133,16 +133,18 @@ func Run(configPath string, cliLevel slog.Level, version string) error {
 		}
 	}
 
+	// Start the SSH agent before D-Bus: the D-Bus handler captures the
+	// agent pointer at construction, and with the old order it stored nil,
+	// making every Ssh* method fail in a normally started daemon.
+	if err := app.startSSHAgent(); err != nil {
+		slog.Error("SSH agent setup failed", "error", err)
+		// Non-fatal: other services can still run.
+	}
+
 	// Connect to the session bus (shared by DaemonDBus + SecretService).
 	if err := app.startDBus(); err != nil {
 		slog.Error("DBus setup failed", "error", err)
 		// Non-fatal: daemon can still manage databases locally.
-	}
-
-	// Start the SSH agent.
-	if err := app.startSSHAgent(); err != nil {
-		slog.Error("SSH agent setup failed", "error", err)
-		// Non-fatal: other services can still run.
 	}
 
 	// Register signal handler.
